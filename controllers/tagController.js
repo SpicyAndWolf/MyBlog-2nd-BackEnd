@@ -6,18 +6,31 @@ const tagController = {
     try {
       const tags = await tagModel.findAll();
 
-      // 将扁平数据转换为层级结构
+      // 1. 为每个标签补上 articleCount 字段
+      const tagsWithCount = await Promise.all(
+        tags.map(async (tag) => {
+          const articleCount = await tagModel.getArticleCountByTagId(tag.id);
+          return {
+            id: tag.id,
+            name: tag.name,
+            parent_id: tag.parent_id,
+            articleCount, // 这里就是最终前端用的字段名
+          };
+        })
+      );
+
+      // 2. 转成层级结构
       const tagsMap = new Map();
       const topTags = [];
 
-      tags.forEach((tag) => {
+      tagsWithCount.forEach((tag) => {
         tagsMap.set(tag.id, { ...tag, subTags: [] });
         if (tag.parent_id === null) {
           topTags.push(tagsMap.get(tag.id));
         }
       });
 
-      tags.forEach((tag) => {
+      tagsWithCount.forEach((tag) => {
         if (tag.parent_id !== null && tagsMap.has(tag.parent_id)) {
           const parentTag = tagsMap.get(tag.parent_id);
           parentTag.subTags.push(tagsMap.get(tag.id));

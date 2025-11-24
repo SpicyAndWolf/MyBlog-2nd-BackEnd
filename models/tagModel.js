@@ -1,7 +1,7 @@
 const db = require("../db");
 
 const tagModel = {
-  // 查找所有标签
+  // 查找所有标签 + 每个标签绑定的文章数量
   async findAll() {
     const query = "SELECT * FROM tags ORDER BY name";
     const { rows } = await db.query(query);

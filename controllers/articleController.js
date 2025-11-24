@@ -1,6 +1,9 @@
 // controllers/articleController.js
 const articleModel = require("@models/articleModel");
 const { stripHtml } = require("string-strip-html");
+const sharp = require("sharp");
+const path = require("path");
+const fs = require("fs");
 
 const articleController = {
   // 获取所有已发布的文章列表
@@ -69,9 +72,9 @@ const articleController = {
   // (后台管理) 创建一篇新文章
   async createArticle(req, res) {
     try {
-      const { title, content, thumbnail_url, header_image_url, status, tag_ids } = req.body;
+      const { title, content, status, tag_ids } = req.body;
 
-      // 1. 基本验证
+      // 基本检验
       if (!title || !content || !status) {
         return res.status(400).json({ error: "标题、内容和状态是必填项" });
       }
@@ -79,27 +82,84 @@ const articleController = {
         return res.status(400).json({ error: "无效的状态值" });
       }
 
-      // 2. 从中间件注入的 req.user 中获取作者ID
+      // 解析 tag_ids：前端以 JSON 字符串传上来
+      let tagIdsArray = [];
+      if (tag_ids) {
+        try {
+          tagIdsArray = JSON.parse(tag_ids);
+          if (!Array.isArray(tagIdsArray)) {
+            tagIdsArray = [];
+          }
+        } catch (e) {
+          tagIdsArray = [];
+        }
+      }
+
+      // 从中间件注入的 req.user 中获取作者ID
       const author_id = req.user.id;
 
-      // 3. 生成摘要 (这里我们实践了之前的优化方案)
+      // 生成摘要
       const summary = stripHtml(content).result.substring(0, 200);
 
-      // 4. 准备要存入数据库的数据
+      // 处理头图文件
+      let header_image_url = null;
+      let thumbnail_url = null;
+
+      const file = req.file;
+      if (file) {
+        // 根目录 /uploads/articles
+        const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
+        const headerDir = path.join(uploadsRoot, "headers");
+        const thumbDir = path.join(uploadsRoot, "thumbnails");
+        fs.mkdirSync(headerDir, { recursive: true });
+        fs.mkdirSync(thumbDir, { recursive: true });
+
+        const ext = path.extname(file.filename);
+        const base = path.basename(file.filename, ext);
+
+        const headerFilename = `${base}-header${ext}`;
+        const thumbFilename = `${base}-thumb${ext}`;
+
+        const headerFilePath = path.join(headerDir, headerFilename);
+        const thumbFilePath = path.join(thumbDir, thumbFilename);
+
+        // 生成头图（大图）
+        await sharp(file.path)
+          .resize({
+            width: 2560,
+            withoutEnlargement: true, // 如果原图小于最大尺寸，则保持原样，不强制拉大
+          })
+          .webp({ quality: 80 })
+          .toFile(headerFilePath);
+
+        // 生成缩略图
+        await sharp(file.path)
+          .resize({ width: 400 }) // 缩略图宽度
+          .webp({ quality: 80 })
+          .toFile(thumbFilePath);
+
+        // 原始文件可以删掉（可选）
+        fs.unlink(file.path, () => {});
+
+        // 对前端暴露的 URL（注意：走 /uploads 静态目录）
+        header_image_url = `/uploads/articles/headers/${headerFilename}`;
+        thumbnail_url = `/uploads/articles/thumbnails/${thumbFilename}`;
+      }
+
+      // 准备要存入数据库的数据
       const articleData = {
         title,
         content,
         summary,
-        thumbnail_url: thumbnail_url || null,
-        header_image_url: header_image_url || null,
+        thumbnail_url,
+        header_image_url,
         status,
         author_id,
-        // 如果是直接发布，则记录发布时间
         published_at: status === "published" ? new Date() : null,
-        tag_ids: tag_ids || [], // 确保 tag_ids 是个数组
+        tag_ids: tagIdsArray,
       };
 
-      // 5. 调用模型创建文章
+      // 创建文章
       const newArticle = await articleModel.create(articleData);
 
       res.status(201).json({ message: "文章创建成功", article: newArticle });

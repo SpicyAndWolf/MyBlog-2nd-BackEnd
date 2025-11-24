@@ -2,6 +2,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const path = require("path");
 require("module-alias/register");
 
 // 引入配置文件
@@ -20,7 +21,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// 路由挂载
+// 开放静态资源，如 /uploads/articles/...
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// 其余路由挂载
 app.use("/api/tags", tagsRouter);
 app.use("/api/admin/tags", adminTagsRouter);
 app.use("/api/articles", articlesRouter);
