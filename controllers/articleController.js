@@ -190,33 +190,74 @@ const articleController = {
   async updateArticle(req, res) {
     try {
       const { id } = req.params;
-      const { title, content, thumbnail_url, header_image_url, status, tag_ids } = req.body;
+      const { title, content, status } = req.body;
 
       if (!title || !content || !status) {
         return res.status(400).json({ error: "标题、内容和状态是必填项" });
       }
 
-      // 重新生成摘要
-      const summary = stripHtml(content).result.substring(0, 200);
+      // 解析 tag_ids（FormData 提交会是字符串）
+      let tagIdsArray = [];
+      if (req.body.tag_ids) {
+        try {
+          tagIdsArray = Array.isArray(req.body.tag_ids) ? req.body.tag_ids : JSON.parse(req.body.tag_ids);
+          if (!Array.isArray(tagIdsArray)) tagIdsArray = [];
+        } catch (e) {
+          tagIdsArray = [];
+        }
+      }
 
-      // 检查文章当前是否已发布，以决定是否更新发布时间
+      // 查询现有文章，便于保留旧值
       const existingArticle = await articleModel.findByIdAdmin(id);
       if (!existingArticle) {
         return res.status(404).json({ error: "找不到要更新的文章" });
+      }
+
+      // 基础字段
+      const summary = stripHtml(content).result.substring(0, 200);
+      let header_image_url = req.body.header_image_url || existingArticle.header_image_url || null;
+      let thumbnail_url = req.body.thumbnail_url || existingArticle.thumbnail_url || null;
+
+      // 如有新上传的头图，生成大图与缩略图
+      if (req.file) {
+        const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
+        const headerDir = path.join(uploadsRoot, "headers");
+        const thumbDir = path.join(uploadsRoot, "thumbnails");
+        fs.mkdirSync(headerDir, { recursive: true });
+        fs.mkdirSync(thumbDir, { recursive: true });
+
+        const ext = path.extname(req.file.filename);
+        const base = path.basename(req.file.filename, ext);
+
+        const headerFilename = `${base}-header${ext}`;
+        const thumbFilename = `${base}-thumb${ext}`;
+
+        const headerFilePath = path.join(headerDir, headerFilename);
+        const thumbFilePath = path.join(thumbDir, thumbFilename);
+
+        await sharp(req.file.path)
+          .resize({ width: 2560, withoutEnlargement: true })
+          .webp({ quality: 80 })
+          .toFile(headerFilePath);
+
+        await sharp(req.file.path).resize({ width: 400 }).webp({ quality: 80 }).toFile(thumbFilePath);
+
+        fs.unlink(req.file.path, () => {});
+
+        header_image_url = `/uploads/articles/headers/${headerFilename}`;
+        thumbnail_url = `/uploads/articles/thumbnails/${thumbFilename}`;
       }
 
       const articleData = {
         title,
         content,
         summary,
-        thumbnail_url: thumbnail_url || null,
-        header_image_url: header_image_url || null,
+        thumbnail_url,
+        header_image_url,
         status,
-        // 关键逻辑：如果文章之前未发布，现在要发布，则设置新的发布时间
-        // 否则保持原来的发布时间不变
         published_at:
           status === "published" && existingArticle.status !== "published" ? new Date() : existingArticle.published_at,
-        tag_ids: tag_ids || [],
+        tag_ids: tagIdsArray,
       };
 
       const updatedArticle = await articleModel.update(id, articleData);

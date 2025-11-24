@@ -11,7 +11,7 @@ const uploadArticleCover = require("@middleware/uploadArticleCover");
 router.get("/", authMiddleware, articleController.getAllArticlesAdmin);
 router.post("/", authMiddleware, uploadArticleCover.single("headerImage"), articleController.createArticle);
 router.get("/:id", authMiddleware, articleController.getArticleByIdAdmin);
-router.put("/:id", authMiddleware, articleController.updateArticle);
+router.put("/:id", authMiddleware, uploadArticleCover.single("headerImage"), articleController.updateArticle);
 router.delete("/:id", authMiddleware, articleController.deleteArticle);
 
 module.exports = router;
