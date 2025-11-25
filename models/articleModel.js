@@ -35,6 +35,11 @@ const articleModel = {
       params.push(filters.month);
       paramIndex++;
     }
+    if (filters.search) {
+      whereClauses.push(`(a.title ILIKE $${paramIndex} OR a.summary ILIKE $${paramIndex})`);
+      params.push(`%${filters.search}%`);
+      paramIndex++;
+    }
     if (whereClauses.length > 0) {
       query += " WHERE " + whereClauses.join(" AND ");
     }

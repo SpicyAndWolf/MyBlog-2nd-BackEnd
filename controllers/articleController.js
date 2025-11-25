@@ -82,13 +82,14 @@ const articleController = {
   // 获取所有已发布的文章列表
   async getAllPublishedArticles(req, res) {
     try {
-      const { topTag, subTag, year, month, page, limit } = req.query;
+      const { topTag, subTag, year, month, search, page, limit } = req.query;
 
       const filters = {};
       if (subTag) filters.tag = subTag;
       else if (topTag) filters.tag = topTag;
       if (year) filters.year = parseInt(year, 10);
       if (month) filters.month = parseInt(month, 10);
+      if (search) filters.search = search.trim();
 
       const pageNum = parseInt(page, 10) || 1;
       const limitNum = parseInt(limit, 10) || 10;
