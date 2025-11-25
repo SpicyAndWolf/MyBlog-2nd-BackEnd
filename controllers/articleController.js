@@ -5,20 +5,91 @@ const sharp = require("sharp");
 const path = require("path");
 const fs = require("fs");
 
+const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
+const contentDir = path.join(uploadsRoot, "content");
+const contentTmpDir = path.join(contentDir, "tmp");
+const TEMP_IMAGE_TTL_MS = 24 * 60 * 60 * 1000; // 24h 过期
+const CLEAN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 每 6h 清理
+
+// 目录创建与输入标准化
+const ensureDir = (dir) => fs.mkdirSync(dir, { recursive: true });
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const normalizeArrayInput = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+ensureDir(contentDir);
+ensureDir(contentTmpDir);
+
+// 将正文里的临时图片移动到正式目录，并替换正文链接
+const promoteTempContentImages = (html = "", rawKeys = []) => {
+  const uniqueKeys = Array.from(
+    new Set((Array.isArray(rawKeys) ? rawKeys : []).filter(Boolean).map((k) => path.basename(k)))
+  );
+  if (!uniqueKeys.length) return { normalizedContent: html, promoted: [] };
+
+  ensureDir(contentDir);
+  let normalizedContent = html;
+  const promoted = [];
+
+  uniqueKeys.forEach((key) => {
+    const tmpPath = path.join(contentTmpDir, key);
+    const finalPath = path.join(contentDir, key);
+    if (fs.existsSync(tmpPath)) {
+      fs.renameSync(tmpPath, finalPath);
+      promoted.push(key);
+    }
+    const tmpUrl = `/uploads/articles/content/tmp/${key}`;
+    const finalUrl = `/uploads/articles/content/${key}`;
+    normalizedContent = normalizedContent.replace(new RegExp(escapeRegExp(tmpUrl), "g"), finalUrl);
+  });
+
+  return { normalizedContent, promoted };
+};
+
+// 定期删除过期的临时正文图片
+const cleanupStaleTempContentImages = () => {
+  ensureDir(contentTmpDir);
+  const now = Date.now();
+  fs.readdir(contentTmpDir, (err, files = []) => {
+    if (err) {
+      console.error("Failed to read temp content dir:", err);
+      return;
+    }
+    files.forEach((file) => {
+      const fullPath = path.join(contentTmpDir, file);
+      fs.stat(fullPath, (statErr, stats) => {
+        if (statErr) return;
+        if (now - stats.mtimeMs > TEMP_IMAGE_TTL_MS) {
+          fs.unlink(fullPath, () => {});
+        }
+      });
+    });
+  });
+};
+
+cleanupStaleTempContentImages();
+setInterval(cleanupStaleTempContentImages, CLEAN_INTERVAL_MS);
+
 const articleController = {
   // 获取所有已发布的文章列表
   async getAllPublishedArticles(req, res) {
     try {
       const { topTag, subTag, year, month, page, limit } = req.query;
 
-      // 组合筛选条件
       const filters = {};
-      if (subTag) filters.tag = subTag; // 优先使用子标签筛选
+      if (subTag) filters.tag = subTag;
       else if (topTag) filters.tag = topTag;
       if (year) filters.year = parseInt(year, 10);
       if (month) filters.month = parseInt(month, 10);
 
-      // 解析分页参数
       const pageNum = parseInt(page, 10) || 1;
       const limitNum = parseInt(limit, 10) || 10;
 
@@ -35,14 +106,12 @@ const articleController = {
     }
   },
 
-  // 获取单篇已发布的文章详情
   async getPublishedArticleById(req, res) {
     try {
-      const { id } = req.params; // 从 URL 中获取文章 ID
+      const { id } = req.params;
       const article = await articleModel.findPublishedById(id);
 
       if (!article) {
-        // 如果模型没有返回文章，说明文章不存在或未发布
         return res.status(404).json({ error: "Article not found" });
       }
 
@@ -53,7 +122,6 @@ const articleController = {
     }
   },
 
-  // (后台管理) 获取所有文章列表
   async getAllArticlesAdmin(req, res) {
     try {
       const { search, page, limit } = req.query;
@@ -69,12 +137,38 @@ const articleController = {
     }
   },
 
-  // (后台管理) 创建一篇新文章
+  async uploadContentImage(req, res) {
+    try {
+      if (!req.file) return res.status(400).json({ error: "未收到图片文件" });
+
+      const outputDir = contentTmpDir;
+      fs.mkdirSync(outputDir, { recursive: true });
+
+      const base = path.basename(req.file.filename, path.extname(req.file.filename));
+      const outputName = `${base}-body.webp`;
+      const outputPath = path.join(outputDir, outputName);
+
+      await sharp(req.file.path)
+        .resize({ width: 1920, withoutEnlargement: true })
+        .webp({ quality: 85 })
+        .toFile(outputPath);
+
+      fs.unlink(req.file.path, () => {});
+      res.status(201).json({
+        url: `/uploads/articles/content/tmp/${outputName}`,
+        key: outputName,
+        isTemp: true,
+      });
+    } catch (error) {
+      console.error("uploadContentImage error:", error);
+      res.status(500).json({ error: "图片上传失败" });
+    }
+  },
+
   async createArticle(req, res) {
     try {
-      const { title, content, status, tag_ids } = req.body;
+      const { title, content, status, tag_ids, content_image_keys } = req.body;
 
-      // 基本检验
       if (!title || !content || !status) {
         return res.status(400).json({ error: "标题、内容和状态是必填项" });
       }
@@ -82,33 +176,18 @@ const articleController = {
         return res.status(400).json({ error: "无效的状态值" });
       }
 
-      // 解析 tag_ids：前端以 JSON 字符串传上来
-      let tagIdsArray = [];
-      if (tag_ids) {
-        try {
-          tagIdsArray = JSON.parse(tag_ids);
-          if (!Array.isArray(tagIdsArray)) {
-            tagIdsArray = [];
-          }
-        } catch (e) {
-          tagIdsArray = [];
-        }
-      }
+      const tagIdsArray = normalizeArrayInput(tag_ids);
+      const contentImageKeys = normalizeArrayInput(content_image_keys);
+      const { normalizedContent } = promoteTempContentImages(content, contentImageKeys);
 
-      // 从中间件注入的 req.user 中获取作者ID
       const author_id = req.user.id;
+      const summary = stripHtml(normalizedContent).result.substring(0, 200);
 
-      // 生成摘要
-      const summary = stripHtml(content).result.substring(0, 200);
-
-      // 处理头图文件
       let header_image_url = null;
       let thumbnail_url = null;
 
       const file = req.file;
       if (file) {
-        // 根目录 /uploads/articles
-        const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
         const headerDir = path.join(uploadsRoot, "headers");
         const thumbDir = path.join(uploadsRoot, "thumbnails");
         fs.mkdirSync(headerDir, { recursive: true });
@@ -123,33 +202,25 @@ const articleController = {
         const headerFilePath = path.join(headerDir, headerFilename);
         const thumbFilePath = path.join(thumbDir, thumbFilename);
 
-        // 生成头图（大图）
         await sharp(file.path)
           .resize({
             width: 2560,
-            withoutEnlargement: true, // 如果原图小于最大尺寸，则保持原样，不强制拉大
+            withoutEnlargement: true,
           })
           .webp({ quality: 80 })
           .toFile(headerFilePath);
 
-        // 生成缩略图
-        await sharp(file.path)
-          .resize({ width: 400 }) // 缩略图宽度
-          .webp({ quality: 80 })
-          .toFile(thumbFilePath);
+        await sharp(file.path).resize({ width: 400 }).webp({ quality: 80 }).toFile(thumbFilePath);
 
-        // 原始文件可以删掉（可选）
         fs.unlink(file.path, () => {});
 
-        // 对前端暴露的 URL（注意：走 /uploads 静态目录）
         header_image_url = `/uploads/articles/headers/${headerFilename}`;
         thumbnail_url = `/uploads/articles/thumbnails/${thumbFilename}`;
       }
 
-      // 准备要存入数据库的数据
       const articleData = {
         title,
-        content,
+        content: normalizedContent,
         summary,
         thumbnail_url,
         header_image_url,
@@ -159,7 +230,6 @@ const articleController = {
         tag_ids: tagIdsArray,
       };
 
-      // 创建文章
       const newArticle = await articleModel.create(articleData);
 
       res.status(201).json({ message: "文章创建成功", article: newArticle });
@@ -169,7 +239,6 @@ const articleController = {
     }
   },
 
-  // (后台管理) 获取单篇文章详情
   async getArticleByIdAdmin(req, res) {
     try {
       const { id } = req.params;
@@ -186,41 +255,29 @@ const articleController = {
     }
   },
 
-  // (后台管理) 更新一篇文章
   async updateArticle(req, res) {
     try {
       const { id } = req.params;
-      const { title, content, status } = req.body;
+      const { title, content, status, content_image_keys } = req.body;
 
       if (!title || !content || !status) {
         return res.status(400).json({ error: "标题、内容和状态是必填项" });
       }
 
-      // 解析 tag_ids（FormData 提交会是字符串）
-      let tagIdsArray = [];
-      if (req.body.tag_ids) {
-        try {
-          tagIdsArray = Array.isArray(req.body.tag_ids) ? req.body.tag_ids : JSON.parse(req.body.tag_ids);
-          if (!Array.isArray(tagIdsArray)) tagIdsArray = [];
-        } catch (e) {
-          tagIdsArray = [];
-        }
-      }
+      let tagIdsArray = normalizeArrayInput(req.body.tag_ids);
+      const contentImageKeys = normalizeArrayInput(content_image_keys);
 
-      // 查询现有文章，便于保留旧值
       const existingArticle = await articleModel.findByIdAdmin(id);
       if (!existingArticle) {
         return res.status(404).json({ error: "找不到要更新的文章" });
       }
 
-      // 基础字段
-      const summary = stripHtml(content).result.substring(0, 200);
+      const { normalizedContent } = promoteTempContentImages(content, contentImageKeys);
+      const summary = stripHtml(normalizedContent).result.substring(0, 200);
       let header_image_url = req.body.header_image_url || existingArticle.header_image_url || null;
       let thumbnail_url = req.body.thumbnail_url || existingArticle.thumbnail_url || null;
 
-      // 如有新上传的头图，生成大图与缩略图
       if (req.file) {
-        const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
         const headerDir = path.join(uploadsRoot, "headers");
         const thumbDir = path.join(uploadsRoot, "thumbnails");
         fs.mkdirSync(headerDir, { recursive: true });
@@ -250,7 +307,7 @@ const articleController = {
 
       const articleData = {
         title,
-        content,
+        content: normalizedContent,
         summary,
         thumbnail_url,
         header_image_url,
@@ -268,7 +325,6 @@ const articleController = {
     }
   },
 
-  // (后台管理) 删除一篇文章
   async deleteArticle(req, res) {
     try {
       const { id } = req.params;
@@ -278,7 +334,6 @@ const articleController = {
         return res.status(404).json({ error: "找不到要删除的文章" });
       }
 
-      // HTTP 204 No Content 是删除成功的标准响应，表示服务器成功处理请求但没有内容返回
       res.status(204).send();
     } catch (error) {
       console.error("Error in articleController.deleteArticle:", error);
