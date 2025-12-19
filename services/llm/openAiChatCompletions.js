@@ -17,6 +17,7 @@ function buildUrl(baseUrl, path) {
   return new URL(normalizedPath, normalizedBaseUrl).toString();
 }
 
+// Grok-4 不支持 presencePenalty、frequencyPenalty 这类惩罚参数
 const PROVIDER_PARAMETER_BLOCKLIST = {
   grok: new Set(["presence_penalty", "frequency_penalty"]),
 };
