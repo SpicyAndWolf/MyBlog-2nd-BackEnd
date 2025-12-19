@@ -6,7 +6,7 @@ const chatConfig = {
   historyLimit: readIntEnv("CHAT_HISTORY_LIMIT", 48),
   defaultProviderId: readStringEnv("CHAT_DEFAULT_PROVIDER", "deepseek"),
   defaultModelByProvider: {
-    grok: readStringEnv("GROK_DEFAULT_MODEL", "grok-4-latest"),
+    grok: readStringEnv("GROK_DEFAULT_MODEL", "grok-4"),
     deepseek: readStringEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-chat"),
   },
 };
