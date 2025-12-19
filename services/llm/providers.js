@@ -1,7 +1,7 @@
 const PROVIDER_DEFINITIONS = {
   grok: {
     name: "Grok (xAI)",
-    defaultBaseUrl: "https://api.x.ai",
+    defaultBaseUrl: "https://api.x.ai/v1",
     apiKeyEnv: ["XAI_API_KEY", "GROK_API_KEY"],
     baseUrlEnv: ["XAI_BASE_URL", "GROK_BASE_URL"],
   },

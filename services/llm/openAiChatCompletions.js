@@ -1,6 +1,22 @@
 const { getProviderConfig } = require("./providers");
 const { llmConfig } = require("../../config");
 
+function normalizeBaseUrl(baseUrl) {
+  const url = new URL(String(baseUrl || "").trim());
+  url.hash = "";
+  url.search = "";
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return url.toString();
+}
+
+function buildUrl(baseUrl, path) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const normalizedPath = String(path || "")
+    .trim()
+    .replace(/^\/+/, "");
+  return new URL(normalizedPath, normalizedBaseUrl).toString();
+}
+
 function clampNumber(value, { min, max }) {
   if (!Number.isFinite(value)) return null;
   return Math.min(max, Math.max(min, value));
@@ -68,7 +84,7 @@ async function createChatCompletion({
   timeoutMs = llmConfig.timeoutMs,
 } = {}) {
   const provider = getProviderConfig(providerId);
-  const url = new URL("/chat/completions", provider.baseUrl).toString();
+  const url = buildUrl(provider.baseUrl, "chat/completions");
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
@@ -121,7 +137,7 @@ async function createChatCompletionStreamResponse({
   signal,
 } = {}) {
   const provider = getProviderConfig(providerId);
-  const url = new URL("/chat/completions", provider.baseUrl).toString();
+  const url = buildUrl(provider.baseUrl, "chat/completions");
 
   const response = await fetch(url, {
     method: "POST",
