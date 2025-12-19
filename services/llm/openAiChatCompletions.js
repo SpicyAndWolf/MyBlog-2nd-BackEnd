@@ -17,6 +17,17 @@ function buildUrl(baseUrl, path) {
   return new URL(normalizedPath, normalizedBaseUrl).toString();
 }
 
+const PROVIDER_PARAMETER_BLOCKLIST = {
+  grok: new Set(["presence_penalty", "frequency_penalty"]),
+};
+
+function isBodyParamAllowed(providerId, paramName) {
+  const normalizedProviderId = String(providerId || "").trim();
+  const blocked = PROVIDER_PARAMETER_BLOCKLIST[normalizedProviderId];
+  if (!blocked) return true;
+  return !blocked.has(paramName);
+}
+
 function clampNumber(value, { min, max }) {
   if (!Number.isFinite(value)) return null;
   return Math.min(max, Math.max(min, value));
@@ -50,7 +61,17 @@ function pickErrorMessage({ status, json, text }) {
   return `Upstream LLM request failed (HTTP ${status})`;
 }
 
-function buildBody({ model, messages, temperature, topP, maxTokens, presencePenalty, frequencyPenalty, stream }) {
+function buildBody({
+  providerId,
+  model,
+  messages,
+  temperature,
+  topP,
+  maxTokens,
+  presencePenalty,
+  frequencyPenalty,
+  stream,
+}) {
   const body = {
     model,
     messages,
@@ -63,11 +84,15 @@ function buildBody({ model, messages, temperature, topP, maxTokens, presencePena
   const normalizedPresencePenalty = clampNumber(presencePenalty, { min: -2, max: 2 });
   const normalizedFrequencyPenalty = clampNumber(frequencyPenalty, { min: -2, max: 2 });
 
-  if (normalizedTemperature !== null) body.temperature = normalizedTemperature;
-  if (normalizedTopP !== null) body.top_p = normalizedTopP;
-  if (normalizedMaxTokens !== null) body.max_tokens = normalizedMaxTokens;
-  if (normalizedPresencePenalty !== null) body.presence_penalty = normalizedPresencePenalty;
-  if (normalizedFrequencyPenalty !== null) body.frequency_penalty = normalizedFrequencyPenalty;
+  if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature"))
+    body.temperature = normalizedTemperature;
+  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p")) body.top_p = normalizedTopP;
+  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "max_tokens"))
+    body.max_tokens = normalizedMaxTokens;
+  if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presence_penalty"))
+    body.presence_penalty = normalizedPresencePenalty;
+  if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequency_penalty"))
+    body.frequency_penalty = normalizedFrequencyPenalty;
 
   return body;
 }
@@ -98,6 +123,7 @@ async function createChatCompletion({
       },
       body: JSON.stringify(
         buildBody({
+          providerId: provider.id,
           model,
           messages,
           temperature,
@@ -147,6 +173,7 @@ async function createChatCompletionStreamResponse({
     },
     body: JSON.stringify(
       buildBody({
+        providerId: provider.id,
         model,
         messages,
         temperature,
