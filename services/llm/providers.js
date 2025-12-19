@@ -21,6 +21,11 @@ function firstEnvValue(keys) {
   return "";
 }
 
+function isSupportedProvider(providerId) {
+  const normalizedId = String(providerId || "").trim();
+  return Boolean(normalizedId && PROVIDER_DEFINITIONS[normalizedId]);
+}
+
 function getProviderConfig(providerId) {
   const normalizedId = String(providerId || "").trim();
   const definition = PROVIDER_DEFINITIONS[normalizedId];
@@ -38,5 +43,6 @@ function getProviderConfig(providerId) {
 }
 
 module.exports = {
+  isSupportedProvider,
   getProviderConfig,
 };

@@ -4,12 +4,13 @@ const { stripHtml } = require("string-strip-html");
 const sharp = require("sharp");
 const path = require("path");
 const fs = require("fs");
+const { articleConfig } = require("../config");
 
 const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
 const contentDir = path.join(uploadsRoot, "content");
 const contentTmpDir = path.join(contentDir, "tmp");
-const TEMP_IMAGE_TTL_MS = 24 * 60 * 60 * 1000; // 24h 过期
-const CLEAN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 每 6h 清理
+const TEMP_IMAGE_TTL_MS = articleConfig.tempImageTtlMs; // 24h 过期（可用 env 覆盖）
+const CLEAN_INTERVAL_MS = articleConfig.cleanupIntervalMs; // 每 6h 清理（可用 env 覆盖）
 
 // 目录创建与输入标准化
 const ensureDir = (dir) => fs.mkdirSync(dir, { recursive: true });

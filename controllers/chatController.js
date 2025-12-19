@@ -1,5 +1,7 @@
 const chatModel = require("@models/chatModel");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
+const { chatConfig } = require("../config");
+const { isSupportedProvider } = require("../services/llm/providers");
 const {
   createChatCompletion,
   createChatCompletionStreamResponse,
@@ -164,8 +166,18 @@ const chatController = {
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
       const effectiveSettings = mergeSettings(session.settings, incomingSettings);
 
-      const providerId = effectiveSettings.providerId;
-      const modelId = effectiveSettings.modelId;
+      const defaultProviderId = chatConfig.defaultProviderId;
+      const candidateProviderId = effectiveSettings.providerId || defaultProviderId;
+      if (!isSupportedProvider(candidateProviderId)) {
+        return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
+      }
+      const providerId = String(candidateProviderId).trim();
+
+      const defaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      if (!defaultModelId) {
+        return res.status(500).json({ error: `Missing default model config for provider: ${providerId}` });
+      }
+      const modelId = effectiveSettings.modelId || defaultModelId;
 
       const shouldStream = Boolean(effectiveSettings.stream);
 
@@ -181,7 +193,7 @@ const chatController = {
 
       updatedSession = await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings);
 
-      const history = await chatModel.listRecentMessages(userId, sessionId, 48);
+      const history = await chatModel.listRecentMessages(userId, sessionId, chatConfig.historyLimit);
       if (history === null) return res.status(404).json({ error: "Session not found" });
 
       const messages = buildOpenAiChatMessages({

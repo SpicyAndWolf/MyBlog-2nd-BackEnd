@@ -1,21 +1,13 @@
-const DEFAULT_MAX_CONTEXT_MESSAGES = 500;
-const DEFAULT_MAX_CONTEXT_CHARS = 96000;
+const { chatConfig } = require("../../config");
 
-function clampNumber(value, { min, max }) {
-  if (!Number.isFinite(value)) return null;
-  return Math.min(max, Math.max(min, value));
-}
+const DEFAULT_MAX_CONTEXT_MESSAGES = chatConfig.maxContextMessages;
+const DEFAULT_MAX_CONTEXT_CHARS = chatConfig.maxContextChars;
 
 function normalizeText(value) {
   return String(value || "");
 }
 
-function buildOpenAiChatMessages({
-  systemPrompt,
-  historyMessages,
-  maxContextMessages = DEFAULT_MAX_CONTEXT_MESSAGES,
-  maxContextChars = DEFAULT_MAX_CONTEXT_CHARS,
-} = {}) {
+function buildOpenAiChatMessages({ systemPrompt, historyMessages } = {}) {
   const output = [];
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
@@ -23,8 +15,8 @@ function buildOpenAiChatMessages({
     output.push({ role: "system", content: normalizedSystemPrompt });
   }
 
-  const normalizedMaxMessages = clampNumber(maxContextMessages, { min: 1, max: 200 }) ?? DEFAULT_MAX_CONTEXT_MESSAGES;
-  const normalizedMaxChars = clampNumber(maxContextChars, { min: 1000, max: 200000 }) ?? DEFAULT_MAX_CONTEXT_CHARS;
+  const normalizedMaxMessages = DEFAULT_MAX_CONTEXT_MESSAGES;
+  const normalizedMaxChars = DEFAULT_MAX_CONTEXT_CHARS;
 
   const history = Array.isArray(historyMessages) ? historyMessages : [];
 

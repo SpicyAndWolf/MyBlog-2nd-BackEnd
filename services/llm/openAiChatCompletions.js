@@ -1,4 +1,5 @@
 const { getProviderConfig } = require("./providers");
+const { llmConfig } = require("../../config");
 
 function clampNumber(value, { min, max }) {
   if (!Number.isFinite(value)) return null;
@@ -64,7 +65,7 @@ async function createChatCompletion({
   maxTokens,
   presencePenalty,
   frequencyPenalty,
-  timeoutMs = 60000,
+  timeoutMs = llmConfig.timeoutMs,
 } = {}) {
   const provider = getProviderConfig(providerId);
   const url = new URL("/chat/completions", provider.baseUrl).toString();
@@ -198,4 +199,3 @@ module.exports = {
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
 };
-
