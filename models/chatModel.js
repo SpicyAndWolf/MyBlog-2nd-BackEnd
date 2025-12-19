@@ -1,0 +1,155 @@
+const db = require("../db");
+
+const DEFAULT_SESSION_TITLE = "新对话";
+
+function normalizeTitle(rawTitle) {
+  const normalized = String(rawTitle || "").trim();
+  return normalized || DEFAULT_SESSION_TITLE;
+}
+
+function normalizeSettings(rawSettings) {
+  if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) return {};
+  return rawSettings;
+}
+
+const chatModel = {
+  async listSessions(userId) {
+    const query = `
+      SELECT id, title, settings, created_at, updated_at
+      FROM chat_sessions
+      WHERE user_id = $1
+      ORDER BY updated_at DESC, id DESC
+    `;
+    const { rows } = await db.query(query, [userId]);
+    return rows;
+  },
+
+  async getSession(userId, sessionId) {
+    const query = `
+      SELECT id, title, settings, created_at, updated_at
+      FROM chat_sessions
+      WHERE id = $1 AND user_id = $2
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async createSession(userId, { title, settings } = {}) {
+    const normalizedTitle = normalizeTitle(title);
+    const normalizedSettings = normalizeSettings(settings);
+
+    const query = `
+      INSERT INTO chat_sessions (user_id, title, settings)
+      VALUES ($1, $2, $3)
+      RETURNING id, title, settings, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [userId, normalizedTitle, normalizedSettings]);
+    return rows[0];
+  },
+
+  async updateSessionTitle(userId, sessionId, title) {
+    const normalizedTitle = String(title || "").trim();
+    if (!normalizedTitle) return null;
+
+    const query = `
+      UPDATE chat_sessions
+      SET title = $1, updated_at = NOW()
+      WHERE id = $2 AND user_id = $3
+      RETURNING id, title, settings, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [normalizedTitle, sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async updateSessionSettings(userId, sessionId, settings) {
+    const normalizedSettings = normalizeSettings(settings);
+    const query = `
+      UPDATE chat_sessions
+      SET settings = $1, updated_at = NOW()
+      WHERE id = $2 AND user_id = $3
+      RETURNING id, title, settings, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [normalizedSettings, sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async touchSession(userId, sessionId) {
+    const query = `
+      UPDATE chat_sessions
+      SET updated_at = NOW()
+      WHERE id = $1 AND user_id = $2
+      RETURNING id, title, settings, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async deleteSession(userId, sessionId) {
+    const query = `
+      DELETE FROM chat_sessions
+      WHERE id = $1 AND user_id = $2
+    `;
+    const { rowCount } = await db.query(query, [sessionId, userId]);
+    return rowCount > 0;
+  },
+
+  async listMessages(userId, sessionId) {
+    const session = await this.getSession(userId, sessionId);
+    if (!session) return null;
+
+    const query = `
+      SELECT id, role, content, created_at
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2
+      ORDER BY id ASC
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows;
+  },
+
+  async listRecentMessages(userId, sessionId, limit = 20) {
+    const session = await this.getSession(userId, sessionId);
+    if (!session) return null;
+
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
+
+    const query = `
+      SELECT id, role, content, created_at
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2
+      ORDER BY id DESC
+      LIMIT $3
+    `;
+    const { rows } = await db.query(query, [sessionId, userId, normalizedLimit]);
+    return rows.reverse();
+  },
+
+  async createMessage(userId, sessionId, role, content) {
+    const normalizedRole = String(role || "").trim();
+    const normalizedContent = String(content || "").trim();
+    if (!normalizedRole) throw new Error("Role is required");
+    if (!normalizedContent) throw new Error("Content is required");
+
+    const query = `
+      INSERT INTO chat_messages (session_id, user_id, role, content)
+      SELECT s.id, $2, $3, $4
+      FROM chat_sessions s
+      WHERE s.id = $1 AND s.user_id = $2
+      RETURNING id, role, content, created_at
+    `;
+    const { rows } = await db.query(query, [sessionId, userId, normalizedRole, normalizedContent]);
+    return rows[0] || null;
+  },
+
+  async countMessages(userId, sessionId) {
+    const query = `
+      SELECT COUNT(*)::int AS count
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0]?.count || 0;
+  },
+};
+
+module.exports = chatModel;

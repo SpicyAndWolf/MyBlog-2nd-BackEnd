@@ -14,6 +14,7 @@ const articlesRouter = require("./routes/articles");
 const adminArticlesRouter = require("./routes/admin/articles");
 const authRouter = require("./routes/auth");
 const adminTagsRouter = require("./routes/admin/tags");
+const chatRouter = require("./routes/chat");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,6 +30,7 @@ app.use("/api/tags", tagsRouter);
 app.use("/api/admin/tags", adminTagsRouter);
 app.use("/api/articles", articlesRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/chat", chatRouter);
 
 // 管理后台API (所有这里的路由都需要认证)
 app.use("/api/admin/articles", adminArticlesRouter);
