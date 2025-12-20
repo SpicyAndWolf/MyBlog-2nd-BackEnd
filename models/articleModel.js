@@ -280,6 +280,33 @@ const articleModel = {
     const { rowCount } = await db.query(query, [id]);
     return rowCount;
   },
+
+  // Check whether an uploaded URL is still referenced by any article (header/thumbnail/content).
+  // excludeArticleId: used during updates to exclude the current article from the check.
+  async isUploadUrlReferenced(url, excludeArticleId = null) {
+    if (!url) return false;
+
+    const likePattern = `%${url}%`;
+
+    if (excludeArticleId !== null && excludeArticleId !== undefined && String(excludeArticleId).trim() !== "") {
+      const query = `
+        SELECT COUNT(*)::int AS count
+        FROM articles
+        WHERE id <> $3
+          AND (header_image_url = $1 OR thumbnail_url = $1 OR content LIKE $2);
+      `;
+      const { rows } = await db.query(query, [url, likePattern, excludeArticleId]);
+      return (rows[0]?.count || 0) > 0;
+    }
+
+    const query = `
+      SELECT COUNT(*)::int AS count
+      FROM articles
+      WHERE header_image_url = $1 OR thumbnail_url = $1 OR content LIKE $2;
+    `;
+    const { rows } = await db.query(query, [url, likePattern]);
+    return (rows[0]?.count || 0) > 0;
+  },
 };
 
 module.exports = articleModel;

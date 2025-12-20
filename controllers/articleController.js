@@ -42,6 +42,90 @@ const safeUnlink = async (filePath) => {
   }
 };
 
+const LOCAL_UPLOAD_MAPPINGS = [
+  { prefix: "/uploads/articles/content/tmp/", dir: contentTmpDir },
+  { prefix: "/uploads/articles/content/", dir: contentDir },
+  { prefix: "/uploads/articles/headers/", dir: headerDir },
+  { prefix: "/uploads/articles/thumbnails/", dir: thumbDir },
+];
+
+const resolveLocalUploadFilePathFromUrl = (url) => {
+  if (!url || typeof url !== "string") return null;
+
+  for (const mapping of LOCAL_UPLOAD_MAPPINGS) {
+    const idx = url.indexOf(mapping.prefix);
+    if (idx === -1) continue;
+
+    const rawTail = url.slice(idx + mapping.prefix.length);
+    const cleanTail = rawTail.split(/[?#]/)[0];
+    const filename = path.basename(cleanTail);
+    if (!filename) return null;
+
+    return path.join(mapping.dir, filename);
+  }
+
+  return null;
+};
+
+const collectUploadFilenamesFromText = (text, prefix) => {
+  const results = new Set();
+  if (!text || typeof text !== "string") return results;
+
+  const regex = new RegExp(`${escapeRegExp(prefix)}([^"'\\s)<>]+)`, "g");
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const raw = (match[1] || "").split(/[?#]/)[0];
+    const filename = path.basename(raw);
+    if (filename) results.add(filename);
+  }
+
+  return results;
+};
+
+const getArticleImageRefs = ({ content = "", header_image_url = null, thumbnail_url = null } = {}) => {
+  const tmpFilenames = collectUploadFilenamesFromText(content, "/uploads/articles/content/tmp/");
+
+  // Match "/uploads/articles/content/<file>" but exclude the tmp subdir to avoid ambiguity.
+  const contentFilenames = new Set();
+  if (content && typeof content === "string") {
+    const regex = new RegExp(`${escapeRegExp("/uploads/articles/content/")}(?!tmp/)([^\"'\\s)<>]+)`, "g");
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      const raw = (match[1] || "").split(/[?#]/)[0];
+      const filename = path.basename(raw);
+      if (filename) contentFilenames.add(filename);
+    }
+  }
+
+  return {
+    headerUrl: header_image_url,
+    thumbnailUrl: thumbnail_url,
+    contentFilenames,
+    tmpFilenames,
+  };
+};
+
+const cleanupUploadUrlsIfUnreferenced = async (urls = [], { excludeArticleId = null } = {}) => {
+  const uniqueUrls = Array.from(new Set((Array.isArray(urls) ? urls : []).filter(Boolean)));
+  if (!uniqueUrls.length) return;
+
+  await Promise.allSettled(
+    uniqueUrls.map(async (url) => {
+      try {
+        const referenced = await articleModel.isUploadUrlReferenced(url, excludeArticleId);
+        if (referenced) return;
+
+        const filePath = resolveLocalUploadFilePathFromUrl(url);
+        if (!filePath) return;
+
+        await safeUnlink(filePath);
+      } catch {
+        // best-effort cleanup
+      }
+    })
+  );
+};
+
 const processHeaderAndThumbnail = async (file) => {
   const ext = ".webp";
   const base = path.basename(file.filename, path.extname(file.filename));
@@ -77,8 +161,6 @@ const processHeaderAndThumbnail = async (file) => {
 
 // 将正文里的临时图片移动到正式目录，并替换正文链接
 const promoteTempContentImages = (html = "", rawKeys = []) => {
-  console.log("promoteTempContentImages");
-  console.log(rawKeys);
   const uniqueKeys = Array.from(
     new Set((Array.isArray(rawKeys) ? rawKeys : []).filter(Boolean).map((k) => path.basename(k)))
   );
@@ -297,7 +379,8 @@ const articleController = {
         return res.status(404).json({ error: "找不到要更新的文章" });
       }
 
-      const { normalizedContent } = promoteTempContentImages(content, contentImageKeys);
+      const existingRefs = getArticleImageRefs(existingArticle);
+      const { normalizedContent, promoted } = promoteTempContentImages(content, contentImageKeys);
       const summary = stripHtml(normalizedContent).result.substring(0, 200);
       let header_image_url = req.body.header_image_url || existingArticle.header_image_url || null;
       let thumbnail_url = req.body.thumbnail_url || existingArticle.thumbnail_url || null;
@@ -307,6 +390,32 @@ const articleController = {
         header_image_url = processed.headerUrl;
         thumbnail_url = processed.thumbnailUrl;
       }
+
+      const nextRefs = getArticleImageRefs({ content: normalizedContent, header_image_url, thumbnail_url });
+      const urlsToCleanup = [];
+
+      if (existingRefs.headerUrl && existingRefs.headerUrl !== header_image_url) {
+        urlsToCleanup.push(existingRefs.headerUrl);
+      }
+      if (existingRefs.thumbnailUrl && existingRefs.thumbnailUrl !== thumbnail_url) {
+        urlsToCleanup.push(existingRefs.thumbnailUrl);
+      }
+
+      existingRefs.contentFilenames.forEach((filename) => {
+        if (!nextRefs.contentFilenames.has(filename)) {
+          urlsToCleanup.push(`/uploads/articles/content/${filename}`);
+        }
+      });
+
+      existingRefs.tmpFilenames.forEach((filename) => {
+        if (!nextRefs.tmpFilenames.has(filename)) {
+          urlsToCleanup.push(`/uploads/articles/content/tmp/${filename}`);
+        }
+      });
+
+      const promotedOrphans = (Array.isArray(promoted) ? promoted : [])
+        .filter((filename) => filename && !nextRefs.contentFilenames.has(filename))
+        .map((filename) => `/uploads/articles/content/${filename}`);
 
       const articleData = {
         title,
@@ -321,6 +430,7 @@ const articleController = {
       };
 
       const updatedArticle = await articleModel.update(id, articleData);
+      await cleanupUploadUrlsIfUnreferenced([...urlsToCleanup, ...promotedOrphans], { excludeArticleId: id });
       res.status(200).json({ message: "文章更新成功", article: updatedArticle });
     } catch (error) {
       console.error("Error in articleController.updateArticle:", error);
@@ -331,10 +441,21 @@ const articleController = {
   async deleteArticle(req, res) {
     try {
       const { id } = req.params;
+      const existingArticle = await articleModel.findByIdAdmin(id);
+      const existingRefs = existingArticle ? getArticleImageRefs(existingArticle) : null;
       const deletedCount = await articleModel.remove(id);
 
       if (deletedCount === 0) {
         return res.status(404).json({ error: "找不到要删除的文章" });
+      }
+
+      if (existingRefs) {
+        const urlsToCleanup = [];
+        if (existingRefs.headerUrl) urlsToCleanup.push(existingRefs.headerUrl);
+        if (existingRefs.thumbnailUrl) urlsToCleanup.push(existingRefs.thumbnailUrl);
+        existingRefs.contentFilenames.forEach((filename) => urlsToCleanup.push(`/uploads/articles/content/${filename}`));
+        existingRefs.tmpFilenames.forEach((filename) => urlsToCleanup.push(`/uploads/articles/content/tmp/${filename}`));
+        await cleanupUploadUrlsIfUnreferenced(urlsToCleanup);
       }
 
       res.status(204).send();
