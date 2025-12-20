@@ -9,6 +9,8 @@ const { articleConfig } = require("../config");
 const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
 const contentDir = path.join(uploadsRoot, "content");
 const contentTmpDir = path.join(contentDir, "tmp");
+const headerDir = path.join(uploadsRoot, "headers");
+const thumbDir = path.join(uploadsRoot, "thumbnails");
 const TEMP_IMAGE_TTL_MS = articleConfig.tempImageTtlMs; // 24h 过期（可用 env 覆盖）
 const CLEAN_INTERVAL_MS = articleConfig.cleanupIntervalMs; // 每 6h 清理（可用 env 覆盖）
 
@@ -28,9 +30,55 @@ const normalizeArrayInput = (value) => {
 
 ensureDir(contentDir);
 ensureDir(contentTmpDir);
+ensureDir(headerDir);
+ensureDir(thumbDir);
+
+const safeUnlink = async (filePath) => {
+  if (!filePath) return;
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {
+    // ignore
+  }
+};
+
+const processHeaderAndThumbnail = async (file) => {
+  const ext = ".webp";
+  const base = path.basename(file.filename, path.extname(file.filename));
+  const headerFilename = `${base}-header${ext}`;
+  const thumbFilename = `${base}-thumb${ext}`;
+
+  const headerFilePath = path.join(headerDir, headerFilename);
+  const thumbFilePath = path.join(thumbDir, thumbFilename);
+
+  try {
+    await sharp(file.path)
+      .resize({
+        width: 2560,
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 80 })
+      .toFile(headerFilePath);
+
+    await sharp(file.path).resize({ width: 400 }).webp({ quality: 80 }).toFile(thumbFilePath);
+
+    return {
+      headerUrl: `/uploads/articles/headers/${headerFilename}`,
+      thumbnailUrl: `/uploads/articles/thumbnails/${thumbFilename}`,
+    };
+  } catch (error) {
+    await safeUnlink(headerFilePath);
+    await safeUnlink(thumbFilePath);
+    throw error;
+  } finally {
+    await safeUnlink(file.path);
+  }
+};
 
 // 将正文里的临时图片移动到正式目录，并替换正文链接
 const promoteTempContentImages = (html = "", rawKeys = []) => {
+  console.log("promoteTempContentImages");
+  console.log(rawKeys);
   const uniqueKeys = Array.from(
     new Set((Array.isArray(rawKeys) ? rawKeys : []).filter(Boolean).map((k) => path.basename(k)))
   );
@@ -190,34 +238,9 @@ const articleController = {
 
       const file = req.file;
       if (file) {
-        const headerDir = path.join(uploadsRoot, "headers");
-        const thumbDir = path.join(uploadsRoot, "thumbnails");
-        fs.mkdirSync(headerDir, { recursive: true });
-        fs.mkdirSync(thumbDir, { recursive: true });
-
-        const ext = path.extname(file.filename);
-        const base = path.basename(file.filename, ext);
-
-        const headerFilename = `${base}-header${ext}`;
-        const thumbFilename = `${base}-thumb${ext}`;
-
-        const headerFilePath = path.join(headerDir, headerFilename);
-        const thumbFilePath = path.join(thumbDir, thumbFilename);
-
-        await sharp(file.path)
-          .resize({
-            width: 2560,
-            withoutEnlargement: true,
-          })
-          .webp({ quality: 80 })
-          .toFile(headerFilePath);
-
-        await sharp(file.path).resize({ width: 400 }).webp({ quality: 80 }).toFile(thumbFilePath);
-
-        fs.unlink(file.path, () => {});
-
-        header_image_url = `/uploads/articles/headers/${headerFilename}`;
-        thumbnail_url = `/uploads/articles/thumbnails/${thumbFilename}`;
+        const processed = await processHeaderAndThumbnail(file);
+        header_image_url = processed.headerUrl;
+        thumbnail_url = processed.thumbnailUrl;
       }
 
       const articleData = {
@@ -280,31 +303,9 @@ const articleController = {
       let thumbnail_url = req.body.thumbnail_url || existingArticle.thumbnail_url || null;
 
       if (req.file) {
-        const headerDir = path.join(uploadsRoot, "headers");
-        const thumbDir = path.join(uploadsRoot, "thumbnails");
-        fs.mkdirSync(headerDir, { recursive: true });
-        fs.mkdirSync(thumbDir, { recursive: true });
-
-        const ext = path.extname(req.file.filename);
-        const base = path.basename(req.file.filename, ext);
-
-        const headerFilename = `${base}-header${ext}`;
-        const thumbFilename = `${base}-thumb${ext}`;
-
-        const headerFilePath = path.join(headerDir, headerFilename);
-        const thumbFilePath = path.join(thumbDir, thumbFilename);
-
-        await sharp(req.file.path)
-          .resize({ width: 2560, withoutEnlargement: true })
-          .webp({ quality: 80 })
-          .toFile(headerFilePath);
-
-        await sharp(req.file.path).resize({ width: 400 }).webp({ quality: 80 }).toFile(thumbFilePath);
-
-        fs.unlink(req.file.path, () => {});
-
-        header_image_url = `/uploads/articles/headers/${headerFilename}`;
-        thumbnail_url = `/uploads/articles/thumbnails/${thumbFilename}`;
+        const processed = await processHeaderAndThumbnail(req.file);
+        header_image_url = processed.headerUrl;
+        thumbnail_url = processed.thumbnailUrl;
       }
 
       const articleData = {
