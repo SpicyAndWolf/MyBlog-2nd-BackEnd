@@ -107,6 +107,28 @@ const chatModel = {
     return rows;
   },
 
+  async getMessage(userId, sessionId, messageId) {
+    const query = `
+      SELECT id, role, content, created_at
+      FROM chat_messages
+      WHERE id = $1 AND session_id = $2 AND user_id = $3
+    `;
+    const { rows } = await db.query(query, [messageId, sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async getFirstMessageId(userId, sessionId) {
+    const query = `
+      SELECT id
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2
+      ORDER BY id ASC
+      LIMIT 1
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0]?.id ?? null;
+  },
+
   async listRecentMessages(userId, sessionId, limit = 20) {
     const session = await this.getSession(userId, sessionId);
     if (!session) return null;
@@ -121,6 +143,23 @@ const chatModel = {
       LIMIT $3
     `;
     const { rows } = await db.query(query, [sessionId, userId, normalizedLimit]);
+    return rows.reverse();
+  },
+
+  async listRecentMessagesUpTo(userId, sessionId, messageId, limit = 20) {
+    const session = await this.getSession(userId, sessionId);
+    if (!session) return null;
+
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
+
+    const query = `
+      SELECT id, role, content, created_at
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2 AND id <= $3
+      ORDER BY id DESC
+      LIMIT $4
+    `;
+    const { rows } = await db.query(query, [sessionId, userId, messageId, normalizedLimit]);
     return rows.reverse();
   },
 
@@ -139,6 +178,29 @@ const chatModel = {
     `;
     const { rows } = await db.query(query, [sessionId, userId, normalizedRole, normalizedContent]);
     return rows[0] || null;
+  },
+
+  async updateMessageContent(userId, sessionId, messageId, content) {
+    const normalizedContent = String(content || "").trim();
+    if (!normalizedContent) throw new Error("Content is required");
+
+    const query = `
+      UPDATE chat_messages
+      SET content = $1
+      WHERE id = $2 AND session_id = $3 AND user_id = $4
+      RETURNING id, role, content, created_at
+    `;
+    const { rows } = await db.query(query, [normalizedContent, messageId, sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async deleteMessagesAfter(userId, sessionId, messageId) {
+    const query = `
+      DELETE FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2 AND id > $3
+    `;
+    const { rowCount } = await db.query(query, [sessionId, userId, messageId]);
+    return rowCount || 0;
   },
 
   async countMessages(userId, sessionId) {

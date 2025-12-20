@@ -14,6 +14,12 @@ function parseSessionId(rawValue) {
   return asNumber;
 }
 
+function parseMessageId(rawValue) {
+  const asNumber = Number.parseInt(String(rawValue), 10);
+  if (!Number.isFinite(asNumber) || asNumber <= 0) return null;
+  return asNumber;
+}
+
 const DEFAULT_SESSION_TITLE = "新对话";
 
 function formatSessionTitleFromMessage(messageText) {
@@ -146,6 +152,169 @@ const chatController = {
     } catch (error) {
       console.error("Error in chatController.listMessages:", error);
       res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async editMessage(_req, res) {
+    const req = _req;
+
+    try {
+      const userId = req.user?.id;
+      const sessionId = parseSessionId(req.params.sessionId);
+      if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
+
+      const messageId = parseMessageId(req.params.messageId);
+      if (!messageId) return res.status(400).json({ error: "Invalid messageId" });
+
+      const content = String(req.body?.content || "").trim();
+      if (!content) return res.status(400).json({ error: "Content cannot be empty" });
+
+      const regenerate = Boolean(req.body?.regenerate);
+      const truncate = regenerate ? true : Boolean(req.body?.truncate);
+
+      const session = await chatModel.getSession(userId, sessionId);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+
+      const message = await chatModel.getMessage(userId, sessionId, messageId);
+      if (!message) return res.status(404).json({ error: "Message not found" });
+      if (message.role !== "user") return res.status(400).json({ error: "Only user messages can be edited" });
+
+      if (truncate) {
+        await chatModel.deleteMessagesAfter(userId, sessionId, messageId);
+      }
+
+      const updatedUserMessage = await chatModel.updateMessageContent(userId, sessionId, messageId, content);
+      if (!updatedUserMessage) return res.status(404).json({ error: "Message not found" });
+
+      let updatedSession = session;
+
+      const firstMessageId = await chatModel.getFirstMessageId(userId, sessionId);
+      if (session.title === DEFAULT_SESSION_TITLE && firstMessageId === messageId) {
+        const nextTitle = formatSessionTitleFromMessage(content);
+        updatedSession = (await chatModel.updateSessionTitle(userId, sessionId, nextTitle)) || updatedSession;
+      }
+
+      const incomingSettings = sanitizeChatSettings(req.body?.settings);
+      const effectiveSettings = mergeSettings(session.settings, incomingSettings);
+      updatedSession = (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings)) || updatedSession;
+
+      if (!regenerate) {
+        updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;
+        return res.status(200).json({ session: updatedSession, user_message: updatedUserMessage });
+      }
+
+      const defaultProviderId = chatConfig.defaultProviderId;
+      const candidateProviderId = effectiveSettings.providerId || defaultProviderId;
+      if (!isSupportedProvider(candidateProviderId)) {
+        return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
+      }
+      const providerId = String(candidateProviderId).trim();
+
+      const defaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      if (!defaultModelId) {
+        return res.status(500).json({ error: `Missing default model config for provider: ${providerId}` });
+      }
+      const modelId = effectiveSettings.modelId || defaultModelId;
+
+      const shouldStream = Boolean(effectiveSettings.stream);
+
+      const history = await chatModel.listRecentMessagesUpTo(userId, sessionId, messageId, chatConfig.historyLimit);
+      if (history === null) return res.status(404).json({ error: "Session not found" });
+
+      const messages = buildOpenAiChatMessages({
+        systemPrompt: effectiveSettings.systemPrompt,
+        historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
+      });
+
+      if (!shouldStream) {
+        const { content: assistantContent } = await createChatCompletion({
+          providerId,
+          model: modelId,
+          messages,
+          temperature: effectiveSettings.temperature,
+          topP: effectiveSettings.topP,
+          maxTokens: effectiveSettings.maxOutputTokens,
+          presencePenalty: effectiveSettings.presencePenalty,
+          frequencyPenalty: effectiveSettings.frequencyPenalty,
+        });
+
+        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
+        updatedSession = await chatModel.touchSession(userId, sessionId);
+
+        return res
+          .status(200)
+          .json({ session: updatedSession, user_message: updatedUserMessage, assistant_message: assistantMessage });
+      }
+
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+
+      writeSse(res, { type: "start", session_id: sessionId, user_message: updatedUserMessage });
+
+      const abortController = new AbortController();
+      req.on("close", () => abortController.abort(new Error("Client disconnected")));
+
+      const upstreamResponse = await createChatCompletionStreamResponse({
+        providerId,
+        model: modelId,
+        messages,
+        temperature: effectiveSettings.temperature,
+        topP: effectiveSettings.topP,
+        maxTokens: effectiveSettings.maxOutputTokens,
+        presencePenalty: effectiveSettings.presencePenalty,
+        frequencyPenalty: effectiveSettings.frequencyPenalty,
+        signal: abortController.signal,
+      });
+
+      let assistantContent = "";
+      try {
+        for await (const delta of streamChatCompletionDeltas({ response: upstreamResponse })) {
+          assistantContent += delta;
+          writeSse(res, { type: "delta", delta });
+        }
+      } catch (streamError) {
+        if (abortController.signal.aborted) {
+          res.end();
+          return;
+        }
+        throw streamError;
+      }
+
+      const normalizedAssistantContent = assistantContent.trim();
+      if (!normalizedAssistantContent) {
+        writeSse(res, { type: "error", error: "Empty model response" });
+        res.end();
+        return;
+      }
+
+      const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", normalizedAssistantContent);
+      updatedSession = await chatModel.touchSession(userId, sessionId);
+
+      writeSse(res, {
+        type: "done",
+        session: updatedSession,
+        user_message: updatedUserMessage,
+        assistant_message: assistantMessage,
+      });
+      res.end();
+    } catch (error) {
+      const message = error?.message || "Internal Server Error";
+      if (res.headersSent && res.getHeader("Content-Type")?.toString().includes("text/event-stream")) {
+        try {
+          writeSse(res, { type: "error", error: message });
+          res.end();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      console.error("Error in chatController.editMessage:", error);
+      res.status(500).json({ error: message });
     }
   },
 
