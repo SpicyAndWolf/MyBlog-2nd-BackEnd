@@ -1,5 +1,8 @@
 const chatModel = require("@models/chatModel");
 const chatPresetModel = require("@models/chatPresetModel");
+const fs = require("fs");
+const path = require("path");
+const sharp = require("sharp");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
 const { chatConfig } = require("../config");
 const { isSupportedProvider } = require("../services/llm/providers");
@@ -88,6 +91,30 @@ function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+async function safeUnlink(filePath) {
+  if (!filePath) return;
+  try {
+    await fs.promises.unlink(filePath);
+  } catch {
+    // ignore
+  }
+}
+
+async function compressAvatarImage({ inputPath, baseName }) {
+  const dir = path.dirname(inputPath);
+  const outputFilename = `${baseName}-compressed.webp`;
+  const outputPath = path.join(dir, outputFilename);
+
+  await sharp(inputPath)
+    .rotate()
+    .resize(256, 256, { fit: "cover" })
+    .webp({ quality: 82 })
+    .toFile(outputPath);
+
+  await safeUnlink(inputPath);
+  return { filename: outputFilename, path: outputPath };
+}
+
 const chatController = {
   async listPresets(req, res) {
     try {
@@ -106,6 +133,9 @@ const chatController = {
 
       const presetId = normalizePresetId(req.body?.id);
       if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(presetId)) {
+        return res.status(400).json({ error: "Builtin preset id is reserved" });
+      }
 
       const name = String(req.body?.name ?? "").trim();
       if (!name) return res.status(400).json({ error: "Preset name cannot be empty" });
@@ -134,11 +164,17 @@ const chatController = {
       const userId = req.user?.id;
       const currentId = normalizePresetId(req.params.presetId);
       if (!currentId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(currentId)) {
+        return res.status(400).json({ error: "Builtin preset cannot be updated" });
+      }
 
       let nextId = undefined;
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "id")) {
         nextId = normalizePresetId(req.body?.id);
         if (!nextId) return res.status(400).json({ error: "Invalid preset id" });
+        if (chatPresetModel.isBuiltinPresetId(nextId)) {
+          return res.status(400).json({ error: "Builtin preset id is reserved" });
+        }
       }
 
       let nextName = undefined;
@@ -164,6 +200,9 @@ const chatController = {
       if (error?.code === "23505") {
         return res.status(409).json({ error: "Preset id already exists" });
       }
+      if (error?.code === "BUILTIN_PRESET_ID" || error?.code === "BUILTIN_PRESET_READONLY") {
+        return res.status(400).json({ error: error.message });
+      }
       console.error("Error in chatController.updatePreset:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
@@ -174,6 +213,9 @@ const chatController = {
       const userId = req.user?.id;
       const presetId = normalizePresetId(req.params.presetId);
       if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(presetId)) {
+        return res.status(400).json({ error: "Builtin preset cannot be deleted" });
+      }
 
       const result = await chatPresetModel.deletePreset(userId, presetId);
       if (!result.deleted) return res.status(404).json({ error: "Preset not found" });
@@ -190,12 +232,39 @@ const chatController = {
       const userId = req.user?.id;
       const presetId = normalizePresetId(req.params.presetId);
       if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(presetId)) {
+        return res.status(400).json({ error: "Builtin preset cannot upload avatar" });
+      }
 
       if (!req.file) return res.status(400).json({ error: "Missing avatar file" });
 
-      const avatarUrl = `/uploads/assistant_avatars/${req.file.filename}`;
-      const preset = await chatPresetModel.updatePresetAvatar(userId, presetId, avatarUrl);
-      if (!preset) return res.status(404).json({ error: "Preset not found" });
+      const existingPreset = await chatPresetModel.getPreset(userId, presetId);
+      if (!existingPreset || existingPreset.isBuiltin) {
+        await safeUnlink(req.file.path);
+        return res.status(404).json({ error: "Preset not found" });
+      }
+
+      const baseName = path.parse(req.file.filename).name;
+      let processed;
+      try {
+        processed = await compressAvatarImage({ inputPath: req.file.path, baseName });
+      } catch (processError) {
+        await safeUnlink(req.file.path);
+        return res.status(400).json({ error: "Avatar processing failed" });
+      }
+
+      const avatarUrl = `/uploads/assistant_avatars/${processed.filename}`;
+      let preset;
+      try {
+        preset = await chatPresetModel.updatePresetAvatar(userId, presetId, avatarUrl);
+      } catch (updateError) {
+        await safeUnlink(processed.path);
+        throw updateError;
+      }
+      if (!preset) {
+        await safeUnlink(processed.path);
+        return res.status(404).json({ error: "Preset not found" });
+      }
 
       res.status(200).json({ preset });
     } catch (error) {
