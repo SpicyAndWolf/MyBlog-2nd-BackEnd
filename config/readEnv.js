@@ -14,7 +14,30 @@ function readIntEnv(name, defaultValue) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+function readFloatEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return defaultValue;
+  const trimmed = raw.trim();
+  if (!trimmed) return defaultValue;
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+function readBoolEnv(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return defaultValue;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return defaultValue;
+
+  if (["1", "true", "yes", "y", "on"].includes(trimmed)) return true;
+  if (["0", "false", "no", "n", "off"].includes(trimmed)) return false;
+
+  return defaultValue;
+}
+
 module.exports = {
   readStringEnv,
   readIntEnv,
+  readFloatEnv,
+  readBoolEnv,
 };

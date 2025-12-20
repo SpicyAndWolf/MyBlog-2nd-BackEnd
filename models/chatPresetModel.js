@@ -5,7 +5,7 @@ const BUILT_IN_PRESETS = [
     id: "default",
     name: "默认",
     systemPrompt: "你是一个专业、耐心、可靠的助手。",
-    avatarUrl: "/uploads/assistant_avatars/default.jfif",
+    avatarUrl: null,
     isBuiltin: true,
   },
 ];

@@ -5,7 +5,8 @@ const path = require("path");
 const sharp = require("sharp");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
 const { chatConfig } = require("../config");
-const { isSupportedProvider } = require("../services/llm/providers");
+const { isSupportedProvider, listConfiguredProviders, listSupportedProviders } = require("../services/llm/providers");
+const { isSupportedModel, listModelsForProvider } = require("../services/llm/models");
 const {
   createChatCompletion,
   createChatCompletionStreamResponse,
@@ -116,6 +117,50 @@ async function compressAvatarImage({ inputPath, baseName }) {
 }
 
 const chatController = {
+  async getMeta(req, res) {
+    try {
+      const configuredProviders = listConfiguredProviders();
+      const baseProviders = configuredProviders.length ? configuredProviders : listSupportedProviders();
+
+      const providers = baseProviders
+        .map((provider) => ({
+          id: String(provider?.id || "").trim(),
+          name: String(provider?.name || "").trim(),
+          models: listModelsForProvider(provider?.id),
+        }))
+        .filter((provider) => provider.id && provider.name && Array.isArray(provider.models) && provider.models.length);
+
+      const fallbackProviderId = providers[0]?.id || "";
+      const desiredProviderId = String(chatConfig.defaultProviderId || "").trim();
+      const defaultProviderId =
+        (desiredProviderId && providers.some((provider) => provider.id === desiredProviderId)
+          ? desiredProviderId
+          : fallbackProviderId) || "";
+
+      let defaultModelId = "";
+      if (defaultProviderId) {
+        const desiredModelId = chatConfig.defaultModelByProvider?.[defaultProviderId];
+        if (typeof desiredModelId === "string" && isSupportedModel(defaultProviderId, desiredModelId)) {
+          defaultModelId = desiredModelId.trim();
+        } else {
+          defaultModelId = providers.find((provider) => provider.id === defaultProviderId)?.models?.[0]?.id || "";
+        }
+      }
+
+      res.status(200).json({
+        providers,
+        defaults: {
+          ...(chatConfig.defaultSettings || {}),
+          providerId: defaultProviderId,
+          modelId: defaultModelId,
+        },
+      });
+    } catch (error) {
+      console.error("Error in chatController.getMeta:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
   async listPresets(req, res) {
     try {
       const userId = req.user?.id;
@@ -402,11 +447,18 @@ const chatController = {
       }
       const providerId = String(candidateProviderId).trim();
 
-      const defaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+      const defaultModelId =
+        (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+          ? configuredDefaultModelId.trim()
+          : fallbackModelId) || "";
       if (!defaultModelId) {
-        return res.status(500).json({ error: `Missing default model config for provider: ${providerId}` });
+        return res.status(500).json({ error: `Missing model definitions for provider: ${providerId}` });
       }
-      const modelId = effectiveSettings.modelId || defaultModelId;
+
+      const modelIdCandidate = String(effectiveSettings.modelId || defaultModelId).trim();
+      const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
 
       const shouldStream = Boolean(effectiveSettings.stream);
 
@@ -534,11 +586,18 @@ const chatController = {
       }
       const providerId = String(candidateProviderId).trim();
 
-      const defaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+      const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+      const defaultModelId =
+        (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+          ? configuredDefaultModelId.trim()
+          : fallbackModelId) || "";
       if (!defaultModelId) {
-        return res.status(500).json({ error: `Missing default model config for provider: ${providerId}` });
+        return res.status(500).json({ error: `Missing model definitions for provider: ${providerId}` });
       }
-      const modelId = effectiveSettings.modelId || defaultModelId;
+
+      const modelIdCandidate = String(effectiveSettings.modelId || defaultModelId).trim();
+      const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
 
       const shouldStream = Boolean(effectiveSettings.stream);
 

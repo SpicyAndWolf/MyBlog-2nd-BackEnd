@@ -26,6 +26,21 @@ function isSupportedProvider(providerId) {
   return Boolean(normalizedId && PROVIDER_DEFINITIONS[normalizedId]);
 }
 
+function listSupportedProviders() {
+  return Object.entries(PROVIDER_DEFINITIONS).map(([id, definition]) => ({ id, name: definition.name }));
+}
+
+function isProviderConfigured(providerId) {
+  const normalizedId = String(providerId || "").trim();
+  const definition = PROVIDER_DEFINITIONS[normalizedId];
+  if (!definition) return false;
+  return Boolean(firstEnvValue(definition.apiKeyEnv));
+}
+
+function listConfiguredProviders() {
+  return listSupportedProviders().filter((provider) => isProviderConfigured(provider.id));
+}
+
 function getProviderConfig(providerId) {
   const normalizedId = String(providerId || "").trim();
   const definition = PROVIDER_DEFINITIONS[normalizedId];
@@ -45,4 +60,7 @@ function getProviderConfig(providerId) {
 module.exports = {
   isSupportedProvider,
   getProviderConfig,
+  listSupportedProviders,
+  listConfiguredProviders,
+  isProviderConfigured,
 };
