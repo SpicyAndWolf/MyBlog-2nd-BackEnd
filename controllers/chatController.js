@@ -1,4 +1,5 @@
 const chatModel = require("@models/chatModel");
+const chatPresetModel = require("@models/chatPresetModel");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
 const { chatConfig } = require("../config");
 const { isSupportedProvider } = require("../services/llm/providers");
@@ -18,6 +19,13 @@ function parseMessageId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);
   if (!Number.isFinite(asNumber) || asNumber <= 0) return null;
   return asNumber;
+}
+
+function normalizePresetId(rawValue) {
+  const normalized = String(rawValue ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(normalized)) return null;
+  return normalized;
 }
 
 const DEFAULT_SESSION_TITLE = "新对话";
@@ -81,6 +89,121 @@ function writeSse(res, payload) {
 }
 
 const chatController = {
+  async listPresets(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presets = await chatPresetModel.listPresets(userId);
+      res.status(200).json({ presets });
+    } catch (error) {
+      console.error("Error in chatController.listPresets:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async createPreset(req, res) {
+    try {
+      const userId = req.user?.id;
+
+      const presetId = normalizePresetId(req.body?.id);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+
+      const name = String(req.body?.name ?? "").trim();
+      if (!name) return res.status(400).json({ error: "Preset name cannot be empty" });
+
+      const systemPrompt = typeof req.body?.systemPrompt === "string" ? req.body.systemPrompt : "";
+
+      const preset = await chatPresetModel.createPreset(userId, {
+        id: presetId,
+        name,
+        systemPrompt,
+        avatarUrl: null,
+      });
+
+      res.status(201).json({ preset });
+    } catch (error) {
+      if (error?.code === "23505") {
+        return res.status(409).json({ error: "Preset id already exists" });
+      }
+      console.error("Error in chatController.createPreset:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async updatePreset(req, res) {
+    try {
+      const userId = req.user?.id;
+      const currentId = normalizePresetId(req.params.presetId);
+      if (!currentId) return res.status(400).json({ error: "Invalid preset id" });
+
+      let nextId = undefined;
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "id")) {
+        nextId = normalizePresetId(req.body?.id);
+        if (!nextId) return res.status(400).json({ error: "Invalid preset id" });
+      }
+
+      let nextName = undefined;
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "name")) {
+        nextName = String(req.body?.name ?? "").trim();
+        if (!nextName) return res.status(400).json({ error: "Preset name cannot be empty" });
+      }
+
+      let nextSystemPrompt = undefined;
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, "systemPrompt")) {
+        nextSystemPrompt = typeof req.body?.systemPrompt === "string" ? req.body.systemPrompt : "";
+      }
+
+      const preset = await chatPresetModel.updatePreset(userId, currentId, {
+        id: nextId,
+        name: nextName,
+        systemPrompt: nextSystemPrompt,
+      });
+      if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+      res.status(200).json({ preset });
+    } catch (error) {
+      if (error?.code === "23505") {
+        return res.status(409).json({ error: "Preset id already exists" });
+      }
+      console.error("Error in chatController.updatePreset:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async deletePreset(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presetId = normalizePresetId(req.params.presetId);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+
+      const result = await chatPresetModel.deletePreset(userId, presetId);
+      if (!result.deleted) return res.status(404).json({ error: "Preset not found" });
+
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error in chatController.deletePreset:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async uploadPresetAvatar(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presetId = normalizePresetId(req.params.presetId);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+
+      if (!req.file) return res.status(400).json({ error: "Missing avatar file" });
+
+      const avatarUrl = `/uploads/assistant_avatars/${req.file.filename}`;
+      const preset = await chatPresetModel.updatePresetAvatar(userId, presetId, avatarUrl);
+      if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+      res.status(200).json({ preset });
+    } catch (error) {
+      console.error("Error in chatController.uploadPresetAvatar:", error);
+      res.status(500).json({ error: error?.message || "Internal Server Error" });
+    }
+  },
+
   async listSessions(req, res) {
     try {
       const userId = req.user?.id;

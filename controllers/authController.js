@@ -3,6 +3,28 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const authController = {
+  async me(req, res) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const user = await userModel.findById(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      res.status(200).json({
+        user: {
+          id: user.id,
+          username: user.username,
+          avatar_url: user.avatar_url || null,
+          created_at: user.created_at,
+        },
+      });
+    } catch (error) {
+      console.error("Error in authController.me:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
   async login(req, res) {
     try {
       const { username, password } = req.body;
