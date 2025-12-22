@@ -1,5 +1,6 @@
 const { getProviderConfig, getProviderDefinition, isBodyParamAllowed } = require("../../providers");
 const { llmConfig } = require("../../../../config");
+const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../../settingsSchema");
 
 function normalizeBaseUrl(baseUrl) {
   const url = new URL(String(baseUrl || "").trim());
@@ -17,9 +18,11 @@ function buildUrl(baseUrl, path) {
   return new URL(normalizedPath, normalizedBaseUrl).toString();
 }
 
-function clampNumber(value, { min, max }) {
-  if (!Number.isFinite(value)) return null;
-  return Math.min(max, Math.max(min, value));
+function clampBodyNumber(providerId, key, value, { integer } = {}) {
+  const range = getProviderNumericRange(providerId, key) || getGlobalNumericRange(key);
+  const nextValue = clampNumberWithRange(value, range);
+  if (!Number.isFinite(nextValue)) return null;
+  return integer ? Math.trunc(nextValue) : nextValue;
 }
 
 function normalizeText(value) {
@@ -97,11 +100,11 @@ function buildBody({
     stream: resolvedStream,
   };
 
-  const normalizedTemperature = clampNumber(resolvedTemperature, { min: 0, max: 2 });
-  const normalizedTopP = clampNumber(resolvedTopP, { min: 0, max: 1 });
-  const normalizedMaxTokens = clampNumber(resolvedMaxTokens, { min: 1, max: 200000 });
-  const normalizedPresencePenalty = clampNumber(resolvedPresencePenalty, { min: -2, max: 2 });
-  const normalizedFrequencyPenalty = clampNumber(resolvedFrequencyPenalty, { min: -2, max: 2 });
+  const normalizedTemperature = clampBodyNumber(providerId, "temperature", resolvedTemperature);
+  const normalizedTopP = clampBodyNumber(providerId, "topP", resolvedTopP);
+  const normalizedMaxTokens = clampBodyNumber(providerId, "maxOutputTokens", resolvedMaxTokens, { integer: true });
+  const normalizedPresencePenalty = clampBodyNumber(providerId, "presencePenalty", resolvedPresencePenalty);
+  const normalizedFrequencyPenalty = clampBodyNumber(providerId, "frequencyPenalty", resolvedFrequencyPenalty);
 
   if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings }))
     body.temperature = normalizedTemperature;

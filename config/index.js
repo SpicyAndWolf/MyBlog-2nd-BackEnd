@@ -1,55 +1,92 @@
 const { readBoolEnv, readFloatEnv, readIntEnv, readStringEnv } = require("./readEnv");
+const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
+const { getProviderDefinition } = require("../services/llm/providers");
 
-function clampNumber(value, { min, max, fallback }) {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
+function clampSchemaNumber(value, { key, range, fallback, integer } = {}) {
+  const resolvedRange = range || (key ? getGlobalNumericRange(key) : null);
+  const nextValue = clampNumberWithRange(value, resolvedRange, { fallback });
+  if (!Number.isFinite(nextValue)) return fallback;
+  return integer ? Math.trunc(nextValue) : nextValue;
 }
 
-function readProviderDefaultSettings(prefix, baseDefaults) {
+function readProviderDefaultSettings({ providerId, envPrefix, baseDefaults } = {}) {
   const base = baseDefaults && typeof baseDefaults === "object" && !Array.isArray(baseDefaults) ? baseDefaults : {};
-  const normalizedPrefix = String(prefix || "").trim().toUpperCase();
+  const normalizedPrefix = String(envPrefix || "").trim().toUpperCase();
   if (!normalizedPrefix) return { ...base };
 
-  return {
-    ...base,
-    temperature: clampNumber(readFloatEnv(`${normalizedPrefix}_DEFAULT_TEMPERATURE`, base.temperature), {
-      min: 0,
-      max: 2,
-      fallback: base.temperature,
-    }),
-    topP: clampNumber(readFloatEnv(`${normalizedPrefix}_DEFAULT_TOP_P`, base.topP), { min: 0, max: 1, fallback: base.topP }),
-    maxOutputTokens: clampNumber(readIntEnv(`${normalizedPrefix}_DEFAULT_MAX_OUTPUT_TOKENS`, base.maxOutputTokens), {
-      min: 1,
-      max: 200000,
-      fallback: base.maxOutputTokens,
-    }),
-    presencePenalty: clampNumber(readFloatEnv(`${normalizedPrefix}_DEFAULT_PRESENCE_PENALTY`, base.presencePenalty), {
-      min: -2,
-      max: 2,
-      fallback: base.presencePenalty,
-    }),
-    frequencyPenalty: clampNumber(readFloatEnv(`${normalizedPrefix}_DEFAULT_FREQUENCY_PENALTY`, base.frequencyPenalty), {
-      min: -2,
-      max: 2,
-      fallback: base.frequencyPenalty,
-    }),
-    stream: readBoolEnv(`${normalizedPrefix}_DEFAULT_STREAM`, base.stream),
-    enableWebSearch: readBoolEnv(`${normalizedPrefix}_DEFAULT_ENABLE_WEB_SEARCH`, base.enableWebSearch),
-  };
+  const definition = getProviderDefinition(providerId);
+  const capabilities = definition?.capabilities || {};
+  const supportsStream = capabilities.stream !== false;
+  const supportsWebSearch = capabilities.webSearch !== false;
+
+  const next = { ...base };
+
+  function clampProviderFloatSetting(key, envSuffix) {
+    const range = getProviderNumericRange(providerId, key);
+    if (!range) {
+      delete next[key];
+      return;
+    }
+
+    const value = clampSchemaNumber(readFloatEnv(`${normalizedPrefix}_${envSuffix}`, base[key]), {
+      range,
+      fallback: base[key],
+    });
+
+    if (!Number.isFinite(value)) {
+      delete next[key];
+      return;
+    }
+    next[key] = value;
+  }
+
+  function clampProviderIntSetting(key, envSuffix) {
+    const range = getProviderNumericRange(providerId, key);
+    if (!range) {
+      delete next[key];
+      return;
+    }
+
+    const value = clampSchemaNumber(readIntEnv(`${normalizedPrefix}_${envSuffix}`, base[key]), {
+      range,
+      fallback: base[key],
+      integer: true,
+    });
+
+    if (!Number.isFinite(value)) {
+      delete next[key];
+      return;
+    }
+    next[key] = value;
+  }
+
+  clampProviderFloatSetting("temperature", "DEFAULT_TEMPERATURE");
+  clampProviderFloatSetting("topP", "DEFAULT_TOP_P");
+  clampProviderIntSetting("maxOutputTokens", "DEFAULT_MAX_OUTPUT_TOKENS");
+  clampProviderFloatSetting("presencePenalty", "DEFAULT_PRESENCE_PENALTY");
+  clampProviderFloatSetting("frequencyPenalty", "DEFAULT_FREQUENCY_PENALTY");
+
+  next.stream = supportsStream ? readBoolEnv(`${normalizedPrefix}_DEFAULT_STREAM`, base.stream) : false;
+  next.enableWebSearch = supportsWebSearch ? readBoolEnv(`${normalizedPrefix}_DEFAULT_ENABLE_WEB_SEARCH`, base.enableWebSearch) : false;
+  if (!supportsWebSearch) next.enableWebSearch = false;
+
+  return next;
 }
 
 const baseChatDefaultSettings = {
-  temperature: clampNumber(readFloatEnv("CHAT_DEFAULT_TEMPERATURE", 0.7), { min: 0, max: 2, fallback: 0.7 }),
-  topP: clampNumber(readFloatEnv("CHAT_DEFAULT_TOP_P", 0.9), { min: 0, max: 1, fallback: 0.9 }),
-  maxOutputTokens: clampNumber(readIntEnv("CHAT_DEFAULT_MAX_OUTPUT_TOKENS", 4096), {
-    min: 1,
-    max: 200000,
+  temperature: clampSchemaNumber(readFloatEnv("CHAT_DEFAULT_TEMPERATURE", 0.7), { key: "temperature", fallback: 0.7 }),
+  topP: clampSchemaNumber(readFloatEnv("CHAT_DEFAULT_TOP_P", 0.9), { key: "topP", fallback: 0.9 }),
+  maxOutputTokens: clampSchemaNumber(readIntEnv("CHAT_DEFAULT_MAX_OUTPUT_TOKENS", 4096), {
+    key: "maxOutputTokens",
     fallback: 4096,
+    integer: true,
   }),
-  presencePenalty: clampNumber(readFloatEnv("CHAT_DEFAULT_PRESENCE_PENALTY", 0), { min: -2, max: 2, fallback: 0 }),
-  frequencyPenalty: clampNumber(readFloatEnv("CHAT_DEFAULT_FREQUENCY_PENALTY", 0), {
-    min: -2,
-    max: 2,
+  presencePenalty: clampSchemaNumber(readFloatEnv("CHAT_DEFAULT_PRESENCE_PENALTY", 0), {
+    key: "presencePenalty",
+    fallback: 0,
+  }),
+  frequencyPenalty: clampSchemaNumber(readFloatEnv("CHAT_DEFAULT_FREQUENCY_PENALTY", 0), {
+    key: "frequencyPenalty",
     fallback: 0,
   }),
   stream: readBoolEnv("CHAT_DEFAULT_STREAM", true),
@@ -68,8 +105,12 @@ const chatConfig = {
   },
   defaultSettings: baseChatDefaultSettings,
   defaultSettingsByProvider: {
-    grok: readProviderDefaultSettings("GROK", baseChatDefaultSettings),
-    deepseek: readProviderDefaultSettings("DEEPSEEK", baseChatDefaultSettings),
+    grok: readProviderDefaultSettings({ providerId: "grok", envPrefix: "GROK", baseDefaults: baseChatDefaultSettings }),
+    deepseek: readProviderDefaultSettings({
+      providerId: "deepseek",
+      envPrefix: "DEEPSEEK",
+      baseDefaults: baseChatDefaultSettings,
+    }),
   },
 };
 

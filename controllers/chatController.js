@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
-const { chatConfig } = require("../config");
+const { chatConfig, llmConfig } = require("../config");
 const {
   getProviderDefinition,
   isSupportedProvider,
@@ -17,6 +17,7 @@ const {
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
 } = require("../services/llm/chatCompletions");
+const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
 
 function parseSessionId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);
@@ -47,11 +48,6 @@ function formatSessionTitleFromMessage(messageText) {
   return normalized.length > 22 ? `${normalized.slice(0, 22)}…` : normalized;
 }
 
-function clampNumber(value, { min, max }) {
-  if (!Number.isFinite(value)) return null;
-  return Math.min(max, Math.max(min, value));
-}
-
 function sanitizeChatSettings(rawSettings) {
   if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) return {};
 
@@ -63,33 +59,53 @@ function sanitizeChatSettings(rawSettings) {
   if (typeof rawSettings.systemPromptPresetId === "string")
     sanitized.systemPromptPresetId = rawSettings.systemPromptPresetId.trim();
 
-  const temperature = clampNumber(Number(rawSettings.temperature), { min: 0, max: 2 });
-  if (temperature !== null) sanitized.temperature = temperature;
+  const temperature = Number(rawSettings.temperature);
+  if (Number.isFinite(temperature)) sanitized.temperature = temperature;
 
-  const topP = clampNumber(Number(rawSettings.topP), { min: 0, max: 1 });
-  if (topP !== null) sanitized.topP = topP;
+  const topP = Number(rawSettings.topP);
+  if (Number.isFinite(topP)) sanitized.topP = topP;
 
-  const maxOutputTokens = clampNumber(Number(rawSettings.maxOutputTokens), { min: 1, max: 200000 });
-  if (maxOutputTokens !== null) sanitized.maxOutputTokens = maxOutputTokens;
+  const maxOutputTokens = Number(rawSettings.maxOutputTokens);
+  if (Number.isFinite(maxOutputTokens)) sanitized.maxOutputTokens = maxOutputTokens;
 
-  const presencePenalty = clampNumber(Number(rawSettings.presencePenalty), { min: -2, max: 2 });
-  if (presencePenalty !== null) sanitized.presencePenalty = presencePenalty;
+  const presencePenalty = Number(rawSettings.presencePenalty);
+  if (Number.isFinite(presencePenalty)) sanitized.presencePenalty = presencePenalty;
 
-  const frequencyPenalty = clampNumber(Number(rawSettings.frequencyPenalty), { min: -2, max: 2 });
-  if (frequencyPenalty !== null) sanitized.frequencyPenalty = frequencyPenalty;
+  const frequencyPenalty = Number(rawSettings.frequencyPenalty);
+  if (Number.isFinite(frequencyPenalty)) sanitized.frequencyPenalty = frequencyPenalty;
 
   if (typeof rawSettings.enableWebSearch === "boolean") sanitized.enableWebSearch = rawSettings.enableWebSearch;
   if (typeof rawSettings.stream === "boolean") sanitized.stream = rawSettings.stream;
 
-  const thinking = rawSettings.thinking;
-  if (thinking && typeof thinking === "object" && !Array.isArray(thinking)) {
-    const type = String(thinking.type || "").trim();
-    if (type === "enabled" || type === "disabled") {
-      sanitized.thinking = { type };
+  return sanitized;
+}
+
+function normalizeChatSettingsWithSchema(settings, { providerId } = {}) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
+
+  const normalized = { ...settings };
+  const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty"];
+
+  for (const key of keys) {
+    if (normalized[key] === undefined) continue;
+
+    const range = providerId ? getProviderNumericRange(providerId, key) : null;
+    const fallbackRange = getGlobalNumericRange(key);
+    const nextValue = clampNumberWithRange(normalized[key], range || fallbackRange);
+
+    if (!Number.isFinite(nextValue)) {
+      delete normalized[key];
+      continue;
+    }
+
+    if (key === "maxOutputTokens") {
+      normalized[key] = Math.trunc(nextValue);
+    } else {
+      normalized[key] = nextValue;
     }
   }
 
-  return sanitized;
+  return normalized;
 }
 
 function mergeSettings(baseSettings, overrideSettings) {
@@ -103,6 +119,13 @@ function mergeSettings(baseSettings, overrideSettings) {
 
 function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function getAbortReasonMessage(signal) {
+  const reason = signal?.reason;
+  if (!reason) return "";
+  if (reason instanceof Error) return reason.message || "";
+  return String(reason);
 }
 
 async function safeUnlink(filePath) {
@@ -474,7 +497,8 @@ const chatController = {
       }
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
-      const effectiveSettings = mergeSettings(session.settings, incomingSettings);
+      const mergedSettings = mergeSettings(session.settings, incomingSettings);
+      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings);
       updatedSession = (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings)) || updatedSession;
 
       if (!regenerate) {
@@ -489,9 +513,6 @@ const chatController = {
       }
       const providerId = String(candidateProviderId).trim();
       const providerDefinition = getProviderDefinition(providerId);
-      if (providerDefinition?.capabilities?.webSearch === false) {
-        effectiveSettings.enableWebSearch = false;
-      }
 
       const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
       const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
@@ -506,13 +527,21 @@ const chatController = {
       const modelIdCandidate = String(effectiveSettings.modelId || defaultModelId).trim();
       const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
 
-      const shouldStream = Boolean(effectiveSettings.stream);
+      const providerSettings = normalizeChatSettingsWithSchema(effectiveSettings, { providerId });
+      providerSettings.providerId = providerId;
+      providerSettings.modelId = modelId;
+      if (providerDefinition?.capabilities?.webSearch === false) {
+        providerSettings.enableWebSearch = false;
+      }
+      updatedSession = (await chatModel.updateSessionSettings(userId, sessionId, providerSettings)) || updatedSession;
+
+      const shouldStream = Boolean(providerSettings.stream);
 
       const history = await chatModel.listRecentMessagesUpTo(userId, sessionId, messageId, chatConfig.historyLimit);
       if (history === null) return res.status(404).json({ error: "Session not found" });
 
       const messages = buildOpenAiChatMessages({
-        systemPrompt: effectiveSettings.systemPrompt,
+        systemPrompt: providerSettings.systemPrompt,
         historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
       });
 
@@ -521,7 +550,7 @@ const chatController = {
           providerId,
           model: modelId,
           messages,
-          settings: effectiveSettings,
+          settings: providerSettings,
         });
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
@@ -543,27 +572,34 @@ const chatController = {
 
       const abortController = new AbortController();
       req.on("close", () => abortController.abort(new Error("Client disconnected")));
-
-      const upstreamResponse = await createChatCompletionStreamResponse({
-        providerId,
-        model: modelId,
-        messages,
-        settings: effectiveSettings,
-        signal: abortController.signal,
-      });
+      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
 
       let assistantContent = "";
       try {
+        const upstreamResponse = await createChatCompletionStreamResponse({
+          providerId,
+          model: modelId,
+          messages,
+          settings: providerSettings,
+          signal: abortController.signal,
+        });
+
         for await (const delta of streamChatCompletionDeltas({ response: upstreamResponse })) {
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }
       } catch (streamError) {
         if (abortController.signal.aborted) {
+          const message = getAbortReasonMessage(abortController.signal);
+          if (message && message !== "Client disconnected") {
+            writeSse(res, { type: "error", error: message });
+          }
           res.end();
           return;
         }
         throw streamError;
+      } finally {
+        clearTimeout(timeout);
       }
 
       const normalizedAssistantContent = assistantContent.trim();
@@ -615,18 +651,15 @@ const chatController = {
       if (!session) return res.status(404).json({ error: "Session not found" });
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
-      const effectiveSettings = mergeSettings(session.settings, incomingSettings);
+      const mergedSettings = mergeSettings(session.settings, incomingSettings);
 
       const defaultProviderId = chatConfig.defaultProviderId;
-      const candidateProviderId = effectiveSettings.providerId || defaultProviderId;
+      const candidateProviderId = mergedSettings.providerId || defaultProviderId;
       if (!isSupportedProvider(candidateProviderId)) {
         return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
       }
       const providerId = String(candidateProviderId).trim();
       const providerDefinition = getProviderDefinition(providerId);
-      if (providerDefinition?.capabilities?.webSearch === false) {
-        effectiveSettings.enableWebSearch = false;
-      }
 
       const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
       const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
@@ -638,8 +671,15 @@ const chatController = {
         return res.status(500).json({ error: `Missing model definitions for provider: ${providerId}` });
       }
 
-      const modelIdCandidate = String(effectiveSettings.modelId || defaultModelId).trim();
+      const modelIdCandidate = String(mergedSettings.modelId || defaultModelId).trim();
       const modelId = isSupportedModel(providerId, modelIdCandidate) ? modelIdCandidate : defaultModelId;
+
+      const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId });
+      effectiveSettings.providerId = providerId;
+      effectiveSettings.modelId = modelId;
+      if (providerDefinition?.capabilities?.webSearch === false) {
+        effectiveSettings.enableWebSearch = false;
+      }
 
       const shouldStream = Boolean(effectiveSettings.stream);
 
@@ -690,27 +730,34 @@ const chatController = {
 
       const abortController = new AbortController();
       req.on("close", () => abortController.abort(new Error("Client disconnected")));
-
-      const upstreamResponse = await createChatCompletionStreamResponse({
-        providerId,
-        model: modelId,
-        messages,
-        settings: effectiveSettings,
-        signal: abortController.signal,
-      });
+      const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
 
       let assistantContent = "";
       try {
+        const upstreamResponse = await createChatCompletionStreamResponse({
+          providerId,
+          model: modelId,
+          messages,
+          settings: effectiveSettings,
+          signal: abortController.signal,
+        });
+
         for await (const delta of streamChatCompletionDeltas({ response: upstreamResponse })) {
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }
       } catch (streamError) {
         if (abortController.signal.aborted) {
+          const message = getAbortReasonMessage(abortController.signal);
+          if (message && message !== "Client disconnected") {
+            writeSse(res, { type: "error", error: message });
+          }
           res.end();
           return;
         }
         throw streamError;
+      } finally {
+        clearTimeout(timeout);
       }
 
       const normalizedAssistantContent = assistantContent.trim();

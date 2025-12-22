@@ -6,24 +6,7 @@ module.exports = {
   apiKeyEnv: ["DEEPSEEK_API_KEY"],
   baseUrlEnv: ["DEEPSEEK_BASE_URL"],
   openaiCompatible: {
-    bodyExtensions: ({ model, settings }) => {
-      const normalizedModel = String(model || "").trim();
-      const normalizedSettings = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
-
-      const extensions = {};
-
-      if (normalizedModel !== "deepseek-reasoner") {
-        const thinking = normalizedSettings.thinking;
-        if (thinking && typeof thinking === "object" && !Array.isArray(thinking)) {
-          const type = String(thinking.type || "").trim();
-          if (type === "enabled" || type === "disabled") {
-            extensions.thinking = { type };
-          }
-        }
-      }
-
-      return extensions;
-    },
+    bodyExtensions: {},
   },
   settingsSchema: [
     {
@@ -77,18 +60,6 @@ module.exports = {
       step: 0.1,
       decimals: 1,
       capability: "frequencyPenalty",
-      modelBlocklist: ["deepseek-reasoner"],
-    },
-    {
-      key: "thinking.type",
-      label: "Thinking",
-      type: "select",
-      options: [
-        { value: "disabled", label: "Disabled" },
-        { value: "enabled", label: "Enabled" },
-      ],
-      default: "disabled",
-      capability: "thinking",
       modelBlocklist: ["deepseek-reasoner"],
     },
     {
