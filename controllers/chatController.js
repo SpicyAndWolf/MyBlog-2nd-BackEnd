@@ -81,6 +81,14 @@ function sanitizeChatSettings(rawSettings) {
   if (typeof rawSettings.enableWebSearch === "boolean") sanitized.enableWebSearch = rawSettings.enableWebSearch;
   if (typeof rawSettings.stream === "boolean") sanitized.stream = rawSettings.stream;
 
+  const thinking = rawSettings.thinking;
+  if (thinking && typeof thinking === "object" && !Array.isArray(thinking)) {
+    const type = String(thinking.type || "").trim();
+    if (type === "enabled" || type === "disabled") {
+      sanitized.thinking = { type };
+    }
+  }
+
   return sanitized;
 }
 
@@ -144,17 +152,20 @@ const chatController = {
           const models = listModelsForProvider(id);
           const definition = getProviderDefinition(id);
 
+          const defaults = {
+            ...((chatConfig.defaultSettingsByProvider || {})[id] || chatConfig.defaultSettings || {}),
+            providerId: id,
+            modelId: resolveDefaultModelId(id),
+          };
+          if (definition?.capabilities?.webSearch === false) defaults.enableWebSearch = false;
+
           return {
             id,
             name,
             models,
             adapter: definition?.adapter || "unknown",
             capabilities: definition?.capabilities || {},
-            defaults: {
-              ...((chatConfig.defaultSettingsByProvider || {})[id] || chatConfig.defaultSettings || {}),
-              providerId: id,
-              modelId: resolveDefaultModelId(id),
-            },
+            defaults,
           };
         })
         .filter((provider) => provider.id && provider.name && Array.isArray(provider.models) && provider.models.length);
@@ -176,14 +187,15 @@ const chatController = {
         }
       }
 
-      res.status(200).json({
-        providers,
-        defaults: {
-          ...((chatConfig.defaultSettingsByProvider || {})[defaultProviderId] || chatConfig.defaultSettings || {}),
-          providerId: defaultProviderId,
-          modelId: defaultModelId,
-        },
-      });
+      const selectedProviderDefinition = getProviderDefinition(defaultProviderId);
+      const defaults = {
+        ...((chatConfig.defaultSettingsByProvider || {})[defaultProviderId] || chatConfig.defaultSettings || {}),
+        providerId: defaultProviderId,
+        modelId: defaultModelId,
+      };
+      if (selectedProviderDefinition?.capabilities?.webSearch === false) defaults.enableWebSearch = false;
+
+      res.status(200).json({ providers, defaults });
     } catch (error) {
       console.error("Error in chatController.getMeta:", error);
       res.status(500).json({ error: "Internal Server Error" });
@@ -475,6 +487,10 @@ const chatController = {
         return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
       }
       const providerId = String(candidateProviderId).trim();
+      const providerDefinition = getProviderDefinition(providerId);
+      if (providerDefinition?.capabilities?.webSearch === false) {
+        effectiveSettings.enableWebSearch = false;
+      }
 
       const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
       const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
@@ -504,11 +520,7 @@ const chatController = {
           providerId,
           model: modelId,
           messages,
-          temperature: effectiveSettings.temperature,
-          topP: effectiveSettings.topP,
-          maxTokens: effectiveSettings.maxOutputTokens,
-          presencePenalty: effectiveSettings.presencePenalty,
-          frequencyPenalty: effectiveSettings.frequencyPenalty,
+          settings: effectiveSettings,
         });
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
@@ -535,11 +547,7 @@ const chatController = {
         providerId,
         model: modelId,
         messages,
-        temperature: effectiveSettings.temperature,
-        topP: effectiveSettings.topP,
-        maxTokens: effectiveSettings.maxOutputTokens,
-        presencePenalty: effectiveSettings.presencePenalty,
-        frequencyPenalty: effectiveSettings.frequencyPenalty,
+        settings: effectiveSettings,
         signal: abortController.signal,
       });
 
@@ -614,6 +622,10 @@ const chatController = {
         return res.status(400).json({ error: `Unsupported provider: ${candidateProviderId}` });
       }
       const providerId = String(candidateProviderId).trim();
+      const providerDefinition = getProviderDefinition(providerId);
+      if (providerDefinition?.capabilities?.webSearch === false) {
+        effectiveSettings.enableWebSearch = false;
+      }
 
       const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
       const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
@@ -655,11 +667,7 @@ const chatController = {
           providerId,
           model: modelId,
           messages,
-          temperature: effectiveSettings.temperature,
-          topP: effectiveSettings.topP,
-          maxTokens: effectiveSettings.maxOutputTokens,
-          presencePenalty: effectiveSettings.presencePenalty,
-          frequencyPenalty: effectiveSettings.frequencyPenalty,
+          settings: effectiveSettings,
         });
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
@@ -686,11 +694,7 @@ const chatController = {
         providerId,
         model: modelId,
         messages,
-        temperature: effectiveSettings.temperature,
-        topP: effectiveSettings.topP,
-        maxTokens: effectiveSettings.maxOutputTokens,
-        presencePenalty: effectiveSettings.presencePenalty,
-        frequencyPenalty: effectiveSettings.frequencyPenalty,
+        settings: effectiveSettings,
         signal: abortController.signal,
       });
 

@@ -63,13 +63,28 @@ function getProviderConfig(providerId) {
   return { id: normalizedId, name: definition.name, apiKey, baseUrl };
 }
 
-function isBodyParamAllowed(providerId, paramName) {
-  const definition = getProviderDefinition(providerId);
+function isBodyParamAllowed(providerId, paramName, context = {}) {
+  const normalizedProviderId = normalizeProviderId(providerId);
+  const definition = getProviderDefinition(normalizedProviderId);
+  const normalizedParamName = String(paramName || "").trim();
+  if (!normalizedParamName) return true;
+
+  const policyFn = definition?.parameterPolicy?.isBodyParamAllowed;
+  if (typeof policyFn === "function") {
+    const value = policyFn({
+      providerId: normalizedProviderId,
+      paramName: normalizedParamName,
+      model: context?.model,
+      settings: context?.settings,
+    });
+    if (typeof value === "boolean") return value;
+  }
+
   const blocked = Array.isArray(definition?.parameterPolicy?.blockedBodyParams)
     ? definition.parameterPolicy.blockedBodyParams
     : [];
   if (!blocked.length) return true;
-  return !blocked.includes(String(paramName || ""));
+  return !blocked.includes(normalizedParamName);
 }
 
 module.exports = {
@@ -81,4 +96,3 @@ module.exports = {
   isProviderConfigured,
   isBodyParamAllowed,
 };
-

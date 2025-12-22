@@ -55,12 +55,12 @@ function readSetting(settings, key) {
   return settings[key];
 }
 
-function buildBodyExtensions({ providerId, settings }) {
+function buildBodyExtensions({ providerId, model, settings }) {
   const definition = getProviderDefinition(providerId);
   const extensions = definition?.openaiCompatible?.bodyExtensions;
 
   if (typeof extensions === "function") {
-    const value = extensions({ settings: settings || {} });
+    const value = extensions({ model, settings: settings || {} });
     if (value && typeof value === "object" && !Array.isArray(value)) return value;
     return {};
   }
@@ -103,19 +103,20 @@ function buildBody({
   const normalizedPresencePenalty = clampNumber(resolvedPresencePenalty, { min: -2, max: 2 });
   const normalizedFrequencyPenalty = clampNumber(resolvedFrequencyPenalty, { min: -2, max: 2 });
 
-  if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature"))
+  if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings }))
     body.temperature = normalizedTemperature;
-  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p")) body.top_p = normalizedTopP;
-  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "max_tokens")) body.max_tokens = normalizedMaxTokens;
-  if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presence_penalty"))
+  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings })) body.top_p = normalizedTopP;
+  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "max_tokens", { model, settings }))
+    body.max_tokens = normalizedMaxTokens;
+  if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presence_penalty", { model, settings }))
     body.presence_penalty = normalizedPresencePenalty;
-  if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequency_penalty"))
+  if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequency_penalty", { model, settings }))
     body.frequency_penalty = normalizedFrequencyPenalty;
 
-  const extensions = buildBodyExtensions({ providerId, settings });
+  const extensions = buildBodyExtensions({ providerId, model, settings });
   for (const [key, value] of Object.entries(extensions)) {
     if (value === undefined) continue;
-    if (!isBodyParamAllowed(providerId, key)) continue;
+    if (!isBodyParamAllowed(providerId, key, { model, settings })) continue;
     body[key] = value;
   }
 
@@ -154,8 +155,22 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
     }
 
     const data = await response.json();
-    const content = normalizeText(data?.choices?.[0]?.message?.content).trim();
-    if (!content) throw new Error("Empty model response");
+    const message = data?.choices?.[0]?.message || {};
+    const content = normalizeText(message?.content).trim();
+    if (!content) {
+      const toolCalls = message?.tool_calls;
+      if (Array.isArray(toolCalls) && toolCalls.length) {
+        const names = toolCalls
+          .map((toolCall) => toolCall?.function?.name)
+          .filter(Boolean)
+          .slice(0, 6)
+          .join(", ");
+        throw new Error(
+          `Model requested tool calls (${names || toolCalls.length}), but tool calls are not implemented yet.`
+        );
+      }
+      throw new Error("Empty model response");
+    }
     return { content, raw: data };
   } finally {
     clearTimeout(timeout);
@@ -239,4 +254,3 @@ module.exports = {
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
 };
-
