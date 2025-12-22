@@ -1,4 +1,4 @@
-const { getProviderConfig } = require("./providers");
+const { getProviderConfig, isBodyParamAllowed } = require("./providers");
 const { llmConfig } = require("../../config");
 
 function normalizeBaseUrl(baseUrl) {
@@ -15,18 +15,6 @@ function buildUrl(baseUrl, path) {
     .trim()
     .replace(/^\/+/, "");
   return new URL(normalizedPath, normalizedBaseUrl).toString();
-}
-
-// Grok-4 不支持 presencePenalty、frequencyPenalty 这类惩罚参数
-const PROVIDER_PARAMETER_BLOCKLIST = {
-  grok: new Set(["presence_penalty", "frequency_penalty"]),
-};
-
-function isBodyParamAllowed(providerId, paramName) {
-  const normalizedProviderId = String(providerId || "").trim();
-  const blocked = PROVIDER_PARAMETER_BLOCKLIST[normalizedProviderId];
-  if (!blocked) return true;
-  return !blocked.has(paramName);
 }
 
 function clampNumber(value, { min, max }) {

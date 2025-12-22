@@ -5,7 +5,12 @@ const path = require("path");
 const sharp = require("sharp");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
 const { chatConfig } = require("../config");
-const { isSupportedProvider, listConfiguredProviders, listSupportedProviders } = require("../services/llm/providers");
+const {
+  getProviderDefinition,
+  isSupportedProvider,
+  listConfiguredProviders,
+  listSupportedProviders,
+} = require("../services/llm/providers");
 const { isSupportedModel, listModelsForProvider } = require("../services/llm/models");
 const {
   createChatCompletion,
@@ -122,12 +127,36 @@ const chatController = {
       const configuredProviders = listConfiguredProviders();
       const baseProviders = configuredProviders.length ? configuredProviders : listSupportedProviders();
 
+      function resolveDefaultModelId(providerId) {
+        const configuredDefaultModelId = chatConfig.defaultModelByProvider?.[providerId];
+        const fallbackModelId = listModelsForProvider(providerId)[0]?.id || "";
+        const defaultModelId =
+          (typeof configuredDefaultModelId === "string" && isSupportedModel(providerId, configuredDefaultModelId)
+            ? configuredDefaultModelId.trim()
+            : fallbackModelId) || "";
+        return defaultModelId;
+      }
+
       const providers = baseProviders
-        .map((provider) => ({
-          id: String(provider?.id || "").trim(),
-          name: String(provider?.name || "").trim(),
-          models: listModelsForProvider(provider?.id),
-        }))
+        .map((provider) => {
+          const id = String(provider?.id || "").trim();
+          const name = String(provider?.name || "").trim();
+          const models = listModelsForProvider(id);
+          const definition = getProviderDefinition(id);
+
+          return {
+            id,
+            name,
+            models,
+            adapter: definition?.adapter || "unknown",
+            capabilities: definition?.capabilities || {},
+            defaults: {
+              ...((chatConfig.defaultSettingsByProvider || {})[id] || chatConfig.defaultSettings || {}),
+              providerId: id,
+              modelId: resolveDefaultModelId(id),
+            },
+          };
+        })
         .filter((provider) => provider.id && provider.name && Array.isArray(provider.models) && provider.models.length);
 
       const fallbackProviderId = providers[0]?.id || "";
@@ -150,7 +179,7 @@ const chatController = {
       res.status(200).json({
         providers,
         defaults: {
-          ...(chatConfig.defaultSettings || {}),
+          ...((chatConfig.defaultSettingsByProvider || {})[defaultProviderId] || chatConfig.defaultSettings || {}),
           providerId: defaultProviderId,
           modelId: defaultModelId,
         },
