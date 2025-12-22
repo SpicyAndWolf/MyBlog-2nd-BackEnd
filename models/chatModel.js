@@ -15,7 +15,7 @@ function normalizeSettings(rawSettings) {
 const chatModel = {
   async listSessions(userId) {
     const query = `
-      SELECT id, title, settings, created_at, updated_at
+      SELECT id, preset_id, title, settings, created_at, updated_at
       FROM chat_sessions
       WHERE user_id = $1
       ORDER BY updated_at DESC, id DESC
@@ -26,7 +26,7 @@ const chatModel = {
 
   async getSession(userId, sessionId) {
     const query = `
-      SELECT id, title, settings, created_at, updated_at
+      SELECT id, preset_id, title, settings, created_at, updated_at
       FROM chat_sessions
       WHERE id = $1 AND user_id = $2
     `;
@@ -34,16 +34,18 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async createSession(userId, { title, settings } = {}) {
+  async createSession(userId, { title, settings, presetId } = {}) {
     const normalizedTitle = normalizeTitle(title);
     const normalizedSettings = normalizeSettings(settings);
+    const normalizedPresetId = String(presetId || "").trim();
+    if (!normalizedPresetId) throw new Error("Preset id is required");
 
     const query = `
-      INSERT INTO chat_sessions (user_id, title, settings)
-      VALUES ($1, $2, $3)
-      RETURNING id, title, settings, created_at, updated_at
+      INSERT INTO chat_sessions (user_id, preset_id, title, settings)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
-    const { rows } = await db.query(query, [userId, normalizedTitle, normalizedSettings]);
+    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedTitle, normalizedSettings]);
     return rows[0];
   },
 
@@ -55,21 +57,32 @@ const chatModel = {
       UPDATE chat_sessions
       SET title = $1, updated_at = NOW()
       WHERE id = $2 AND user_id = $3
-      RETURNING id, title, settings, created_at, updated_at
+      RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
     const { rows } = await db.query(query, [normalizedTitle, sessionId, userId]);
     return rows[0] || null;
   },
 
-  async updateSessionSettings(userId, sessionId, settings) {
+  async updateSessionSettings(userId, sessionId, settings, presetId) {
     const normalizedSettings = normalizeSettings(settings);
-    const query = `
+    const normalizedPresetId = typeof presetId === "string" ? presetId.trim() : "";
+    const query = normalizedPresetId
+      ? `
+      UPDATE chat_sessions
+      SET settings = $1, preset_id = $2, updated_at = NOW()
+      WHERE id = $3 AND user_id = $4
+      RETURNING id, preset_id, title, settings, created_at, updated_at
+    `
+      : `
       UPDATE chat_sessions
       SET settings = $1, updated_at = NOW()
       WHERE id = $2 AND user_id = $3
-      RETURNING id, title, settings, created_at, updated_at
+      RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
-    const { rows } = await db.query(query, [normalizedSettings, sessionId, userId]);
+    const params = normalizedPresetId
+      ? [normalizedSettings, normalizedPresetId, sessionId, userId]
+      : [normalizedSettings, sessionId, userId];
+    const { rows } = await db.query(query, params);
     return rows[0] || null;
   },
 
@@ -78,7 +91,7 @@ const chatModel = {
       UPDATE chat_sessions
       SET updated_at = NOW()
       WHERE id = $1 AND user_id = $2
-      RETURNING id, title, settings, created_at, updated_at
+      RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
     const { rows } = await db.query(query, [sessionId, userId]);
     return rows[0] || null;
@@ -98,7 +111,7 @@ const chatModel = {
     if (!session) return null;
 
     const query = `
-      SELECT id, role, content, created_at
+      SELECT id, preset_id, role, content, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2
       ORDER BY id ASC
@@ -109,7 +122,7 @@ const chatModel = {
 
   async getMessage(userId, sessionId, messageId) {
     const query = `
-      SELECT id, role, content, created_at
+      SELECT id, preset_id, role, content, created_at
       FROM chat_messages
       WHERE id = $1 AND session_id = $2 AND user_id = $3
     `;
@@ -136,7 +149,7 @@ const chatModel = {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
 
     const query = `
-      SELECT id, role, content, created_at
+      SELECT id, preset_id, role, content, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2
       ORDER BY id DESC
@@ -153,7 +166,7 @@ const chatModel = {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 20;
 
     const query = `
-      SELECT id, role, content, created_at
+      SELECT id, preset_id, role, content, created_at
       FROM chat_messages
       WHERE session_id = $1 AND user_id = $2 AND id <= $3
       ORDER BY id DESC
@@ -170,11 +183,11 @@ const chatModel = {
     if (!normalizedContent) throw new Error("Content is required");
 
     const query = `
-      INSERT INTO chat_messages (session_id, user_id, role, content)
-      SELECT s.id, $2, $3, $4
+      INSERT INTO chat_messages (session_id, user_id, preset_id, role, content)
+      SELECT s.id, $2, s.preset_id, $3, $4
       FROM chat_sessions s
       WHERE s.id = $1 AND s.user_id = $2
-      RETURNING id, role, content, created_at
+      RETURNING id, preset_id, role, content, created_at
     `;
     const { rows } = await db.query(query, [sessionId, userId, normalizedRole, normalizedContent]);
     return rows[0] || null;
@@ -188,7 +201,7 @@ const chatModel = {
       UPDATE chat_messages
       SET content = $1
       WHERE id = $2 AND session_id = $3 AND user_id = $4
-      RETURNING id, role, content, created_at
+      RETURNING id, preset_id, role, content, created_at
     `;
     const { rows } = await db.query(query, [normalizedContent, messageId, sessionId, userId]);
     return rows[0] || null;

@@ -1,5 +1,5 @@
--- Note: built-in presets (e.g. "default") are NOT stored in this table.
--- This table only stores user-created/modified presets.
+-- Note: built-in presets (e.g. "default") are mirrored here to satisfy foreign keys,
+-- but they remain read-only and are still managed in code.
 CREATE TABLE chat_prompt_presets (
     id BIGSERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

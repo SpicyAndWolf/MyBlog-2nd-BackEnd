@@ -38,6 +38,59 @@ function normalizePresetId(rawValue) {
   return normalized;
 }
 
+function getSessionPresetId(session) {
+  return (
+    normalizePresetId(session?.preset_id || session?.presetId) ||
+    normalizePresetId(session?.settings?.systemPromptPresetId) ||
+    null
+  );
+}
+
+function getDefaultPresetId() {
+  return normalizePresetId(chatConfig.defaultSettings?.systemPromptPresetId) || "default";
+}
+
+async function resolvePresetForSession({
+  userId,
+  session,
+  incomingSettings,
+  explicitPresetId,
+  enforceMatch = false,
+} = {}) {
+  const defaultPresetId = getDefaultPresetId();
+  const sessionPresetId = session ? getSessionPresetId(session) : null;
+  const hasIncomingPresetId =
+    incomingSettings && Object.prototype.hasOwnProperty.call(incomingSettings, "systemPromptPresetId");
+  const hasExplicitPresetId = explicitPresetId !== undefined;
+
+  let requestedPresetId = null;
+  if (hasExplicitPresetId) {
+    requestedPresetId = normalizePresetId(explicitPresetId);
+    if (!requestedPresetId) return { error: "Invalid preset id" };
+  } else if (hasIncomingPresetId) {
+    requestedPresetId = normalizePresetId(incomingSettings.systemPromptPresetId);
+    if (!requestedPresetId) return { error: "Invalid preset id" };
+  }
+
+  if (enforceMatch && sessionPresetId) {
+    if (requestedPresetId && requestedPresetId !== sessionPresetId) {
+      return { error: "Preset mismatch" };
+    }
+    requestedPresetId = sessionPresetId;
+  }
+
+  const desiredPresetId = requestedPresetId || sessionPresetId || defaultPresetId;
+
+  if (!desiredPresetId) return { error: "Invalid preset id" };
+
+  let preset = await chatPresetModel.getPreset(userId, desiredPresetId);
+  if (!preset) {
+    return { error: "Preset not found" };
+  }
+
+  return { presetId: preset.id, preset, fallback: false };
+}
+
 const DEFAULT_SESSION_TITLE = "新对话";
 
 function formatSessionTitleFromMessage(messageText) {
@@ -397,8 +450,22 @@ const chatController = {
   async createSession(req, res) {
     try {
       const userId = req.user?.id;
-      const { title, settings } = req.body || {};
-      const session = await chatModel.createSession(userId, { title, settings });
+      const rawSettings = sanitizeChatSettings(req.body?.settings);
+      const presetResolution = await resolvePresetForSession({
+        userId,
+        incomingSettings: rawSettings,
+        explicitPresetId: req.body?.presetId,
+      });
+      if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
+
+      const { presetId, preset } = presetResolution;
+      const settings = {
+        ...rawSettings,
+        systemPromptPresetId: presetId,
+        systemPrompt: preset?.systemPrompt || "",
+      };
+      const title = req.body?.title;
+      const session = await chatModel.createSession(userId, { title, settings, presetId });
       res.status(201).json({ session });
     } catch (error) {
       console.error("Error in chatController.createSession:", error);
@@ -497,9 +564,16 @@ const chatController = {
       }
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
+      const presetResolution = await resolvePresetForSession({ userId, session, incomingSettings, enforceMatch: true });
+      if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
+
+      const { presetId, preset } = presetResolution;
       const mergedSettings = mergeSettings(session.settings, incomingSettings);
+      mergedSettings.systemPromptPresetId = presetId;
+      mergedSettings.systemPrompt = preset?.systemPrompt || "";
       const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings);
-      updatedSession = (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings)) || updatedSession;
+      updatedSession =
+        (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
 
       if (!regenerate) {
         updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;
@@ -530,10 +604,13 @@ const chatController = {
       const providerSettings = normalizeChatSettingsWithSchema(effectiveSettings, { providerId });
       providerSettings.providerId = providerId;
       providerSettings.modelId = modelId;
+      providerSettings.systemPromptPresetId = presetId;
+      providerSettings.systemPrompt = preset?.systemPrompt || "";
       if (providerDefinition?.capabilities?.webSearch === false) {
         providerSettings.enableWebSearch = false;
       }
-      updatedSession = (await chatModel.updateSessionSettings(userId, sessionId, providerSettings)) || updatedSession;
+      updatedSession =
+        (await chatModel.updateSessionSettings(userId, sessionId, providerSettings, presetId)) || updatedSession;
 
       const shouldStream = Boolean(providerSettings.stream);
 
@@ -651,7 +728,13 @@ const chatController = {
       if (!session) return res.status(404).json({ error: "Session not found" });
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
+      const presetResolution = await resolvePresetForSession({ userId, session, incomingSettings, enforceMatch: true });
+      if (presetResolution.error) return res.status(400).json({ error: presetResolution.error });
+
+      const { presetId, preset } = presetResolution;
       const mergedSettings = mergeSettings(session.settings, incomingSettings);
+      mergedSettings.systemPromptPresetId = presetId;
+      mergedSettings.systemPrompt = preset?.systemPrompt || "";
 
       const defaultProviderId = chatConfig.defaultProviderId;
       const candidateProviderId = mergedSettings.providerId || defaultProviderId;
@@ -677,23 +760,26 @@ const chatController = {
       const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings, { providerId });
       effectiveSettings.providerId = providerId;
       effectiveSettings.modelId = modelId;
+      effectiveSettings.systemPromptPresetId = presetId;
+      effectiveSettings.systemPrompt = preset?.systemPrompt || "";
       if (providerDefinition?.capabilities?.webSearch === false) {
         effectiveSettings.enableWebSearch = false;
       }
 
       const shouldStream = Boolean(effectiveSettings.stream);
 
+      let updatedSession =
+        (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
+
       const userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
 
-      let updatedSession = session;
-
       const messageCount = await chatModel.countMessages(userId, sessionId);
       if (session.title === DEFAULT_SESSION_TITLE && messageCount === 1) {
-        updatedSession = await chatModel.updateSessionTitle(userId, sessionId, formatSessionTitleFromMessage(content));
+        updatedSession =
+          (await chatModel.updateSessionTitle(userId, sessionId, formatSessionTitleFromMessage(content))) ||
+          updatedSession;
       }
-
-      updatedSession = await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings);
 
       const history = await chatModel.listRecentMessages(userId, sessionId, chatConfig.historyLimit);
       if (history === null) return res.status(404).json({ error: "Session not found" });

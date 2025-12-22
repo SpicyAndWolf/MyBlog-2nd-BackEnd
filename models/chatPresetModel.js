@@ -48,11 +48,36 @@ function withBuiltinMetadata(preset) {
   };
 }
 
+async function ensureBuiltinPresets(userId, presetIds = null) {
+  if (!userId) return;
+  const ids = Array.isArray(presetIds) ? presetIds.map((id) => String(id || "").trim()) : null;
+  const targets = ids ? BUILT_IN_PRESETS.filter((preset) => ids.includes(preset.id)) : BUILT_IN_PRESETS;
+  if (!targets.length) return;
+
+  const query = `
+    INSERT INTO chat_prompt_presets (user_id, preset_id, name, system_prompt, avatar_url)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (user_id, preset_id) DO NOTHING
+  `;
+
+  for (const preset of targets) {
+    await db.query(query, [
+      userId,
+      preset.id,
+      preset.name,
+      preset.systemPrompt || "",
+      preset.avatarUrl || null,
+    ]);
+  }
+}
+
 const chatPresetModel = {
   BUILT_IN_PRESETS: BUILT_IN_PRESETS.map(withBuiltinMetadata).filter(Boolean),
   isBuiltinPresetId,
+  ensureBuiltinPresets,
 
   async listPresets(userId) {
+    await ensureBuiltinPresets(userId);
     const builtins = chatPresetModel.BUILT_IN_PRESETS;
     const builtinIds = [...BUILT_IN_PRESET_IDS];
 
@@ -69,7 +94,10 @@ const chatPresetModel = {
   },
 
   async getPreset(userId, presetId) {
-    if (isBuiltinPresetId(presetId)) return withBuiltinMetadata(findBuiltinPreset(presetId));
+    if (isBuiltinPresetId(presetId)) {
+      await ensureBuiltinPresets(userId, [presetId]);
+      return withBuiltinMetadata(findBuiltinPreset(presetId));
+    }
 
     const query = `
       SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at
@@ -161,7 +189,7 @@ const chatPresetModel = {
                   '{systemPrompt}', to_jsonb($2::text), true
                 ),
                 updated_at = NOW()
-            WHERE user_id = $3 AND settings->>'systemPromptPresetId' = $4
+            WHERE user_id = $3 AND preset_id = $4
           `,
           [nextId, updated.systemPrompt || "", userId, presetId]
         );
@@ -218,25 +246,8 @@ const chatPresetModel = {
         return { deleted: false, fallbackPresetId: null };
       }
 
-      const fallback = findBuiltinPreset("default") || BUILT_IN_PRESETS[0] || null;
-      const fallbackPresetId = fallback?.id || "default";
-      const fallbackSystemPrompt = String(fallback?.systemPrompt || "");
-
-      await client.query(
-        `
-          UPDATE chat_sessions
-          SET settings = jsonb_set(
-                jsonb_set(settings, '{systemPromptPresetId}', to_jsonb($1::text), true),
-                '{systemPrompt}', to_jsonb($2::text), true
-              ),
-              updated_at = NOW()
-          WHERE user_id = $3 AND settings->>'systemPromptPresetId' = $4
-        `,
-        [fallbackPresetId, fallbackSystemPrompt, userId, presetId]
-      );
-
       await client.query("COMMIT");
-      return { deleted: true, fallbackPresetId };
+      return { deleted: true, fallbackPresetId: null };
     } catch (error) {
       try {
         await client.query("ROLLBACK");
