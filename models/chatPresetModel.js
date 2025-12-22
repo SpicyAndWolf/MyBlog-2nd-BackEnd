@@ -189,9 +189,9 @@ const chatPresetModel = {
                   '{systemPrompt}', to_jsonb($2::text), true
                 ),
                 updated_at = NOW()
-            WHERE user_id = $3 AND preset_id = $4
+            WHERE user_id = $3 AND preset_id = $1
           `,
-          [nextId, updated.systemPrompt || "", userId, presetId]
+          [nextId, updated.systemPrompt || "", userId]
         );
       }
 
