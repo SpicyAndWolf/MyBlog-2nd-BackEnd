@@ -16,7 +16,7 @@ const {
   createChatCompletion,
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
-} = require("../services/llm/openAiChatCompletions");
+} = require("../services/llm/chatCompletions");
 
 function parseSessionId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);

@@ -5,6 +5,9 @@ module.exports = {
   defaultBaseUrl: "https://api.x.ai/v1",
   apiKeyEnv: ["XAI_API_KEY", "GROK_API_KEY"],
   baseUrlEnv: ["XAI_BASE_URL", "GROK_BASE_URL"],
+  openaiCompatible: {
+    bodyExtensions: {},
+  },
   models: [
     { id: "grok-4", name: "grok-4" },
     { id: "grok-4-fast-non-reasoning", name: "grok-4-fast-non-reasoning" },
@@ -23,4 +26,3 @@ module.exports = {
     tools: false,
   },
 };
-
