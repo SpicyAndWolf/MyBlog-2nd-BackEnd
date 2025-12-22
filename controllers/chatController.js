@@ -165,6 +165,7 @@ const chatController = {
             models,
             adapter: definition?.adapter || "unknown",
             capabilities: definition?.capabilities || {},
+            settingsSchema: Array.isArray(definition?.settingsSchema) ? definition.settingsSchema : [],
             defaults,
           };
         })

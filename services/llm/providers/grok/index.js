@@ -8,6 +8,43 @@ module.exports = {
   openaiCompatible: {
     bodyExtensions: {},
   },
+  settingsSchema: [
+    {
+      key: "temperature",
+      label: "Temperature",
+      type: "range",
+      min: 0,
+      max: 2,
+      step: 0.1,
+      decimals: 1,
+      capability: "temperature",
+    },
+    {
+      key: "topP",
+      label: "Top P",
+      type: "range",
+      min: 0,
+      max: 1,
+      step: 0.05,
+      decimals: 2,
+      capability: "topP",
+    },
+    {
+      key: "maxOutputTokens",
+      label: "Max Output Tokens",
+      type: "number",
+      min: 128,
+      max: 8192,
+      step: 64,
+      capability: "maxTokens",
+    },
+    {
+      key: "stream",
+      label: "Streaming",
+      type: "toggle",
+      capability: "stream",
+    },
+  ],
   models: [
     { id: "grok-4", name: "grok-4" },
     { id: "grok-4-fast-non-reasoning", name: "grok-4-fast-non-reasoning" },
@@ -24,5 +61,6 @@ module.exports = {
     frequencyPenalty: false,
     webSearch: false,
     tools: false,
+    thinking: false,
   },
 };

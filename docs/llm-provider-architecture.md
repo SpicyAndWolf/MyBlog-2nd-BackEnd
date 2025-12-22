@@ -90,7 +90,7 @@ BlogBackEnd/services/llm/
 
 - `providers[].capabilities`
 - `providers[].defaults`（每个 provider 的推荐默认值）
-- （可选）`providers[].parameterSchema`（用于前端动态渲染/校验 slider 范围、step 等）
+- （已落地）`providers[].settingsSchema`（用于前端动态渲染/校验 slider 范围、step 等）
 
 前端如果暂时不使用这些字段也不会受影响。
 
@@ -109,4 +109,3 @@ BlogBackEnd/services/llm/
 - **Web Search**：把 `enableWebSearch` 视为内部意图，由 provider adapter 决定如何落地（不同供应商参数名/结构不同）。
 - **Function/Tool Calling**：定义统一的 `tools` 表达方式与 tool 输出回写策略；在支持的 provider 上实现协议映射。
 - **Per-model defaults**：在 `providers[].models[]` 上挂载推荐默认值/能力（reasoning、max tokens 等），meta 直接返回给前端。
-
