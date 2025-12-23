@@ -1,4 +1,5 @@
 const db = require("../db");
+const { logger } = require("../logger");
 
 const articleModel = {
   // 查找已发布的文章（带筛选和分页）
@@ -214,7 +215,7 @@ const articleModel = {
     } catch (error) {
       // 如果任何一步出错，回滚所有操作
       await client.query("ROLLBACK");
-      console.error("Error in articleModel.create (transaction rolled back):", error);
+      logger.error("article_create_transaction_failed", { error });
       // 抛出错误，让控制器去处理
       throw error;
     } finally {

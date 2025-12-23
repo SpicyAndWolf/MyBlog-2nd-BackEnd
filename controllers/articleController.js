@@ -5,6 +5,7 @@ const sharp = require("sharp");
 const path = require("path");
 const fs = require("fs");
 const { articleConfig } = require("../config");
+const { logger, withRequestContext } = require("../logger");
 
 const uploadsRoot = path.join(__dirname, "..", "uploads", "articles");
 const contentDir = path.join(uploadsRoot, "content");
@@ -191,7 +192,7 @@ const cleanupStaleTempContentImages = () => {
   const now = Date.now();
   fs.readdir(contentTmpDir, (err, files = []) => {
     if (err) {
-      console.error("Failed to read temp content dir:", err);
+      logger.warn("article_temp_cleanup_read_failed", { error: err });
       return;
     }
     files.forEach((file) => {
@@ -233,7 +234,7 @@ const articleController = {
 
       res.status(200).json(result);
     } catch (error) {
-      console.error("Error in articleController.getAllPublishedArticles:", error);
+      logger.error("article_list_published_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -249,7 +250,7 @@ const articleController = {
 
       res.status(200).json(article);
     } catch (error) {
-      console.error("Error in articleController.getPublishedArticleById:", error);
+      logger.error("article_get_published_failed", withRequestContext(req, { error, articleId: req.params.id }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -264,7 +265,7 @@ const articleController = {
       });
       res.status(200).json(result);
     } catch (error) {
-      console.error("Error in articleController.getAllArticlesAdmin:", error);
+      logger.error("article_list_admin_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "服务器内部错误" });
     }
   },
@@ -292,7 +293,7 @@ const articleController = {
         isTemp: true,
       });
     } catch (error) {
-      console.error("uploadContentImage error:", error);
+      logger.error("article_upload_content_image_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "图片上传失败" });
     }
   },
@@ -341,7 +342,7 @@ const articleController = {
 
       res.status(201).json({ message: "文章创建成功", article: newArticle });
     } catch (error) {
-      console.error("Error in articleController.createArticle:", error);
+      logger.error("article_create_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "创建文章失败，服务器内部错误" });
     }
   },
@@ -357,7 +358,7 @@ const articleController = {
 
       res.status(200).json(article);
     } catch (error) {
-      console.error("Error in articleController.getArticleByIdAdmin:", error);
+      logger.error("article_get_admin_failed", withRequestContext(req, { error, articleId: req.params.id }));
       res.status(500).json({ error: "服务器内部错误" });
     }
   },
@@ -433,7 +434,7 @@ const articleController = {
       await cleanupUploadUrlsIfUnreferenced([...urlsToCleanup, ...promotedOrphans], { excludeArticleId: id });
       res.status(200).json({ message: "文章更新成功", article: updatedArticle });
     } catch (error) {
-      console.error("Error in articleController.updateArticle:", error);
+      logger.error("article_update_failed", withRequestContext(req, { error, articleId: req.params.id }));
       res.status(500).json({ error: "更新文章失败，服务器内部错误" });
     }
   },
@@ -460,7 +461,7 @@ const articleController = {
 
       res.status(204).send();
     } catch (error) {
-      console.error("Error in articleController.deleteArticle:", error);
+      logger.error("article_delete_failed", withRequestContext(req, { error, articleId: req.params.id }));
       res.status(500).json({ error: "删除文章失败，服务器内部错误" });
     }
   },

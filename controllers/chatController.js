@@ -5,6 +5,7 @@ const path = require("path");
 const sharp = require("sharp");
 const { buildOpenAiChatMessages } = require("../services/chat/context");
 const { chatConfig, llmConfig } = require("../config");
+const { logger, withRequestContext } = require("../logger");
 const {
   getProviderDefinition,
   isSupportedProvider,
@@ -274,7 +275,7 @@ const chatController = {
 
       res.status(200).json({ providers, defaults });
     } catch (error) {
-      console.error("Error in chatController.getMeta:", error);
+      logger.error("chat_meta_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -285,7 +286,7 @@ const chatController = {
       const presets = await chatPresetModel.listPresets(userId);
       res.status(200).json({ presets });
     } catch (error) {
-      console.error("Error in chatController.listPresets:", error);
+      logger.error("chat_preset_list_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -317,7 +318,7 @@ const chatController = {
       if (error?.code === "23505") {
         return res.status(409).json({ error: "Preset id already exists" });
       }
-      console.error("Error in chatController.createPreset:", error);
+      logger.error("chat_preset_create_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -366,7 +367,10 @@ const chatController = {
       if (error?.code === "BUILTIN_PRESET_ID" || error?.code === "BUILTIN_PRESET_READONLY") {
         return res.status(400).json({ error: error.message });
       }
-      console.error("Error in chatController.updatePreset:", error);
+      logger.error(
+        "chat_preset_update_failed",
+        withRequestContext(req, { error, presetId: req.params.presetId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -385,7 +389,10 @@ const chatController = {
 
       res.status(204).send();
     } catch (error) {
-      console.error("Error in chatController.deletePreset:", error);
+      logger.error(
+        "chat_preset_delete_failed",
+        withRequestContext(req, { error, presetId: req.params.presetId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -431,7 +438,10 @@ const chatController = {
 
       res.status(200).json({ preset });
     } catch (error) {
-      console.error("Error in chatController.uploadPresetAvatar:", error);
+      logger.error(
+        "chat_preset_avatar_upload_failed",
+        withRequestContext(req, { error, presetId: req.params.presetId })
+      );
       res.status(500).json({ error: error?.message || "Internal Server Error" });
     }
   },
@@ -442,7 +452,7 @@ const chatController = {
       const sessions = await chatModel.listSessions(userId);
       res.status(200).json({ sessions });
     } catch (error) {
-      console.error("Error in chatController.listSessions:", error);
+      logger.error("chat_session_list_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -468,7 +478,7 @@ const chatController = {
       const session = await chatModel.createSession(userId, { title, settings, presetId });
       res.status(201).json({ session });
     } catch (error) {
-      console.error("Error in chatController.createSession:", error);
+      logger.error("chat_session_create_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -487,7 +497,10 @@ const chatController = {
 
       res.status(200).json({ session });
     } catch (error) {
-      console.error("Error in chatController.renameSession:", error);
+      logger.error(
+        "chat_session_rename_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -503,7 +516,10 @@ const chatController = {
 
       res.status(204).send();
     } catch (error) {
-      console.error("Error in chatController.deleteSession:", error);
+      logger.error(
+        "chat_session_delete_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -519,7 +535,10 @@ const chatController = {
 
       res.status(200).json({ messages });
     } catch (error) {
-      console.error("Error in chatController.listMessages:", error);
+      logger.error(
+        "chat_messages_list_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -708,7 +727,10 @@ const chatController = {
         return;
       }
 
-      console.error("Error in chatController.editMessage:", error);
+      logger.error(
+        "chat_message_edit_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId, messageId: req.params.messageId })
+      );
       res.status(500).json({ error: message });
     }
   },
@@ -880,7 +902,10 @@ const chatController = {
         return;
       }
 
-      console.error("Error in chatController.sendMessage:", error);
+      logger.error(
+        "chat_message_send_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
       res.status(500).json({ error: message });
     }
   },

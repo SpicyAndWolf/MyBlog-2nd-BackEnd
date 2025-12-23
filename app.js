@@ -8,6 +8,10 @@ require("module-alias/register");
 // 引入配置文件
 dotenv.config();
 
+const { logger } = require("./logger");
+const requestLogger = require("./middleware/requestLogger");
+const errorHandler = require("./middleware/errorHandler");
+
 // 导入所有路由
 const tagsRouter = require("./routes/tags");
 const articlesRouter = require("./routes/articles");
@@ -19,7 +23,16 @@ const chatRouter = require("./routes/chat");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandled_rejection", { error: reason });
+});
+
+process.on("uncaughtException", (error) => {
+  logger.error("uncaught_exception", { error });
+});
+
 app.use(cors());
+app.use(requestLogger);
 app.use(express.json());
 
 // 开放静态资源，如 /uploads/articles/...
@@ -35,6 +48,8 @@ app.use("/api/chat", chatRouter);
 // 管理后台API (所有这里的路由都需要认证)
 app.use("/api/admin/articles", adminArticlesRouter);
 
+app.use(errorHandler);
+
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  logger.info("server_started", { port: PORT });
 });

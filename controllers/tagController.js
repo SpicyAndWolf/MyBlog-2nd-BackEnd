@@ -1,4 +1,5 @@
 const tagModel = require("@models/tagModel");
+const { logger, withRequestContext } = require("../logger");
 
 const tagController = {
   // 获取所有标签并构造成层级结构
@@ -39,7 +40,7 @@ const tagController = {
 
       res.status(200).json(topTags);
     } catch (error) {
-      console.error("Error in tagController.getAllTags:", error);
+      logger.error("tag_list_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -59,7 +60,7 @@ const tagController = {
         // '23505' 是 PostgreSQL 中 unique_violation 的错误码
         return res.status(409).json({ error: "该标签名称已存在" });
       }
-      console.error("Error in tagController.createTag:", error);
+      logger.error("tag_create_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "创建标签失败" });
     }
   },
@@ -81,7 +82,7 @@ const tagController = {
       if (error.code === "23505") {
         return res.status(409).json({ error: "该标签名称已存在" });
       }
-      console.error("Error in tagController.updateTag:", error);
+      logger.error("tag_update_failed", withRequestContext(req, { error, tagId: req.params.id }));
       res.status(500).json({ error: "更新标签失败" });
     }
   },
@@ -108,7 +109,7 @@ const tagController = {
 
       res.status(204).send();
     } catch (error) {
-      console.error("Error in tagController.deleteTag:", error);
+      logger.error("tag_delete_failed", withRequestContext(req, { error, tagId: req.params.id }));
       res.status(500).json({ error: "删除标签失败" });
     }
   },

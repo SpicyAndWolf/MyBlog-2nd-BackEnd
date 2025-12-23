@@ -1,6 +1,7 @@
 const userModel = require("@models/userModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { logger, withRequestContext } = require("../logger");
 
 const authController = {
   async me(req, res) {
@@ -20,7 +21,7 @@ const authController = {
         },
       });
     } catch (error) {
-      console.error("Error in authController.me:", error);
+      logger.error("auth_me_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -64,7 +65,7 @@ const authController = {
         token: token,
       });
     } catch (error) {
-      console.error("Error in authController.login:", error);
+      logger.error("auth_login_failed", withRequestContext(req, { error }));
       res.status(500).json({ error: "服务器内部错误" });
     }
   },
