@@ -710,6 +710,7 @@ const chatController = {
       const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
 
       let assistantContent = "";
+      let finalAssistantContent = "";
       try {
         const upstreamResponse = await createChatCompletionStreamResponse({
           providerId,
@@ -719,7 +720,26 @@ const chatController = {
           signal: abortController.signal,
         });
 
-        for await (const delta of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
+        for await (const event of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
+          if (typeof event === "string") {
+            const delta = event;
+            if (!delta) continue;
+            assistantContent += delta;
+            writeSse(res, { type: "delta", delta });
+            continue;
+          }
+
+          if (!event || typeof event !== "object") continue;
+
+          if (event.type === "final") {
+            if (typeof event.content === "string" && event.content.trim()) {
+              finalAssistantContent = event.content;
+            }
+            continue;
+          }
+
+          const delta = typeof event.delta === "string" ? event.delta : "";
+          if (!delta) continue;
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }
@@ -737,7 +757,7 @@ const chatController = {
         clearTimeout(timeout);
       }
 
-      const normalizedAssistantContent = assistantContent.trim();
+      const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
       if (!normalizedAssistantContent) {
         writeSse(res, { type: "error", error: "Empty model response" });
         res.end();
@@ -880,6 +900,7 @@ const chatController = {
       const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), llmConfig.timeoutMs);
 
       let assistantContent = "";
+      let finalAssistantContent = "";
       try {
         const upstreamResponse = await createChatCompletionStreamResponse({
           providerId,
@@ -889,7 +910,26 @@ const chatController = {
           signal: abortController.signal,
         });
 
-        for await (const delta of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
+        for await (const event of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
+          if (typeof event === "string") {
+            const delta = event;
+            if (!delta) continue;
+            assistantContent += delta;
+            writeSse(res, { type: "delta", delta });
+            continue;
+          }
+
+          if (!event || typeof event !== "object") continue;
+
+          if (event.type === "final") {
+            if (typeof event.content === "string" && event.content.trim()) {
+              finalAssistantContent = event.content;
+            }
+            continue;
+          }
+
+          const delta = typeof event.delta === "string" ? event.delta : "";
+          if (!delta) continue;
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }
@@ -907,7 +947,7 @@ const chatController = {
         clearTimeout(timeout);
       }
 
-      const normalizedAssistantContent = assistantContent.trim();
+      const normalizedAssistantContent = (finalAssistantContent || assistantContent).trim();
       if (!normalizedAssistantContent) {
         writeSse(res, { type: "error", error: "Empty model response" });
         res.end();

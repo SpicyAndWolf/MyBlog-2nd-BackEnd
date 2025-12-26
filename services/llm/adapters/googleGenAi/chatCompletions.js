@@ -11,6 +11,40 @@ function normalizeText(value) {
   return String(value || "");
 }
 
+function applyGroundingCitations(text, groundingMetadata) {
+  const rawText = typeof text === "string" ? text : "";
+  if (!rawText) return rawText;
+
+  const supports = groundingMetadata?.groundingSupports;
+  const chunks = groundingMetadata?.groundingChunks;
+  if (!Array.isArray(supports) || !Array.isArray(chunks) || !supports.length || !chunks.length) return rawText;
+
+  const sortedSupports = [...supports].sort((a, b) => (b?.segment?.endIndex ?? 0) - (a?.segment?.endIndex ?? 0));
+
+  let output = rawText;
+  for (const support of sortedSupports) {
+    const endIndex = support?.segment?.endIndex;
+    if (!Number.isFinite(endIndex) || endIndex < 0) continue;
+    if (!Array.isArray(support?.groundingChunkIndices) || !support.groundingChunkIndices.length) continue;
+    if (endIndex > output.length) continue;
+
+    const links = support.groundingChunkIndices
+      .map((index) => {
+        const chunk = chunks[index];
+        const uri = typeof chunk?.web?.uri === "string" ? chunk.web.uri.trim() : "";
+        if (!uri) return null;
+        return `[${index + 1}](${uri})`;
+      })
+      .filter(Boolean);
+
+    if (!links.length) continue;
+
+    output = `${output.slice(0, endIndex)}${links.join(", ")}${output.slice(endIndex)}`;
+  }
+
+  return output;
+}
+
 function readSetting(settings, key) {
   if (!isPlainObject(settings)) return undefined;
   return settings[key];
@@ -94,6 +128,7 @@ function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruct
   const maxOutputTokens = readSetting(settings, "maxOutputTokens");
   const presencePenalty = readSetting(settings, "presencePenalty");
   const frequencyPenalty = readSetting(settings, "frequencyPenalty");
+  const enableWebSearch = Boolean(readSetting(settings, "enableWebSearch"));
   const thinkingLevel = readSetting(settings, "thinkingLevel");
   const thinkingBudget = readSetting(settings, "thinkingBudget");
 
@@ -142,6 +177,10 @@ function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruct
 
   const safetySettings = buildSafetySettings(settings);
   if (safetySettings.length) config.safetySettings = safetySettings;
+
+  if (enableWebSearch && isBodyParamAllowed(providerId, "tools", { model, settings })) {
+    config.tools = [{ googleSearch: {} }];
+  }
 
   return config;
 }
@@ -198,7 +237,10 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
       );
     }
 
-    const content = normalizeText(response?.text).trim();
+    const groundingMetadata = response?.candidates?.[0]?.groundingMetadata;
+
+    const rawText = normalizeText(response?.text);
+    const content = applyGroundingCitations(rawText, groundingMetadata).trim();
     if (!content) {
       const blockReason = response?.promptFeedback?.blockReason || response?.promptFeedback?.blockReasonMessage;
       if (blockReason) throw new Error(`Blocked by safety policy: ${String(blockReason)}`);
@@ -231,6 +273,7 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
 
 async function* streamChatCompletionDeltas({ response }) {
   let emitted = "";
+  let groundingMetadata = null;
 
   for await (const chunk of response) {
     const functionCalls = chunk?.functionCalls;
@@ -244,18 +287,26 @@ async function* streamChatCompletionDeltas({ response }) {
     const blockReason = chunk?.promptFeedback?.blockReason || chunk?.promptFeedback?.blockReasonMessage;
     if (blockReason) throw new Error(`Blocked by safety policy: ${String(blockReason)}`);
 
+    const nextGroundingMetadata = chunk?.candidates?.[0]?.groundingMetadata;
+    if (nextGroundingMetadata) groundingMetadata = nextGroundingMetadata;
+
     const text = typeof chunk?.text === "string" ? chunk.text : "";
     if (!text) continue;
 
     if (text.startsWith(emitted)) {
       const delta = text.slice(emitted.length);
       emitted = text;
-      if (delta) yield delta;
+      if (delta) yield { type: "delta", delta };
       continue;
     }
 
     emitted += text;
-    yield text;
+    yield { type: "delta", delta: text };
+  }
+
+  if (groundingMetadata) {
+    const content = applyGroundingCitations(emitted, groundingMetadata).trim() || emitted.trim();
+    yield { type: "final", content };
   }
 }
 

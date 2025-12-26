@@ -95,6 +95,12 @@ module.exports = {
       capability: "stream",
     },
     {
+      key: "enableWebSearch",
+      label: "Web Search (Google)",
+      type: "toggle",
+      capability: "webSearch",
+    },
+    {
       key: "safetyHarassment",
       label: "Safety: Harassment",
       type: "select",
@@ -135,7 +141,7 @@ module.exports = {
     maxTokens: true,
     presencePenalty: false,
     frequencyPenalty: false,
-    webSearch: false,
+    webSearch: true,
     tools: false,
     thinking: true,
   },
