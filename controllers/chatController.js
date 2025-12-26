@@ -131,6 +131,45 @@ function sanitizeChatSettings(rawSettings) {
   if (typeof rawSettings.enableWebSearch === "boolean") sanitized.enableWebSearch = rawSettings.enableWebSearch;
   if (typeof rawSettings.stream === "boolean") sanitized.stream = rawSettings.stream;
 
+  const providerId = String(sanitized.providerId || "").trim();
+  const providerDefinition = providerId ? getProviderDefinition(providerId) : null;
+  const schema = Array.isArray(providerDefinition?.settingsSchema) ? providerDefinition.settingsSchema : [];
+
+  for (const control of schema) {
+    const key = typeof control?.key === "string" ? control.key.trim() : "";
+    if (!key) continue;
+    if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
+
+    const type = String(control?.type || "").trim();
+
+    if (type === "toggle") {
+      if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
+      continue;
+    }
+
+    if (type === "select") {
+      if (typeof rawSettings[key] !== "string") continue;
+      const value = rawSettings[key].trim();
+      if (!value) continue;
+
+      const options = Array.isArray(control.options) ? control.options : [];
+      const allowed = new Set(
+        options
+          .map((option) => String(option?.value ?? "").trim())
+          .filter(Boolean)
+      );
+      if (!allowed.has(value)) continue;
+
+      sanitized[key] = value;
+      continue;
+    }
+
+    if (type === "range" || type === "number") {
+      const number = Number(rawSettings[key]);
+      if (Number.isFinite(number)) sanitized[key] = number;
+    }
+  }
+
   return sanitized;
 }
 

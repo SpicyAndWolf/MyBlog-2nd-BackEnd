@@ -1,7 +1,8 @@
 const grok = require("./grok");
 const deepseek = require("./deepseek");
+const gemini = require("./gemini");
 
-const PROVIDER_DEFINITIONS = [grok, deepseek]
+const PROVIDER_DEFINITIONS = [grok, deepseek, gemini]
   .map((provider) => (provider && typeof provider === "object" ? provider : null))
   .filter(Boolean);
 

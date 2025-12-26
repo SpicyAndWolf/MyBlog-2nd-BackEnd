@@ -102,6 +102,7 @@ const chatConfig = {
   defaultModelByProvider: {
     grok: readStringEnv("GROK_DEFAULT_MODEL", "grok-4"),
     deepseek: readStringEnv("DEEPSEEK_DEFAULT_MODEL", "deepseek-chat"),
+    gemini: readStringEnv("GEMINI_DEFAULT_MODEL", "gemini-2.5-flash"),
   },
   defaultSettings: baseChatDefaultSettings,
   defaultSettingsByProvider: {
@@ -109,6 +110,11 @@ const chatConfig = {
     deepseek: readProviderDefaultSettings({
       providerId: "deepseek",
       envPrefix: "DEEPSEEK",
+      baseDefaults: baseChatDefaultSettings,
+    }),
+    gemini: readProviderDefaultSettings({
+      providerId: "gemini",
+      envPrefix: "GEMINI",
       baseDefaults: baseChatDefaultSettings,
     }),
   },
