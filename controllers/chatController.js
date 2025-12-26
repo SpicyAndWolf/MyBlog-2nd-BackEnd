@@ -177,7 +177,7 @@ function normalizeChatSettingsWithSchema(settings, { providerId } = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return {};
 
   const normalized = { ...settings };
-  const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty"];
+  const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"];
 
   for (const key of keys) {
     if (normalized[key] === undefined) continue;
@@ -191,7 +191,7 @@ function normalizeChatSettingsWithSchema(settings, { providerId } = {}) {
       continue;
     }
 
-    if (key === "maxOutputTokens") {
+    if (key === "maxOutputTokens" || key === "thinkingBudget") {
       normalized[key] = Math.trunc(nextValue);
     } else {
       normalized[key] = nextValue;

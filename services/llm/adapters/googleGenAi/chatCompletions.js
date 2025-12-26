@@ -94,12 +94,15 @@ function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruct
   const maxOutputTokens = readSetting(settings, "maxOutputTokens");
   const presencePenalty = readSetting(settings, "presencePenalty");
   const frequencyPenalty = readSetting(settings, "frequencyPenalty");
+  const thinkingLevel = readSetting(settings, "thinkingLevel");
+  const thinkingBudget = readSetting(settings, "thinkingBudget");
 
   const normalizedTemperature = clampConfigNumber(providerId, "temperature", temperature);
   const normalizedTopP = clampConfigNumber(providerId, "topP", topP);
   const normalizedMaxTokens = clampConfigNumber(providerId, "maxOutputTokens", maxOutputTokens, { integer: true });
   const normalizedPresencePenalty = clampConfigNumber(providerId, "presencePenalty", presencePenalty);
   const normalizedFrequencyPenalty = clampConfigNumber(providerId, "frequencyPenalty", frequencyPenalty);
+  const normalizedThinkingBudget = clampConfigNumber(providerId, "thinkingBudget", thinkingBudget, { integer: true });
 
   if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings })) {
     config.temperature = normalizedTemperature;
@@ -115,6 +118,26 @@ function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruct
   }
   if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequencyPenalty", { model, settings })) {
     config.frequencyPenalty = normalizedFrequencyPenalty;
+  }
+
+  const thinkingConfig = {};
+
+  if (typeof thinkingLevel === "string") {
+    const normalizedThinkingLevel = thinkingLevel.trim().toUpperCase();
+    if (
+      ["MINIMAL", "LOW", "MEDIUM", "HIGH"].includes(normalizedThinkingLevel) &&
+      isBodyParamAllowed(providerId, "thinkingLevel", { model, settings })
+    ) {
+      thinkingConfig.thinkingLevel = normalizedThinkingLevel;
+    }
+  }
+
+  if (normalizedThinkingBudget !== null && isBodyParamAllowed(providerId, "thinkingBudget", { model, settings })) {
+    thinkingConfig.thinkingBudget = normalizedThinkingBudget;
+  }
+
+  if (Object.keys(thinkingConfig).length) {
+    config.thinkingConfig = thinkingConfig;
   }
 
   const safetySettings = buildSafetySettings(settings);

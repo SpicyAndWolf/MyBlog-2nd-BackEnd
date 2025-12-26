@@ -7,6 +7,13 @@ const safetyThresholdOptions = [
   { value: "BLOCK_LOW_AND_ABOVE", label: "Block low and above" },
 ];
 
+const thinkingLevelOptions = [
+  { value: "MINIMAL", label: "Minimal" },
+  { value: "LOW", label: "Low" },
+  { value: "MEDIUM", label: "Medium" },
+  { value: "HIGH", label: "High (default)" },
+];
+
 module.exports = {
   id: "gemini",
   name: "Gemini (Google)",
@@ -17,7 +24,17 @@ module.exports = {
   parameterPolicy: {
     blockedBodyParams: [],
     isBodyParamAllowed: ({ model, paramName }) => {
+      const normalizedModel = String(model || "").trim();
       if (["presencePenalty", "frequencyPenalty"].includes(paramName)) return false;
+
+      if (paramName === "thinkingLevel") {
+        return normalizedModel.startsWith("gemini-3");
+      }
+
+      if (paramName === "thinkingBudget") {
+        return normalizedModel.startsWith("gemini-2.5");
+      }
+
       return true;
     },
   },
@@ -50,6 +67,26 @@ module.exports = {
       max: 8192,
       step: 64,
       capability: "maxTokens",
+    },
+    {
+      key: "thinkingLevel",
+      label: "Thinking Level",
+      type: "select",
+      options: thinkingLevelOptions,
+      default: "HIGH",
+      capability: "thinking",
+      modelBlocklist: ["gemini-2.5-flash", "gemini-2.0-flash"],
+    },
+    {
+      key: "thinkingBudget",
+      label: "Thinking Budget (-1=auto, 0=off)",
+      type: "number",
+      min: -1,
+      max: 8192,
+      step: 128,
+      default: -1,
+      capability: "thinking",
+      modelBlocklist: ["gemini-2.0-flash", "gemini-3-flash-preview"],
     },
     {
       key: "stream",
