@@ -134,11 +134,15 @@ function sanitizeChatSettings(rawSettings) {
   const providerId = String(sanitized.providerId || "").trim();
   const providerDefinition = providerId ? getProviderDefinition(providerId) : null;
   const schema = Array.isArray(providerDefinition?.settingsSchema) ? providerDefinition.settingsSchema : [];
+  const modelId = String(sanitized.modelId || "").trim();
 
   for (const control of schema) {
     const key = typeof control?.key === "string" ? control.key.trim() : "";
     if (!key) continue;
     if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
+
+    const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
+    if (modelId && blocklist.includes(modelId)) continue;
 
     const type = String(control?.type || "").trim();
 
