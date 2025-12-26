@@ -1,6 +1,6 @@
 const { GoogleGenAI } = require("@google/genai");
 const { llmConfig } = require("../../../../config");
-const { getProviderConfig } = require("../../providers");
+const { getProviderConfig, isBodyParamAllowed } = require("../../providers");
 const { clampNumberWithRange, getGlobalNumericRange, getProviderNumericRange } = require("../../settingsSchema");
 
 function isPlainObject(value) {
@@ -77,7 +77,7 @@ function buildContentsFromOpenAiMessages(messages) {
   return { contents, systemInstruction };
 }
 
-function buildGenerateContentConfig({ providerId, baseUrl, systemInstruction, timeoutMs, signal, settings } = {}) {
+function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruction, timeoutMs, signal, settings } = {}) {
   const config = {};
 
   if (signal) config.abortSignal = signal;
@@ -101,11 +101,21 @@ function buildGenerateContentConfig({ providerId, baseUrl, systemInstruction, ti
   const normalizedPresencePenalty = clampConfigNumber(providerId, "presencePenalty", presencePenalty);
   const normalizedFrequencyPenalty = clampConfigNumber(providerId, "frequencyPenalty", frequencyPenalty);
 
-  if (normalizedTemperature !== null) config.temperature = normalizedTemperature;
-  if (normalizedTopP !== null) config.topP = normalizedTopP;
-  if (normalizedMaxTokens !== null) config.maxOutputTokens = normalizedMaxTokens;
-  if (normalizedPresencePenalty !== null) config.presencePenalty = normalizedPresencePenalty;
-  if (normalizedFrequencyPenalty !== null) config.frequencyPenalty = normalizedFrequencyPenalty;
+  if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings })) {
+    config.temperature = normalizedTemperature;
+  }
+  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "topP", { model, settings })) {
+    config.topP = normalizedTopP;
+  }
+  if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "maxOutputTokens", { model, settings })) {
+    config.maxOutputTokens = normalizedMaxTokens;
+  }
+  if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presencePenalty", { model, settings })) {
+    config.presencePenalty = normalizedPresencePenalty;
+  }
+  if (normalizedFrequencyPenalty !== null && isBodyParamAllowed(providerId, "frequencyPenalty", { model, settings })) {
+    config.frequencyPenalty = normalizedFrequencyPenalty;
+  }
 
   const safetySettings = buildSafetySettings(settings);
   if (safetySettings.length) config.safetySettings = safetySettings;
@@ -147,6 +157,7 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
     const { contents, systemInstruction } = buildContentsFromOpenAiMessages(messages);
     const config = buildGenerateContentConfig({
       providerId: provider.id,
+      model,
       baseUrl: provider.baseUrl,
       systemInstruction,
       timeoutMs,
@@ -184,6 +195,7 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
   const { contents, systemInstruction } = buildContentsFromOpenAiMessages(messages);
   const config = buildGenerateContentConfig({
     providerId: provider.id,
+    model,
     baseUrl: provider.baseUrl,
     systemInstruction,
     timeoutMs: llmConfig.timeoutMs,

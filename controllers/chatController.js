@@ -719,7 +719,7 @@ const chatController = {
           signal: abortController.signal,
         });
 
-        for await (const delta of streamChatCompletionDeltas({ response: upstreamResponse })) {
+        for await (const delta of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }
@@ -889,7 +889,7 @@ const chatController = {
           signal: abortController.signal,
         });
 
-        for await (const delta of streamChatCompletionDeltas({ response: upstreamResponse })) {
+        for await (const delta of streamChatCompletionDeltas({ providerId, response: upstreamResponse })) {
           assistantContent += delta;
           writeSse(res, { type: "delta", delta });
         }

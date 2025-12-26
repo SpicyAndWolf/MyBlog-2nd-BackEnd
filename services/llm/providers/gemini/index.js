@@ -14,6 +14,13 @@ module.exports = {
   defaultBaseUrl: "https://generativelanguage.googleapis.com",
   apiKeyEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   baseUrlEnv: ["GEMINI_BASE_URL"],
+  parameterPolicy: {
+    blockedBodyParams: [],
+    isBodyParamAllowed: ({ model, paramName }) => {
+      if (["presencePenalty", "frequencyPenalty"].includes(paramName)) return false;
+      return true;
+    },
+  },
   settingsSchema: [
     {
       key: "temperature",
@@ -43,26 +50,6 @@ module.exports = {
       max: 8192,
       step: 64,
       capability: "maxTokens",
-    },
-    {
-      key: "presencePenalty",
-      label: "Presence Penalty",
-      type: "range",
-      min: -2,
-      max: 2,
-      step: 0.1,
-      decimals: 1,
-      capability: "presencePenalty",
-    },
-    {
-      key: "frequencyPenalty",
-      label: "Frequency Penalty",
-      type: "range",
-      min: -2,
-      max: 2,
-      step: 0.1,
-      decimals: 1,
-      capability: "frequencyPenalty",
     },
     {
       key: "stream",
@@ -102,14 +89,15 @@ module.exports = {
   models: [
     { id: "gemini-2.5-flash", name: "gemini-2.5-flash" },
     { id: "gemini-2.0-flash", name: "gemini-2.0-flash" },
+    { id: "gemini-3-flash-preview", name: "gemini-3-flash-preview" },
   ],
   capabilities: {
     stream: true,
     temperature: true,
     topP: true,
     maxTokens: true,
-    presencePenalty: true,
-    frequencyPenalty: true,
+    presencePenalty: false,
+    frequencyPenalty: false,
     webSearch: false,
     tools: false,
     thinking: true,
