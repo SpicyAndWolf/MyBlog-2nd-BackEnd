@@ -17,8 +17,19 @@ const chatModel = {
     const query = `
       SELECT id, preset_id, title, settings, created_at, updated_at
       FROM chat_sessions
-      WHERE user_id = $1
+      WHERE user_id = $1 AND deleted_at IS NULL
       ORDER BY updated_at DESC, id DESC
+    `;
+    const { rows } = await db.query(query, [userId]);
+    return rows;
+  },
+
+  async listTrashedSessions(userId) {
+    const query = `
+      SELECT id, preset_id, title, settings, created_at, updated_at, deleted_at
+      FROM chat_sessions
+      WHERE user_id = $1 AND deleted_at IS NOT NULL
+      ORDER BY deleted_at DESC, updated_at DESC, id DESC
     `;
     const { rows } = await db.query(query, [userId]);
     return rows;
@@ -28,7 +39,7 @@ const chatModel = {
     const query = `
       SELECT id, preset_id, title, settings, created_at, updated_at
       FROM chat_sessions
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
     `;
     const { rows } = await db.query(query, [sessionId, userId]);
     return rows[0] || null;
@@ -56,7 +67,7 @@ const chatModel = {
     const query = `
       UPDATE chat_sessions
       SET title = $1, updated_at = NOW()
-      WHERE id = $2 AND user_id = $3
+      WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
     const { rows } = await db.query(query, [normalizedTitle, sessionId, userId]);
@@ -70,13 +81,13 @@ const chatModel = {
       ? `
       UPDATE chat_sessions
       SET settings = $1, preset_id = $2, updated_at = NOW()
-      WHERE id = $3 AND user_id = $4
+      WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at
     `
       : `
       UPDATE chat_sessions
       SET settings = $1, updated_at = NOW()
-      WHERE id = $2 AND user_id = $3
+      WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
     const params = normalizedPresetId
@@ -90,20 +101,61 @@ const chatModel = {
     const query = `
       UPDATE chat_sessions
       SET updated_at = NOW()
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
       RETURNING id, preset_id, title, settings, created_at, updated_at
     `;
     const { rows } = await db.query(query, [sessionId, userId]);
     return rows[0] || null;
   },
 
-  async deleteSession(userId, sessionId) {
+  async trashSession(userId, sessionId) {
+    const query = `
+      UPDATE chat_sessions
+      SET deleted_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+      RETURNING id, preset_id, title, settings, created_at, updated_at, deleted_at
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async restoreSession(userId, sessionId) {
+    const query = `
+      UPDATE chat_sessions
+      SET deleted_at = NULL, updated_at = NOW()
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+      RETURNING id, preset_id, title, settings, created_at, updated_at, deleted_at
+    `;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    return rows[0] || null;
+  },
+
+  async deleteSessionPermanently(userId, sessionId) {
     const query = `
       DELETE FROM chat_sessions
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
     `;
     const { rowCount } = await db.query(query, [sessionId, userId]);
     return rowCount > 0;
+  },
+
+  async purgeTrashedSessionsBefore(cutoff, { limit = 500 } = {}) {
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(5000, Math.trunc(limit))) : 500;
+    if (!cutoff) return 0;
+
+    const query = `
+      DELETE FROM chat_sessions
+      WHERE id IN (
+        SELECT id
+        FROM chat_sessions
+        WHERE deleted_at IS NOT NULL AND deleted_at < $1
+        ORDER BY deleted_at ASC, id ASC
+        LIMIT $2
+      )
+    `;
+
+    const { rowCount } = await db.query(query, [cutoff, normalizedLimit]);
+    return rowCount || 0;
   },
 
   async listMessages(userId, sessionId) {
@@ -186,7 +238,7 @@ const chatModel = {
       INSERT INTO chat_messages (session_id, user_id, preset_id, role, content)
       SELECT s.id, $2, s.preset_id, $3, $4
       FROM chat_sessions s
-      WHERE s.id = $1 AND s.user_id = $2
+      WHERE s.id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL
       RETURNING id, preset_id, role, content, created_at
     `;
     const { rows } = await db.query(query, [sessionId, userId, normalizedRole, normalizedContent]);

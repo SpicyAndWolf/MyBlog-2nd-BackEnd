@@ -19,6 +19,7 @@ const adminArticlesRouter = require("./routes/admin/articles");
 const authRouter = require("./routes/auth");
 const adminTagsRouter = require("./routes/admin/tags");
 const chatRouter = require("./routes/chat");
+const { startChatTrashCleanup } = require("./services/chat/trashCleanup");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,8 @@ app.use("/api/chat", chatRouter);
 app.use("/api/admin/articles", adminArticlesRouter);
 
 app.use(errorHandler);
+
+startChatTrashCleanup();
 
 app.listen(PORT, () => {
   logger.info("server_started", { port: PORT });

@@ -500,6 +500,17 @@ const chatController = {
     }
   },
 
+  async listTrashedSessions(req, res) {
+    try {
+      const userId = req.user?.id;
+      const sessions = await chatModel.listTrashedSessions(userId);
+      res.status(200).json({ sessions });
+    } catch (error) {
+      logger.error("chat_session_trash_list_failed", withRequestContext(req, { error }));
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
   async createSession(req, res) {
     try {
       const userId = req.user?.id;
@@ -554,13 +565,51 @@ const chatController = {
       const sessionId = parseSessionId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
 
-      const deleted = await chatModel.deleteSession(userId, sessionId);
-      if (!deleted) return res.status(404).json({ error: "Session not found" });
+      const session = await chatModel.trashSession(userId, sessionId);
+      if (!session) return res.status(404).json({ error: "Session not found" });
 
       res.status(204).send();
     } catch (error) {
       logger.error(
         "chat_session_delete_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async restoreSession(req, res) {
+    try {
+      const userId = req.user?.id;
+      const sessionId = parseSessionId(req.params.sessionId);
+      if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
+
+      const session = await chatModel.restoreSession(userId, sessionId);
+      if (!session) return res.status(404).json({ error: "Session not found" });
+
+      res.status(200).json({ session });
+    } catch (error) {
+      logger.error(
+        "chat_session_restore_failed",
+        withRequestContext(req, { error, sessionId: req.params.sessionId })
+      );
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async deleteSessionPermanently(req, res) {
+    try {
+      const userId = req.user?.id;
+      const sessionId = parseSessionId(req.params.sessionId);
+      if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
+
+      const deleted = await chatModel.deleteSessionPermanently(userId, sessionId);
+      if (!deleted) return res.status(404).json({ error: "Session not found" });
+
+      res.status(204).send();
+    } catch (error) {
+      logger.error(
+        "chat_session_delete_permanent_failed",
         withRequestContext(req, { error, sessionId: req.params.sessionId })
       );
       res.status(500).json({ error: "Internal Server Error" });
