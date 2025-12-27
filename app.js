@@ -8,6 +8,7 @@ require("module-alias/register");
 // 引入配置文件
 dotenv.config();
 
+const { chatConfig } = require("./config");
 const { logger } = require("./logger");
 const requestLogger = require("./middleware/requestLogger");
 const errorHandler = require("./middleware/errorHandler");
@@ -51,7 +52,11 @@ app.use("/api/admin/articles", adminArticlesRouter);
 
 app.use(errorHandler);
 
-startChatTrashCleanup();
+startChatTrashCleanup({
+  retentionDays: chatConfig.trashRetentionDays,
+  intervalMs: chatConfig.trashCleanupIntervalMs,
+  batchSize: chatConfig.trashPurgeBatchSize,
+});
 
 app.listen(PORT, () => {
   logger.info("server_started", { port: PORT });

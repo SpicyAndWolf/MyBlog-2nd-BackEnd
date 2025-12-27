@@ -1,12 +1,10 @@
-const { chatConfig } = require("../../config");
 const { logger } = require("../../logger");
 const chatModel = require("../../models/chatModel");
 
-function clampInt(value, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY, fallback } = {}) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  const truncated = Math.trunc(number);
-  return Math.min(max, Math.max(min, truncated));
+const REQUIRED_ENV_KEYS = ["CHAT_TRASH_RETENTION_DAYS", "CHAT_TRASH_CLEAN_INTERVAL_MS", "CHAT_TRASH_PURGE_BATCH_SIZE"];
+
+function isFiniteInteger(value) {
+  return Number.isFinite(value) && Number.isInteger(value);
 }
 
 function daysToMs(days) {
@@ -18,34 +16,51 @@ function computeCutoffDate({ now, retentionDays }) {
   return new Date(base.getTime() - daysToMs(retentionDays));
 }
 
-async function purgeExpiredTrashedSessions({
-  now = new Date(),
-  retentionDays = chatConfig.trashRetentionDays,
-  batchSize = chatConfig.trashPurgeBatchSize,
-} = {}) {
-  const normalizedRetentionDays = clampInt(retentionDays, { min: 0, max: 3650, fallback: 30 });
-  if (normalizedRetentionDays <= 0) return { purged: 0, disabled: true };
+async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, batchSize } = {}) {
+  if (!isFiniteInteger(retentionDays)) {
+    throw new Error(`Invalid trash retentionDays (set CHAT_TRASH_RETENTION_DAYS). Got: ${String(retentionDays)}`);
+  }
 
-  const normalizedBatchSize = clampInt(batchSize, { min: 1, max: 5000, fallback: 500 });
-  const cutoff = computeCutoffDate({ now, retentionDays: normalizedRetentionDays });
-  const purged = await chatModel.purgeTrashedSessionsBefore(cutoff, { limit: normalizedBatchSize });
+  if (retentionDays <= 0) return { purged: 0, disabled: true };
 
-  return { purged, cutoff, retentionDays: normalizedRetentionDays, batchSize: normalizedBatchSize };
+  if (!isFiniteInteger(batchSize) || batchSize <= 0) {
+    throw new Error(`Invalid trash batchSize (set CHAT_TRASH_PURGE_BATCH_SIZE). Got: ${String(batchSize)}`);
+  }
+
+  const cutoff = computeCutoffDate({ now, retentionDays });
+  const purged = await chatModel.purgeTrashedSessionsBefore(cutoff, { limit: batchSize });
+
+  return { purged, cutoff, retentionDays, batchSize };
 }
 
-function startChatTrashCleanup({ intervalMs = chatConfig.trashCleanupIntervalMs } = {}) {
-  const normalizedIntervalMs = clampInt(intervalMs, { min: 60_000, max: 7 * 24 * 60 * 60 * 1000, fallback: 6 * 60 * 60 * 1000 });
+function startChatTrashCleanup({ retentionDays, intervalMs, batchSize } = {}) {
+  if (!isFiniteInteger(retentionDays) || !isFiniteInteger(intervalMs) || !isFiniteInteger(batchSize)) {
+    logger.warn("chat_trash_cleanup_not_configured", {
+      requiredEnv: REQUIRED_ENV_KEYS,
+      retentionDays,
+      intervalMs,
+      batchSize,
+    });
+    return () => {};
+  }
+
+  if (intervalMs <= 0) {
+    throw new Error(`Invalid trash cleanup intervalMs (set CHAT_TRASH_CLEAN_INTERVAL_MS). Got: ${String(intervalMs)}`);
+  }
+
+  if (retentionDays <= 0) {
+    logger.info("chat_trash_cleanup_disabled", { retentionDays });
+    return () => {};
+  }
+
   let running = false;
 
   async function tick() {
     if (running) return;
     running = true;
     try {
-      const result = await purgeExpiredTrashedSessions();
-      if (result.disabled) {
-        logger.info("chat_trash_cleanup_disabled", { retentionDays: chatConfig.trashRetentionDays });
-        return;
-      }
+      const result = await purgeExpiredTrashedSessions({ retentionDays, batchSize });
+      if (result.disabled) return;
       if (result.purged > 0) {
         logger.info("chat_trash_cleanup_purged", {
           purged: result.purged,
@@ -63,10 +78,10 @@ function startChatTrashCleanup({ intervalMs = chatConfig.trashCleanupIntervalMs 
 
   void tick();
 
-  const timer = setInterval(() => void tick(), normalizedIntervalMs);
+  const timer = setInterval(() => void tick(), intervalMs);
   timer.unref?.();
 
-  logger.info("chat_trash_cleanup_started", { intervalMs: normalizedIntervalMs });
+  logger.info("chat_trash_cleanup_started", { retentionDays, intervalMs, batchSize });
 
   return () => clearInterval(timer);
 }

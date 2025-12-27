@@ -3,6 +3,22 @@ const { llmConfig } = require("../../../../config");
 const { getProviderConfig, isBodyParamAllowed } = require("../../providers");
 const { clampNumberWithRange, getGlobalNumericRange, getProviderNumericRange } = require("../../settingsSchema");
 
+const SUPPORTED_HARM_BLOCK_THRESHOLDS = new Set([
+  "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+  "OFF",
+  "BLOCK_NONE",
+  "BLOCK_ONLY_HIGH",
+  "BLOCK_MEDIUM_AND_ABOVE",
+  "BLOCK_LOW_AND_ABOVE",
+]);
+
+const SAFETY_THRESHOLD_KEYS = [
+  { key: "safetyHarassment", category: "HARM_CATEGORY_HARASSMENT" },
+  { key: "safetyHateSpeech", category: "HARM_CATEGORY_HATE_SPEECH" },
+  { key: "safetySexuallyExplicit", category: "HARM_CATEGORY_SEXUALLY_EXPLICIT" },
+  { key: "safetyDangerousContent", category: "HARM_CATEGORY_DANGEROUS_CONTENT" },
+];
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -57,22 +73,6 @@ function clampConfigNumber(providerId, key, value, { integer } = {}) {
   return integer ? Math.trunc(nextValue) : nextValue;
 }
 
-const SUPPORTED_HARM_BLOCK_THRESHOLDS = new Set([
-  "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
-  "OFF",
-  "BLOCK_NONE",
-  "BLOCK_ONLY_HIGH",
-  "BLOCK_MEDIUM_AND_ABOVE",
-  "BLOCK_LOW_AND_ABOVE",
-]);
-
-const SAFETY_THRESHOLD_KEYS = [
-  { key: "safetyHarassment", category: "HARM_CATEGORY_HARASSMENT" },
-  { key: "safetyHateSpeech", category: "HARM_CATEGORY_HATE_SPEECH" },
-  { key: "safetySexuallyExplicit", category: "HARM_CATEGORY_SEXUALLY_EXPLICIT" },
-  { key: "safetyDangerousContent", category: "HARM_CATEGORY_DANGEROUS_CONTENT" },
-];
-
 function buildSafetySettings(settings) {
   if (!isPlainObject(settings)) return [];
 
@@ -111,7 +111,15 @@ function buildContentsFromOpenAiMessages(messages) {
   return { contents, systemInstruction };
 }
 
-function buildGenerateContentConfig({ providerId, model, baseUrl, systemInstruction, timeoutMs, signal, settings } = {}) {
+function buildGenerateContentConfig({
+  providerId,
+  model,
+  baseUrl,
+  systemInstruction,
+  timeoutMs,
+  signal,
+  settings,
+} = {}) {
   const config = {};
 
   if (signal) config.abortSignal = signal;
@@ -209,7 +217,14 @@ function pickFunctionCallNames(functionCalls) {
     .join(", ");
 }
 
-async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, signal, settings } = {}) {
+async function createChatCompletion({
+  providerId,
+  model,
+  messages,
+  timeoutMs = llmConfig.timeoutMs,
+  signal,
+  settings,
+} = {}) {
   const provider = getProviderConfig(providerId);
   const ai = new GoogleGenAI({ apiKey: provider.apiKey });
 

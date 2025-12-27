@@ -139,9 +139,14 @@ const chatModel = {
     return rowCount > 0;
   },
 
-  async purgeTrashedSessionsBefore(cutoff, { limit = 500 } = {}) {
-    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(5000, Math.trunc(limit))) : 500;
-    if (!cutoff) return 0;
+  async purgeTrashedSessionsBefore(cutoff, { limit } = {}) {
+    if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
+      throw new Error("Invalid cutoff date");
+    }
+
+    if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) {
+      throw new Error("Invalid purge limit");
+    }
 
     const query = `
       DELETE FROM chat_sessions
@@ -154,7 +159,7 @@ const chatModel = {
       )
     `;
 
-    const { rowCount } = await db.query(query, [cutoff, normalizedLimit]);
+    const { rowCount } = await db.query(query, [cutoff, limit]);
     return rowCount || 0;
   },
 

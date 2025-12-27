@@ -98,9 +98,9 @@ const chatConfig = {
   maxContextMessages: readIntEnv("CHAT_MAX_CONTEXT_MESSAGES", 2000),
   maxContextChars: readIntEnv("CHAT_MAX_CONTEXT_CHARS", 128000),
   historyLimit: readIntEnv("CHAT_HISTORY_LIMIT", 48),
-  trashRetentionDays: readIntEnv("CHAT_TRASH_RETENTION_DAYS", 30),
-  trashCleanupIntervalMs: readIntEnv("CHAT_TRASH_CLEAN_INTERVAL_MS", 6 * 60 * 60 * 1000),
-  trashPurgeBatchSize: readIntEnv("CHAT_TRASH_PURGE_BATCH_SIZE", 500),
+  trashRetentionDays: readIntEnv("CHAT_TRASH_RETENTION_DAYS"),
+  trashCleanupIntervalMs: readIntEnv("CHAT_TRASH_CLEAN_INTERVAL_MS"),
+  trashPurgeBatchSize: readIntEnv("CHAT_TRASH_PURGE_BATCH_SIZE"),
   defaultProviderId: readStringEnv("CHAT_DEFAULT_PROVIDER", "deepseek"),
   defaultModelByProvider: {
     grok: readStringEnv("GROK_DEFAULT_MODEL", "grok-4"),
