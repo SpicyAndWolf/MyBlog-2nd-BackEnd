@@ -10,6 +10,33 @@ function readOptionalStringEnv(name) {
   return readStringEnv(name, undefined);
 }
 
+function ensureValidTimeZone(timeZone, { name } = {}) {
+  const normalized = normalizeKey(timeZone);
+  if (!normalized) throw new Error(`Env ${name || "unknown"} cannot be empty`);
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date());
+  } catch {
+    throw new Error(`Env ${name || "unknown"} has invalid IANA time zone: ${normalized}`);
+  }
+
+  return normalized;
+}
+
+function resolveChatDayTimeZone() {
+  const raw = readOptionalStringEnv("CHAT_DAY_TIME_ZONE");
+  const desired = raw;
+
+  try {
+    return ensureValidTimeZone(desired, { name: "CHAT_DAY_TIME_ZONE" });
+  } catch (error) {
+    if (raw) throw error;
+    return "UTC";
+  }
+}
+
+const chatDayTimeZone = resolveChatDayTimeZone();
+
 function readRequiredStringEnv(name) {
   const value = readOptionalStringEnv(name);
   if (!value) throw new Error(`Missing required env: ${name}`);
@@ -134,7 +161,9 @@ function ensureSupportedModel(providerId, modelId, { name } = {}) {
 function readProviderDefaultSettings({ providerId, envPrefix, baseDefaults } = {}) {
   const base = baseDefaults && typeof baseDefaults === "object" && !Array.isArray(baseDefaults) ? baseDefaults : {};
   const normalizedProviderId = ensureSupportedProvider(providerId, { name: "providerId" });
-  const normalizedPrefix = String(envPrefix || "").trim().toUpperCase();
+  const normalizedPrefix = String(envPrefix || "")
+    .trim()
+    .toUpperCase();
   if (!normalizedPrefix) return { ...base };
 
   const definition = getProviderDefinition(normalizedProviderId);
@@ -213,7 +242,10 @@ function readProviderDefaultSettings({ providerId, envPrefix, baseDefaults } = {
 const baseChatDefaultSettings = {
   temperature: readRequiredSettingNumber("CHAT_DEFAULT_TEMPERATURE", { key: "temperature" }),
   topP: readRequiredSettingNumber("CHAT_DEFAULT_TOP_P", { key: "topP" }),
-  maxOutputTokens: readRequiredSettingNumber("CHAT_DEFAULT_MAX_OUTPUT_TOKENS", { key: "maxOutputTokens", integer: true }),
+  maxOutputTokens: readRequiredSettingNumber("CHAT_DEFAULT_MAX_OUTPUT_TOKENS", {
+    key: "maxOutputTokens",
+    integer: true,
+  }),
   presencePenalty: readRequiredSettingNumber("CHAT_DEFAULT_PRESENCE_PENALTY", { key: "presencePenalty" }),
   frequencyPenalty: readRequiredSettingNumber("CHAT_DEFAULT_FREQUENCY_PENALTY", { key: "frequencyPenalty" }),
   stream: readRequiredBoolEnv("CHAT_DEFAULT_STREAM"),
@@ -222,7 +254,10 @@ const baseChatDefaultSettings = {
 };
 
 const chatConfig = {
-  maxContextMessages: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_MESSAGES"), { name: "CHAT_MAX_CONTEXT_MESSAGES" }),
+  dayTimeZone: chatDayTimeZone,
+  maxContextMessages: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_MESSAGES"), {
+    name: "CHAT_MAX_CONTEXT_MESSAGES",
+  }),
   maxContextChars: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_CHARS"), { name: "CHAT_MAX_CONTEXT_CHARS" }),
   historyLimit: ensurePositiveInt(readRequiredIntEnv("CHAT_HISTORY_LIMIT"), { name: "CHAT_HISTORY_LIMIT" }),
   trashRetentionDays: ensureNonNegativeInt(readRequiredIntEnv("CHAT_TRASH_RETENTION_DAYS"), {
@@ -234,13 +269,17 @@ const chatConfig = {
   trashPurgeBatchSize: ensurePositiveInt(readRequiredIntEnv("CHAT_TRASH_PURGE_BATCH_SIZE"), {
     name: "CHAT_TRASH_PURGE_BATCH_SIZE",
   }),
-  defaultProviderId: ensureSupportedProvider(readRequiredStringEnv("CHAT_DEFAULT_PROVIDER"), { name: "CHAT_DEFAULT_PROVIDER" }),
+  defaultProviderId: ensureSupportedProvider(readRequiredStringEnv("CHAT_DEFAULT_PROVIDER"), {
+    name: "CHAT_DEFAULT_PROVIDER",
+  }),
   defaultModelByProvider: {
     grok: ensureSupportedModel("grok", readRequiredStringEnv("GROK_DEFAULT_MODEL"), { name: "GROK_DEFAULT_MODEL" }),
     deepseek: ensureSupportedModel("deepseek", readRequiredStringEnv("DEEPSEEK_DEFAULT_MODEL"), {
       name: "DEEPSEEK_DEFAULT_MODEL",
     }),
-    gemini: ensureSupportedModel("gemini", readRequiredStringEnv("GEMINI_DEFAULT_MODEL"), { name: "GEMINI_DEFAULT_MODEL" }),
+    gemini: ensureSupportedModel("gemini", readRequiredStringEnv("GEMINI_DEFAULT_MODEL"), {
+      name: "GEMINI_DEFAULT_MODEL",
+    }),
   },
   defaultSettings: baseChatDefaultSettings,
   defaultSettingsByProvider: {
@@ -263,8 +302,12 @@ const llmConfig = {
 };
 
 const articleConfig = {
-  tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), { name: "ARTICLE_TEMP_IMAGE_TTL_MS" }),
-  cleanupIntervalMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_CLEAN_INTERVAL_MS"), { name: "ARTICLE_CLEAN_INTERVAL_MS" }),
+  tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), {
+    name: "ARTICLE_TEMP_IMAGE_TTL_MS",
+  }),
+  cleanupIntervalMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_CLEAN_INTERVAL_MS"), {
+    name: "ARTICLE_CLEAN_INTERVAL_MS",
+  }),
 };
 
 module.exports = {

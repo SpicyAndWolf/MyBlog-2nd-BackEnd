@@ -18,7 +18,25 @@ const {
   createChatCompletionStreamResponse,
   streamChatCompletionDeltas,
 } = require("../services/llm/chatCompletions");
-const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
+const {
+  getGlobalNumericRange,
+  getProviderNumericRange,
+  clampNumberWithRange,
+} = require("../services/llm/settingsSchema");
+
+const CHAT_DAY_TIME_ZONE = String(chatConfig.dayTimeZone).trim();
+
+let chatDayFormatter = null;
+function getChatDayFormatter() {
+  if (chatDayFormatter) return chatDayFormatter;
+  chatDayFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: CHAT_DAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return chatDayFormatter;
+}
 
 function parseSessionId(rawValue) {
   const asNumber = Number.parseInt(String(rawValue), 10);
@@ -39,6 +57,16 @@ function isDateKey(value) {
 function formatLocalDateKey(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
+  try {
+    const parts = getChatDayFormatter().formatToParts(date);
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    if (year && month && day) return `${year}-${month}-${day}`;
+  } catch {
+    // ignore
+  }
+
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -175,11 +203,7 @@ function sanitizeChatSettings(rawSettings) {
       if (!value) continue;
 
       const options = Array.isArray(control.options) ? control.options : [];
-      const allowed = new Set(
-        options
-          .map((option) => String(option?.value ?? "").trim())
-          .filter(Boolean)
-      );
+      const allowed = new Set(options.map((option) => String(option?.value ?? "").trim()).filter(Boolean));
       if (!allowed.has(value)) continue;
 
       sanitized[key] = value;
@@ -257,11 +281,7 @@ async function compressAvatarImage({ inputPath, baseName }) {
   const outputFilename = `${baseName}-compressed.webp`;
   const outputPath = path.join(dir, outputFilename);
 
-  await sharp(inputPath)
-    .rotate()
-    .resize(256, 256, { fit: "cover" })
-    .webp({ quality: 82 })
-    .toFile(outputPath);
+  await sharp(inputPath).rotate().resize(256, 256, { fit: "cover" }).webp({ quality: 82 }).toFile(outputPath);
 
   await safeUnlink(inputPath);
   return { filename: outputFilename, path: outputPath };
@@ -428,10 +448,7 @@ const chatController = {
       if (error?.code === "BUILTIN_PRESET_ID" || error?.code === "BUILTIN_PRESET_READONLY") {
         return res.status(400).json({ error: error.message });
       }
-      logger.error(
-        "chat_preset_update_failed",
-        withRequestContext(req, { error, presetId: req.params.presetId })
-      );
+      logger.error("chat_preset_update_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -450,10 +467,7 @@ const chatController = {
 
       res.status(204).send();
     } catch (error) {
-      logger.error(
-        "chat_preset_delete_failed",
-        withRequestContext(req, { error, presetId: req.params.presetId })
-      );
+      logger.error("chat_preset_delete_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -566,10 +580,7 @@ const chatController = {
 
       res.status(204).send();
     } catch (error) {
-      logger.error(
-        "chat_session_delete_failed",
-        withRequestContext(req, { error, sessionId: req.params.sessionId })
-      );
+      logger.error("chat_session_delete_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -585,10 +596,7 @@ const chatController = {
 
       res.status(200).json({ session });
     } catch (error) {
-      logger.error(
-        "chat_session_restore_failed",
-        withRequestContext(req, { error, sessionId: req.params.sessionId })
-      );
+      logger.error("chat_session_restore_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -623,10 +631,7 @@ const chatController = {
 
       res.status(200).json({ messages });
     } catch (error) {
-      logger.error(
-        "chat_messages_list_failed",
-        withRequestContext(req, { error, sessionId: req.params.sessionId })
-      );
+      logger.error("chat_messages_list_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
@@ -809,7 +814,12 @@ const chatController = {
         return;
       }
 
-      const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", normalizedAssistantContent);
+      const assistantMessage = await chatModel.createMessage(
+        userId,
+        sessionId,
+        "assistant",
+        normalizedAssistantContent
+      );
       updatedSession = await chatModel.touchSession(userId, sessionId);
 
       writeSse(res, {
@@ -1021,10 +1031,7 @@ const chatController = {
         return;
       }
 
-      logger.error(
-        "chat_message_send_failed",
-        withRequestContext(req, { error, sessionId: req.params.sessionId })
-      );
+      logger.error("chat_message_send_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
       res.status(500).json({ error: message });
     }
   },
