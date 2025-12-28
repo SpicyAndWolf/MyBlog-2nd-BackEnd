@@ -92,16 +92,6 @@ async function resolvePresetForSession({
   return { presetId: preset.id, preset, fallback: false };
 }
 
-const DEFAULT_SESSION_TITLE = "新对话";
-
-function formatSessionTitleFromMessage(messageText) {
-  const normalized = String(messageText || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return DEFAULT_SESSION_TITLE;
-  return normalized.length > 22 ? `${normalized.slice(0, 22)}…` : normalized;
-}
-
 function sanitizeChatSettings(rawSettings) {
   if (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings)) return {};
 
@@ -537,28 +527,6 @@ const chatController = {
     }
   },
 
-  async renameSession(req, res) {
-    try {
-      const userId = req.user?.id;
-      const sessionId = parseSessionId(req.params.sessionId);
-      if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
-
-      const title = String(req.body?.title || "").trim();
-      if (!title) return res.status(400).json({ error: "Title cannot be empty" });
-
-      const session = await chatModel.updateSessionTitle(userId, sessionId, title);
-      if (!session) return res.status(404).json({ error: "Session not found" });
-
-      res.status(200).json({ session });
-    } catch (error) {
-      logger.error(
-        "chat_session_rename_failed",
-        withRequestContext(req, { error, sessionId: req.params.sessionId })
-      );
-      res.status(500).json({ error: "Internal Server Error" });
-    }
-  },
-
   async deleteSession(req, res) {
     try {
       const userId = req.user?.id;
@@ -667,12 +635,6 @@ const chatController = {
       if (!updatedUserMessage) return res.status(404).json({ error: "Message not found" });
 
       let updatedSession = session;
-
-      const firstMessageId = await chatModel.getFirstMessageId(userId, sessionId);
-      if (session.title === DEFAULT_SESSION_TITLE && firstMessageId === messageId) {
-        const nextTitle = formatSessionTitleFromMessage(content);
-        updatedSession = (await chatModel.updateSessionTitle(userId, sessionId, nextTitle)) || updatedSession;
-      }
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
       const presetResolution = await resolvePresetForSession({ userId, session, incomingSettings, enforceMatch: true });
@@ -907,13 +869,6 @@ const chatController = {
 
       const userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
-
-      const messageCount = await chatModel.countMessages(userId, sessionId);
-      if (session.title === DEFAULT_SESSION_TITLE && messageCount === 1) {
-        updatedSession =
-          (await chatModel.updateSessionTitle(userId, sessionId, formatSessionTitleFromMessage(content))) ||
-          updatedSession;
-      }
 
       const history = await chatModel.listRecentMessages(userId, sessionId, chatConfig.historyLimit);
       if (history === null) return res.status(404).json({ error: "Session not found" });

@@ -18,7 +18,6 @@ router.post("/presets/:presetId/avatar", uploadChatPresetAvatar.single("avatar")
 router.get("/sessions", chatController.listSessions);
 router.get("/sessions/trash", chatController.listTrashedSessions);
 router.post("/sessions", chatController.createSession);
-router.patch("/sessions/:sessionId", chatController.renameSession);
 router.delete("/sessions/:sessionId", chatController.deleteSession);
 router.patch("/sessions/:sessionId/restore", chatController.restoreSession);
 router.delete("/sessions/:sessionId/permanent", chatController.deleteSessionPermanently);
