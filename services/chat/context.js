@@ -7,7 +7,14 @@ function normalizeText(value) {
   return String(value || "");
 }
 
-function buildOpenAiChatMessages({ systemPrompt, historyMessages } = {}) {
+function normalizeLimit(value, fallback) {
+  if (value === Infinity) return Infinity;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Math.floor(number);
+}
+
+function buildOpenAiChatMessages({ systemPrompt, historyMessages, maxMessages, maxChars } = {}) {
   const output = [];
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
@@ -15,8 +22,8 @@ function buildOpenAiChatMessages({ systemPrompt, historyMessages } = {}) {
     output.push({ role: "system", content: normalizedSystemPrompt });
   }
 
-  const normalizedMaxMessages = DEFAULT_MAX_CONTEXT_MESSAGES;
-  const normalizedMaxChars = DEFAULT_MAX_CONTEXT_CHARS;
+  const normalizedMaxMessages = normalizeLimit(maxMessages, DEFAULT_MAX_CONTEXT_MESSAGES);
+  const normalizedMaxChars = normalizeLimit(maxChars, DEFAULT_MAX_CONTEXT_CHARS);
 
   const history = Array.isArray(historyMessages) ? historyMessages : [];
 
@@ -28,10 +35,10 @@ function buildOpenAiChatMessages({ systemPrompt, historyMessages } = {}) {
     const role = String(entry.role || "").trim();
     const content = normalizeText(entry.content);
     if (!role || !content) continue;
-    if (selected.length >= normalizedMaxMessages) break;
+    if (normalizedMaxMessages !== Infinity && selected.length >= normalizedMaxMessages) break;
 
     const nextChars = totalChars + content.length;
-    if (nextChars > normalizedMaxChars && selected.length > 0) break;
+    if (normalizedMaxChars !== Infinity && nextChars > normalizedMaxChars && selected.length > 0) break;
 
     selected.push({ role, content });
     totalChars = nextChars;

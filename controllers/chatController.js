@@ -32,6 +32,34 @@ function parseMessageId(rawValue) {
   return asNumber;
 }
 
+function isDateKey(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
+function formatLocalDateKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getSessionDateKey(session) {
+  const title = String(session?.title || "").trim();
+  if (isDateKey(title)) return title;
+
+  const fallbackRaw = session?.createdAt || session?.created_at || session?.updatedAt || session?.updated_at;
+  const fallback = formatLocalDateKey(fallbackRaw);
+  return fallback || title;
+}
+
+function isSessionEditableToday(session) {
+  const dateKey = getSessionDateKey(session);
+  if (!dateKey) return false;
+  return dateKey === formatLocalDateKey(new Date());
+}
+
 function normalizePresetId(rawValue) {
   const normalized = String(rawValue ?? "").trim();
   if (!normalized) return null;
@@ -622,6 +650,7 @@ const chatController = {
 
       const session = await chatModel.getSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
+      if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
       const message = await chatModel.getMessage(userId, sessionId, messageId);
       if (!message) return res.status(404).json({ error: "Message not found" });
@@ -687,12 +716,13 @@ const chatController = {
 
       const shouldStream = Boolean(providerSettings.stream);
 
-      const history = await chatModel.listRecentMessagesUpTo(userId, sessionId, messageId, chatConfig.historyLimit);
-      if (history === null) return res.status(404).json({ error: "Session not found" });
+      const history = await chatModel.listMessagesByPresetUpTo(userId, presetId, messageId);
 
       const messages = buildOpenAiChatMessages({
         systemPrompt: providerSettings.systemPrompt,
         historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
+        maxMessages: Infinity,
+        maxChars: Infinity,
       });
 
       if (!shouldStream) {
@@ -822,6 +852,7 @@ const chatController = {
 
       const session = await chatModel.getSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
+      if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
       const incomingSettings = sanitizeChatSettings(req.body?.settings);
       const presetResolution = await resolvePresetForSession({ userId, session, incomingSettings, enforceMatch: true });
@@ -870,12 +901,13 @@ const chatController = {
       const userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
 
-      const history = await chatModel.listRecentMessages(userId, sessionId, chatConfig.historyLimit);
-      if (history === null) return res.status(404).json({ error: "Session not found" });
+      const history = await chatModel.listMessagesByPreset(userId, presetId);
 
       const messages = buildOpenAiChatMessages({
         systemPrompt: effectiveSettings.systemPrompt,
         historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
+        maxMessages: Infinity,
+        maxChars: Infinity,
       });
 
       if (!shouldStream) {

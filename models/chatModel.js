@@ -12,6 +12,11 @@ function normalizeSettings(rawSettings) {
   return rawSettings;
 }
 
+function normalizePresetId(rawPresetId) {
+  const normalized = String(rawPresetId || "").trim();
+  return normalized || null;
+}
+
 const chatModel = {
   async listSessions(userId) {
     const query = `
@@ -205,6 +210,36 @@ const chatModel = {
     `;
     const { rows } = await db.query(query, [sessionId, userId, messageId, normalizedLimit]);
     return rows.reverse();
+  },
+
+  async listMessagesByPreset(userId, presetId) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const query = `
+      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      FROM chat_messages m
+      INNER JOIN chat_sessions s ON s.id = m.session_id
+      WHERE m.user_id = $1 AND m.preset_id = $2 AND s.user_id = $1 AND s.deleted_at IS NULL
+      ORDER BY m.created_at ASC, m.id ASC
+    `;
+    const { rows } = await db.query(query, [userId, normalizedPresetId]);
+    return rows;
+  },
+
+  async listMessagesByPresetUpTo(userId, presetId, messageId) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const query = `
+      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      FROM chat_messages m
+      INNER JOIN chat_sessions s ON s.id = m.session_id
+      WHERE m.user_id = $1 AND m.preset_id = $2 AND m.id <= $3 AND s.user_id = $1 AND s.deleted_at IS NULL
+      ORDER BY m.created_at ASC, m.id ASC
+    `;
+    const { rows } = await db.query(query, [userId, normalizedPresetId, messageId]);
+    return rows;
   },
 
   async createMessage(userId, sessionId, role, content) {
