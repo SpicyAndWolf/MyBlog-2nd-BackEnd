@@ -60,20 +60,6 @@ const chatModel = {
     return rows[0];
   },
 
-  async updateSessionTitle(userId, sessionId, title) {
-    const normalizedTitle = String(title || "").trim();
-    if (!normalizedTitle) return null;
-
-    const query = `
-      UPDATE chat_sessions
-      SET title = $1, updated_at = NOW()
-      WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
-      RETURNING id, preset_id, title, settings, created_at, updated_at
-    `;
-    const { rows } = await db.query(query, [normalizedTitle, sessionId, userId]);
-    return rows[0] || null;
-  },
-
   async updateSessionSettings(userId, sessionId, settings, presetId) {
     const normalizedSettings = normalizeSettings(settings);
     const normalizedPresetId = typeof presetId === "string" ? presetId.trim() : "";
@@ -187,18 +173,6 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async getFirstMessageId(userId, sessionId) {
-    const query = `
-      SELECT id
-      FROM chat_messages
-      WHERE session_id = $1 AND user_id = $2
-      ORDER BY id ASC
-      LIMIT 1
-    `;
-    const { rows } = await db.query(query, [sessionId, userId]);
-    return rows[0]?.id ?? null;
-  },
-
   async listRecentMessages(userId, sessionId, limit = 20) {
     const session = await this.getSession(userId, sessionId);
     if (!session) return null;
@@ -271,16 +245,6 @@ const chatModel = {
     `;
     const { rowCount } = await db.query(query, [sessionId, userId, messageId]);
     return rowCount || 0;
-  },
-
-  async countMessages(userId, sessionId) {
-    const query = `
-      SELECT COUNT(*)::int AS count
-      FROM chat_messages
-      WHERE session_id = $1 AND user_id = $2
-    `;
-    const { rows } = await db.query(query, [sessionId, userId]);
-    return rows[0]?.count || 0;
   },
 };
 
