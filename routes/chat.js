@@ -10,9 +10,12 @@ router.use(authMiddleware);
 router.get("/meta", chatController.getMeta);
 
 router.get("/presets", chatController.listPresets);
+router.get("/presets/trash", chatController.listTrashedPresets);
 router.post("/presets", chatController.createPreset);
 router.patch("/presets/:presetId", chatController.updatePreset);
 router.delete("/presets/:presetId", chatController.deletePreset);
+router.patch("/presets/:presetId/restore", chatController.restorePreset);
+router.delete("/presets/:presetId/permanent", chatController.deletePresetPermanently);
 router.post("/presets/:presetId/avatar", uploadChatPresetAvatar.single("avatar"), chatController.uploadPresetAvatar);
 
 router.get("/sessions", chatController.listSessions);

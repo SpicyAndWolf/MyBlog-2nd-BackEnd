@@ -7,6 +7,7 @@ CREATE TABLE chat_prompt_presets (
     name VARCHAR(120) NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '',
     avatar_url TEXT,
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (user_id, preset_id)
@@ -14,3 +15,4 @@ CREATE TABLE chat_prompt_presets (
 
 CREATE INDEX idx_chat_prompt_presets_user_id ON chat_prompt_presets(user_id);
 CREATE INDEX idx_chat_prompt_presets_user_updated_at ON chat_prompt_presets(user_id, updated_at DESC);
+CREATE INDEX idx_chat_prompt_presets_user_deleted_at ON chat_prompt_presets(user_id, deleted_at);

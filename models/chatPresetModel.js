@@ -19,6 +19,7 @@ function mapRow(row) {
     avatarUrl: row.avatar_url || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? null,
     isBuiltin: false,
   };
 }
@@ -84,7 +85,7 @@ const chatPresetModel = {
     const query = `
       SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at
       FROM chat_prompt_presets
-      WHERE user_id = $1 AND NOT (preset_id = ANY($2::text[]))
+      WHERE user_id = $1 AND deleted_at IS NULL AND NOT (preset_id = ANY($2::text[]))
       ORDER BY updated_at DESC, preset_id ASC
     `;
     const { rows } = await db.query(query, [userId, builtinIds]);
@@ -93,16 +94,22 @@ const chatPresetModel = {
     return [...builtins, ...customs];
   },
 
-  async getPreset(userId, presetId) {
+  async getPreset(userId, presetId, { includeDeleted = false } = {}) {
     if (isBuiltinPresetId(presetId)) {
       await ensureBuiltinPresets(userId, [presetId]);
       return withBuiltinMetadata(findBuiltinPreset(presetId));
     }
 
-    const query = `
-      SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at
+    const query = includeDeleted
+      ? `
+      SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
       FROM chat_prompt_presets
       WHERE user_id = $1 AND preset_id = $2
+    `
+      : `
+      SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
+      FROM chat_prompt_presets
+      WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NULL
     `;
     const { rows } = await db.query(query, [userId, presetId]);
     return mapRow(rows[0]) || null;
@@ -146,7 +153,7 @@ const chatPresetModel = {
         `
           SELECT preset_id, system_prompt
           FROM chat_prompt_presets
-          WHERE user_id = $1 AND preset_id = $2
+          WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NULL
           LIMIT 1
           FOR UPDATE
         `,
@@ -168,8 +175,8 @@ const chatPresetModel = {
               system_prompt = $3,
               avatar_url = COALESCE($4, avatar_url),
               updated_at = NOW()
-          WHERE user_id = $5 AND preset_id = $6
-          RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at
+          WHERE user_id = $5 AND preset_id = $6 AND deleted_at IS NULL
+          RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
         `,
         [nextId, name ?? null, nextSystemPrompt, avatarUrl ?? null, userId, presetId]
       );
@@ -215,8 +222,8 @@ const chatPresetModel = {
     const query = `
       UPDATE chat_prompt_presets
       SET avatar_url = $1, updated_at = NOW()
-      WHERE user_id = $2 AND preset_id = $3
-      RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at
+      WHERE user_id = $2 AND preset_id = $3 AND deleted_at IS NULL
+      RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
     `;
     const { rows } = await db.query(query, [avatarUrl, userId, presetId]);
     return mapRow(rows[0]) || null;
@@ -229,35 +236,52 @@ const chatPresetModel = {
       throw error;
     }
 
-    const client = await db.getClient();
-    try {
-      await client.query("BEGIN");
+    const { rowCount } = await db.query(
+      `
+        UPDATE chat_prompt_presets
+        SET deleted_at = NOW(), updated_at = NOW()
+        WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NULL
+      `,
+      [userId, presetId]
+    );
 
-      const { rowCount } = await client.query(
-        `
-          DELETE FROM chat_prompt_presets
-          WHERE user_id = $1 AND preset_id = $2
-        `,
-        [userId, presetId]
-      );
+    return { deleted: rowCount > 0, fallbackPresetId: null };
+  },
 
-      if (rowCount === 0) {
-        await client.query("ROLLBACK");
-        return { deleted: false, fallbackPresetId: null };
-      }
+  async listTrashedPresets(userId) {
+    const builtinIds = [...BUILT_IN_PRESET_IDS];
+    const query = `
+      SELECT preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
+      FROM chat_prompt_presets
+      WHERE user_id = $1 AND deleted_at IS NOT NULL AND NOT (preset_id = ANY($2::text[]))
+      ORDER BY deleted_at DESC, updated_at DESC, preset_id ASC
+    `;
+    const { rows } = await db.query(query, [userId, builtinIds]);
+    return rows.map(mapRow).filter(Boolean);
+  },
 
-      await client.query("COMMIT");
-      return { deleted: true, fallbackPresetId: null };
-    } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-        // ignore
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
+  async restorePreset(userId, presetId) {
+    if (isBuiltinPresetId(presetId)) return null;
+
+    const query = `
+      UPDATE chat_prompt_presets
+      SET deleted_at = NULL, updated_at = NOW()
+      WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NOT NULL
+      RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
+    `;
+    const { rows } = await db.query(query, [userId, presetId]);
+    return mapRow(rows[0]) || null;
+  },
+
+  async deletePresetPermanently(userId, presetId) {
+    if (isBuiltinPresetId(presetId)) return false;
+
+    const query = `
+      DELETE FROM chat_prompt_presets
+      WHERE user_id = $1 AND preset_id = $2 AND deleted_at IS NOT NULL
+    `;
+    const { rowCount } = await db.query(query, [userId, presetId]);
+    return rowCount > 0;
   },
 };
 

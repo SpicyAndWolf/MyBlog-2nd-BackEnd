@@ -372,6 +372,17 @@ const chatController = {
     }
   },
 
+  async listTrashedPresets(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presets = await chatPresetModel.listTrashedPresets(userId);
+      res.status(200).json({ presets });
+    } catch (error) {
+      logger.error("chat_preset_trash_list_failed", withRequestContext(req, { error }));
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
   async createPreset(req, res) {
     try {
       const userId = req.user?.id;
@@ -468,6 +479,47 @@ const chatController = {
       res.status(204).send();
     } catch (error) {
       logger.error("chat_preset_delete_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async restorePreset(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presetId = normalizePresetId(req.params.presetId);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(presetId)) {
+        return res.status(400).json({ error: "Builtin preset cannot be restored" });
+      }
+
+      const preset = await chatPresetModel.restorePreset(userId, presetId);
+      if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+      res.status(200).json({ preset });
+    } catch (error) {
+      logger.error("chat_preset_restore_failed", withRequestContext(req, { error, presetId: req.params.presetId }));
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  },
+
+  async deletePresetPermanently(req, res) {
+    try {
+      const userId = req.user?.id;
+      const presetId = normalizePresetId(req.params.presetId);
+      if (!presetId) return res.status(400).json({ error: "Invalid preset id" });
+      if (chatPresetModel.isBuiltinPresetId(presetId)) {
+        return res.status(400).json({ error: "Builtin preset cannot be deleted" });
+      }
+
+      const deleted = await chatPresetModel.deletePresetPermanently(userId, presetId);
+      if (!deleted) return res.status(404).json({ error: "Preset not found" });
+
+      res.status(204).send();
+    } catch (error) {
+      logger.error(
+        "chat_preset_delete_permanent_failed",
+        withRequestContext(req, { error, presetId: req.params.presetId })
+      );
       res.status(500).json({ error: "Internal Server Error" });
     }
   },
