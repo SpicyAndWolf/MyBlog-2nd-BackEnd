@@ -73,6 +73,35 @@ function clampConfigNumber(providerId, key, value, { integer } = {}) {
   return integer ? Math.trunc(nextValue) : nextValue;
 }
 
+function mergeRawGenerateContentConfig({ providerId, model, settings, config, rawConfig }) {
+  if (!isPlainObject(config)) return config;
+  if (!isPlainObject(rawConfig) || Object.keys(rawConfig).length === 0) return config;
+
+  const protectedKeys = new Set(["abortSignal", "httpOptions", "systemInstruction"]);
+  const schemaKeys = new Set([
+    "temperature",
+    "topP",
+    "maxOutputTokens",
+    "presencePenalty",
+    "frequencyPenalty",
+    "thinkingConfig",
+    "safetySettings",
+    "tools",
+  ]);
+
+  for (const [key, value] of Object.entries(rawConfig)) {
+    const paramName = String(key || "").trim();
+    if (!paramName) continue;
+    if (value === undefined) continue;
+    if (protectedKeys.has(paramName)) continue;
+    if (schemaKeys.has(paramName)) continue;
+    if (!isBodyParamAllowed(providerId, paramName, { model, settings })) continue;
+    config[paramName] = value;
+  }
+
+  return config;
+}
+
 function buildSafetySettings(settings) {
   if (!isPlainObject(settings)) return [];
 
@@ -119,6 +148,7 @@ function buildGenerateContentConfig({
   timeoutMs,
   signal,
   settings,
+  rawConfig,
 } = {}) {
   const config = {};
 
@@ -190,6 +220,8 @@ function buildGenerateContentConfig({
     config.tools = [{ googleSearch: {} }];
   }
 
+  mergeRawGenerateContentConfig({ providerId, model, settings, config, rawConfig });
+
   return config;
 }
 
@@ -224,6 +256,7 @@ async function createChatCompletion({
   timeoutMs = llmConfig.timeoutMs,
   signal,
   settings,
+  rawConfig,
 } = {}) {
   const provider = getProviderConfig(providerId);
   const ai = new GoogleGenAI({ apiKey: provider.apiKey });
@@ -240,6 +273,7 @@ async function createChatCompletion({
       timeoutMs,
       signal: abortSignal,
       settings,
+      rawConfig,
     });
 
     const response = await ai.models.generateContent({ model, contents, config });
@@ -268,7 +302,7 @@ async function createChatCompletion({
   }
 }
 
-async function createChatCompletionStreamResponse({ providerId, model, messages, signal, settings } = {}) {
+async function createChatCompletionStreamResponse({ providerId, model, messages, signal, settings, rawConfig } = {}) {
   const provider = getProviderConfig(providerId);
   const ai = new GoogleGenAI({ apiKey: provider.apiKey });
 
@@ -281,6 +315,7 @@ async function createChatCompletionStreamResponse({ providerId, model, messages,
     timeoutMs: llmConfig.timeoutMs,
     signal,
     settings,
+    rawConfig,
   });
 
   return ai.models.generateContentStream({ model, contents, config });

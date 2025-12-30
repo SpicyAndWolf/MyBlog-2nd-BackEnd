@@ -180,6 +180,10 @@ const chatPresetModel = {
         typeof systemPrompt === "string" &&
         nextSystemPrompt !== previousSystemPrompt;
 
+      if (updated) {
+        updated.systemPromptChanged = shouldUpdateSessions;
+      }
+
       if (shouldUpdateSessions) {
         await client.query(
           `

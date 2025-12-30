@@ -42,7 +42,11 @@ function listSupportedProviders() {
 function isProviderConfigured(providerId) {
   const definition = getProviderDefinition(providerId);
   if (!definition) return false;
-  return Boolean(firstEnvValue(definition.apiKeyEnv));
+  if (!firstEnvValue(definition.apiKeyEnv)) return false;
+
+  const baseUrlEnv = Array.isArray(definition.baseUrlEnv) ? definition.baseUrlEnv : [];
+  if (!baseUrlEnv.length) return true;
+  return Boolean(firstEnvValue(baseUrlEnv));
 }
 
 function listConfiguredProviders() {
@@ -60,7 +64,12 @@ function getProviderConfig(providerId) {
     throw new Error(`Missing API key for provider ${normalizedId}. Please set one of: ${keys.join(", ")}`);
   }
 
-  const baseUrl = firstEnvValue(definition.baseUrlEnv) || definition.defaultBaseUrl;
+  const baseUrl = firstEnvValue(definition.baseUrlEnv);
+  if (!baseUrl) {
+    const keys = Array.isArray(definition.baseUrlEnv) ? definition.baseUrlEnv : [];
+    throw new Error(`Missing base URL for provider ${normalizedId}. Please set one of: ${keys.join(", ")}`);
+  }
+
   return { id: normalizedId, name: definition.name, apiKey, baseUrl };
 }
 

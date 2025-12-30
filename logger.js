@@ -16,14 +16,27 @@ const activeLevel = Object.prototype.hasOwnProperty.call(LEVELS, configuredLevel
 const LOG_TO_CONSOLE = readBoolEnv("LOG_TO_CONSOLE", true);
 const LOG_TO_FILE = readBoolEnv("LOG_TO_FILE", true);
 const LOG_DIR = readStringEnv("LOG_DIR", "logs");
-const LOG_FILE = readStringEnv("LOG_FILE", "app.log");
+const LOG_ERROR_FILE = readStringEnv("LOG_ERROR_FILE", "error.log");
+const LOG_WARN_FILE = readStringEnv("LOG_WARN_FILE", "warn.log");
+const LOG_INFO_FILE = readStringEnv("LOG_INFO_FILE", "info.log");
+const LOG_DEBUG_FILE = readStringEnv("LOG_DEBUG_FILE", "debug.log");
+
+function resolveLogPath(logDir, rawPath) {
+  const normalized = typeof rawPath === "string" ? rawPath.trim() : "";
+  if (!normalized) return "";
+  return path.isAbsolute(normalized) ? normalized : path.join(logDir, normalized);
+}
 
 const logDir = path.isAbsolute(LOG_DIR) ? LOG_DIR : path.join(__dirname, LOG_DIR);
-const logFilePath = path.isAbsolute(LOG_FILE) ? LOG_FILE : path.join(logDir, LOG_FILE);
-const logFileDir = path.dirname(logFilePath);
+const levelLogFilePaths = {
+  error: resolveLogPath(logDir, LOG_ERROR_FILE),
+  warn: resolveLogPath(logDir, LOG_WARN_FILE),
+  info: resolveLogPath(logDir, LOG_INFO_FILE),
+  debug: resolveLogPath(logDir, LOG_DEBUG_FILE),
+};
 
 if (LOG_TO_FILE) {
-  fs.mkdirSync(logFileDir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
 }
 
 function shouldLog(level) {
@@ -90,9 +103,11 @@ function emitConsole(level, entry, meta) {
   }
 }
 
-function emitFile(entry) {
+function emitLevelFile(level, entry) {
+  const filePath = levelLogFilePaths[level];
+  if (!filePath) return;
   const line = safeJsonStringify(entry);
-  fs.appendFile(logFilePath, `${line}\n`, () => {});
+  fs.appendFile(filePath, `${line}\n`, () => {});
 }
 
 function log(level, message, meta) {
@@ -111,7 +126,7 @@ function log(level, message, meta) {
     emitConsole(level, entry, normalizedMeta);
   }
   if (LOG_TO_FILE) {
-    emitFile(entry);
+    emitLevelFile(level, entry);
   }
 }
 

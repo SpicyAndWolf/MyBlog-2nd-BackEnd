@@ -2,7 +2,6 @@ module.exports = {
   id: "deepseek",
   name: "DeepSeek",
   adapter: "openai-compatible",
-  defaultBaseUrl: "https://api.deepseek.com",
   apiKeyEnv: ["DEEPSEEK_API_KEY"],
   baseUrlEnv: ["DEEPSEEK_BASE_URL"],
   openaiCompatible: {

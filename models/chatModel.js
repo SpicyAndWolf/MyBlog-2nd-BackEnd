@@ -242,6 +242,77 @@ const chatModel = {
     return rows;
   },
 
+  async listRecentMessagesByPreset(userId, presetId, { limit = 50, upToMessageId } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
+    const normalizedUpToMessageId =
+      upToMessageId === undefined || upToMessageId === null
+        ? null
+        : Number.isFinite(Number(upToMessageId))
+        ? Math.max(0, Math.floor(Number(upToMessageId)))
+        : null;
+
+    if (normalizedUpToMessageId === 0) return [];
+
+    const query = normalizedUpToMessageId !== null
+      ? `
+      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      FROM chat_messages m
+      INNER JOIN chat_sessions s ON s.id = m.session_id
+      WHERE m.user_id = $1
+        AND m.preset_id = $2
+        AND m.id <= $3
+        AND s.user_id = $1
+        AND s.deleted_at IS NULL
+      ORDER BY m.id DESC
+      LIMIT $4
+    `
+      : `
+      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      FROM chat_messages m
+      INNER JOIN chat_sessions s ON s.id = m.session_id
+      WHERE m.user_id = $1
+        AND m.preset_id = $2
+        AND s.user_id = $1
+        AND s.deleted_at IS NULL
+      ORDER BY m.id DESC
+      LIMIT $3
+    `;
+
+    const params =
+      normalizedUpToMessageId !== null
+        ? [userId, normalizedPresetId, normalizedUpToMessageId, normalizedLimit]
+        : [userId, normalizedPresetId, normalizedLimit];
+    const { rows } = await db.query(query, params);
+    return rows.reverse();
+  },
+
+  async listMessagesByPresetAfter(userId, presetId, { afterMessageId = 0, limit = 50 } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const normalizedAfterId = Number.isFinite(Number(afterMessageId)) ? Math.max(0, Math.floor(Number(afterMessageId))) : 0;
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
+
+    const query = `
+      SELECT m.id, m.preset_id, m.role, m.content, m.created_at
+      FROM chat_messages m
+      INNER JOIN chat_sessions s ON s.id = m.session_id
+      WHERE m.user_id = $1
+        AND m.preset_id = $2
+        AND m.id > $3
+        AND s.user_id = $1
+        AND s.deleted_at IS NULL
+      ORDER BY m.id ASC
+      LIMIT $4
+    `;
+
+    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedAfterId, normalizedLimit]);
+    return rows;
+  },
+
   async createMessage(userId, sessionId, role, content) {
     const normalizedRole = String(role || "").trim();
     const normalizedContent = String(content || "").trim();

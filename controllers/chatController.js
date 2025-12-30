@@ -3,8 +3,14 @@ const chatPresetModel = require("@models/chatPresetModel");
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
-const { buildOpenAiChatMessages } = require("../services/chat/context");
-const { chatConfig, llmConfig } = require("../config");
+const { chatConfig, llmConfig, chatMemoryConfig } = require("../config");
+const { compileChatContextMessages, selectRecentWindowMessages } = require("../services/chat/contextCompiler");
+const {
+  getPresetMemoryStatus,
+  markPresetMemoryDirty,
+  rebuildRollingSummarySync,
+  requestRollingSummaryCatchUp,
+} = require("../services/chat/memory/writePipeline");
 const { logger, withRequestContext } = require("../logger");
 const {
   getProviderDefinition,
@@ -267,6 +273,87 @@ function getAbortReasonMessage(signal) {
   return String(reason);
 }
 
+async function isChatMemoryLocked({ userId, presetId } = {}) {
+  try {
+    const memory = await getPresetMemoryStatus({ userId, presetId });
+    return Boolean(memory?.rebuildRequired);
+  } catch (error) {
+    if (error?.code === "42P01") return false;
+    throw error;
+  }
+}
+
+async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) {
+  const normalizedUserId = userId;
+  const normalizedPresetId = String(presetId || "").trim();
+  if (!normalizedUserId || !normalizedPresetId) return false;
+
+  const maxMessages = chatConfig.maxContextMessages;
+  const maxChars = chatConfig.maxContextChars;
+  const candidateLimit = maxMessages + 1;
+  const candidates = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, {
+    limit: candidateLimit,
+  });
+  const recent = selectRecentWindowMessages(candidates, { maxMessages, maxChars });
+  const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
+  const reachedCandidateLimit = candidates.length === candidateLimit;
+  return reachedCandidateLimit || candidates.length > selectedBeforeUserBoundary;
+}
+
+async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId } = {}) {
+  let existing = null;
+  try {
+    existing = await getPresetMemoryStatus({ userId, presetId });
+  } catch (error) {
+    if (error?.code === "42P01") return;
+    throw error;
+  }
+
+  let needsMemory = false;
+  try {
+    needsMemory = await isPresetHistoryLongerThanRecentWindow({ userId, presetId });
+  } catch (error) {
+    logger.error("chat_memory_needs_check_failed", { error, userId, presetId });
+    needsMemory = false;
+  }
+
+  if (!existing && !needsMemory) return;
+
+  try {
+    await markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: needsMemory });
+  } catch (error) {
+    if (error?.code !== "42P01") throw error;
+    return;
+  }
+
+  if (!needsMemory) return;
+
+  void rebuildRollingSummarySync({ userId, presetId }).catch((error) => {
+    logger.error("chat_memory_rebuild_failed", {
+      error,
+      userId,
+      presetId,
+      providerId: chatMemoryConfig.workerProviderId,
+      modelId: chatMemoryConfig.workerModelId,
+    });
+
+    // Avoid a permanent 423 lock if the sync rebuild fails; fall back to "recent_window only".
+    void markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: false }).catch((unlockError) => {
+      if (unlockError?.code === "42P01") return;
+      logger.error("chat_memory_rebuild_unlock_failed", { error: unlockError, userId, presetId });
+    });
+  });
+}
+
+function kickRollingSummaryUpdate({ userId, presetId, needsMemory } = {}) {
+  if (!needsMemory) return;
+  try {
+    requestRollingSummaryCatchUp({ userId, presetId });
+  } catch (error) {
+    logger.error("chat_memory_summary_kick_failed", { error, userId, presetId });
+  }
+}
+
 async function safeUnlink(filePath) {
   if (!filePath) return;
   try {
@@ -444,6 +531,14 @@ const chatController = {
         systemPrompt: nextSystemPrompt,
       });
       if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+      if (preset?.systemPromptChanged) {
+        try {
+          await lockAndRebuildChatMemoryAsync({ userId, presetId: preset.id, sinceMessageId: 0 });
+        } catch (error) {
+          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId: preset.id }));
+        }
+      }
 
       res.status(200).json({ preset });
     } catch (error) {
@@ -624,6 +719,15 @@ const chatController = {
       const session = await chatModel.trashSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
 
+      const presetId = String(session?.preset_id || session?.presetId || "").trim();
+      if (presetId) {
+        try {
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0 });
+        } catch (error) {
+          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
+        }
+      }
+
       res.status(204).send();
     } catch (error) {
       logger.error("chat_session_delete_failed", withRequestContext(req, { error, sessionId: req.params.sessionId }));
@@ -639,6 +743,15 @@ const chatController = {
 
       const session = await chatModel.restoreSession(userId, sessionId);
       if (!session) return res.status(404).json({ error: "Session not found" });
+
+      const presetId = String(session?.preset_id || session?.presetId || "").trim();
+      if (presetId) {
+        try {
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0 });
+        } catch (error) {
+          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
+        }
+      }
 
       res.status(200).json({ session });
     } catch (error) {
@@ -703,6 +816,11 @@ const chatController = {
       if (!session) return res.status(404).json({ error: "Session not found" });
       if (!isSessionEditableToday(session)) return res.status(403).json({ error: "Historical sessions are read-only" });
 
+      const sessionPresetId = String(session?.preset_id || session?.presetId || "").trim();
+      if (sessionPresetId && (await isChatMemoryLocked({ userId, presetId: sessionPresetId }))) {
+        return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
+      }
+
       const message = await chatModel.getMessage(userId, sessionId, messageId);
       if (!message) return res.status(404).json({ error: "Message not found" });
       if (message.role !== "user") return res.status(400).json({ error: "Only user messages can be edited" });
@@ -727,6 +845,16 @@ const chatController = {
       const effectiveSettings = normalizeChatSettingsWithSchema(mergedSettings);
       updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || updatedSession;
+
+      try {
+        const existing = await getPresetMemoryStatus({ userId, presetId });
+        const summarizedUntilMessageId = Number(existing?.summarizedUntilMessageId) || 0;
+        if (existing && summarizedUntilMessageId >= messageId) {
+          await markPresetMemoryDirty({ userId, presetId, sinceMessageId: messageId, rebuildRequired: false });
+        }
+      } catch (error) {
+        if (error?.code !== "42P01") throw error;
+      }
 
       if (!regenerate) {
         updatedSession = (await chatModel.touchSession(userId, sessionId)) || updatedSession;
@@ -767,14 +895,24 @@ const chatController = {
 
       const shouldStream = Boolean(providerSettings.stream);
 
-      const history = await chatModel.listMessagesByPresetUpTo(userId, presetId, messageId);
-
-      const messages = buildOpenAiChatMessages({
+      const context = await compileChatContextMessages({
+        userId,
+        presetId,
         systemPrompt: providerSettings.systemPrompt,
-        historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
-        maxMessages: Infinity,
-        maxChars: Infinity,
+        upToMessageId: messageId,
       });
+      const messages = context.messages;
+      const needsMemory = Boolean(context.needsMemory);
+
+      logger.debug(
+        "chat_context_compiled",
+        withRequestContext(req, {
+          sessionId,
+          presetId,
+          segments: context.segments,
+          memory: context.memory,
+        })
+      );
 
       if (!shouldStream) {
         const { content: assistantContent } = await createChatCompletion({
@@ -786,6 +924,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
+        kickRollingSummaryUpdate({ userId, presetId, needsMemory });
 
         return res
           .status(200)
@@ -867,6 +1006,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
+      kickRollingSummaryUpdate({ userId, presetId, needsMemory });
 
       writeSse(res, {
         type: "done",
@@ -954,17 +1094,31 @@ const chatController = {
       let updatedSession =
         (await chatModel.updateSessionSettings(userId, sessionId, effectiveSettings, presetId)) || session;
 
+      if (await isChatMemoryLocked({ userId, presetId })) {
+        return res.status(423).json({ error: "记忆重建中，请稍后再试", code: "CHAT_MEMORY_REBUILDING" });
+      }
+
       const userMessage = await chatModel.createMessage(userId, sessionId, "user", content);
       if (!userMessage) return res.status(404).json({ error: "Session not found" });
 
-      const history = await chatModel.listMessagesByPreset(userId, presetId);
-
-      const messages = buildOpenAiChatMessages({
+      const context = await compileChatContextMessages({
+        userId,
+        presetId,
         systemPrompt: effectiveSettings.systemPrompt,
-        historyMessages: history.map((m) => ({ role: m.role, content: m.content })),
-        maxMessages: Infinity,
-        maxChars: Infinity,
+        upToMessageId: userMessage.id,
       });
+      const messages = context.messages;
+      const needsMemory = Boolean(context.needsMemory);
+
+      logger.debug(
+        "chat_context_compiled",
+        withRequestContext(req, {
+          sessionId,
+          presetId,
+          segments: context.segments,
+          memory: context.memory,
+        })
+      );
 
       if (!shouldStream) {
         const { content: assistantContent } = await createChatCompletion({
@@ -976,6 +1130,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
+        kickRollingSummaryUpdate({ userId, presetId, needsMemory });
 
         return res
           .status(200)
@@ -1057,6 +1212,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
+      kickRollingSummaryUpdate({ userId, presetId, needsMemory });
 
       writeSse(res, {
         type: "done",

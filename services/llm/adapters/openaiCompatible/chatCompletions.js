@@ -58,6 +58,10 @@ function readSetting(settings, key) {
   return settings[key];
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function buildBodyExtensions({ providerId, model, settings }) {
   const definition = getProviderDefinition(providerId);
   const extensions = definition?.openaiCompatible?.bodyExtensions;
@@ -75,6 +79,26 @@ function buildBodyExtensions({ providerId, model, settings }) {
   return {};
 }
 
+function mergeRawBodyParams({ providerId, model, settings, body, rawBody }) {
+  if (!isPlainObject(body)) return body;
+  if (!isPlainObject(rawBody) || Object.keys(rawBody).length === 0) return body;
+
+  const protectedKeys = new Set(["model", "messages", "stream"]);
+  const schemaKeys = new Set(["temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty"]);
+
+  for (const [key, value] of Object.entries(rawBody)) {
+    const paramName = String(key || "").trim();
+    if (!paramName) continue;
+    if (value === undefined) continue;
+    if (protectedKeys.has(paramName)) continue;
+    if (schemaKeys.has(paramName)) continue;
+    if (!isBodyParamAllowed(providerId, paramName, { model, settings })) continue;
+    body[paramName] = value;
+  }
+
+  return body;
+}
+
 function buildBody({
   providerId,
   model,
@@ -86,6 +110,7 @@ function buildBody({
   frequencyPenalty,
   stream,
   settings,
+  rawBody,
 }) {
   const resolvedTemperature = readSetting(settings, "temperature") ?? temperature;
   const resolvedTopP = readSetting(settings, "topP") ?? topP;
@@ -122,6 +147,8 @@ function buildBody({
     if (!isBodyParamAllowed(providerId, key, { model, settings })) continue;
     body[key] = value;
   }
+
+  mergeRawBodyParams({ providerId, model, settings, body, rawBody });
 
   return body;
 }

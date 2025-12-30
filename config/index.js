@@ -1,13 +1,52 @@
+const fs = require("fs");
+const path = require("path");
 const { readBoolEnv, readFloatEnv, readIntEnv, readStringEnv } = require("./readEnv");
-const { getGlobalNumericRange, getProviderNumericRange } = require("../services/llm/settingsSchema");
+const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
 const { getProviderDefinition } = require("../services/llm/providers");
 
 function normalizeKey(value) {
   return String(value || "").trim();
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function readOptionalStringEnv(name) {
   return readStringEnv(name, undefined);
+}
+
+function resolveConfigPath(rawPath) {
+  const normalized = String(rawPath || "").trim();
+  if (!normalized) return "";
+  if (path.isAbsolute(normalized)) return normalized;
+  const fromRoot = path.resolve(__dirname, "..", normalized);
+  if (fs.existsSync(fromRoot)) return fromRoot;
+
+  const fromConfig = path.resolve(__dirname, normalized);
+  if (fs.existsSync(fromConfig)) return fromConfig;
+
+  return fromRoot;
+}
+
+function readJsonFile(filePath, { name } = {}) {
+  const resolvedPath = resolveConfigPath(filePath);
+  if (!resolvedPath) return null;
+  const label = name || "JSON config";
+
+  let text = "";
+  try {
+    text = fs.readFileSync(resolvedPath, "utf8");
+  } catch (error) {
+    throw new Error(`${label} file not found: ${resolvedPath}`);
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    return { path: resolvedPath, value: parsed };
+  } catch (error) {
+    throw new Error(`${label} file is not valid JSON: ${resolvedPath}`);
+  }
 }
 
 function ensureValidTimeZone(timeZone, { name } = {}) {
@@ -23,25 +62,13 @@ function ensureValidTimeZone(timeZone, { name } = {}) {
   return normalized;
 }
 
-function resolveChatDayTimeZone() {
-  const raw = readOptionalStringEnv("CHAT_DAY_TIME_ZONE");
-  const desired = raw;
-
-  try {
-    return ensureValidTimeZone(desired, { name: "CHAT_DAY_TIME_ZONE" });
-  } catch (error) {
-    if (raw) throw error;
-    return "UTC";
-  }
-}
-
-const chatDayTimeZone = resolveChatDayTimeZone();
-
 function readRequiredStringEnv(name) {
   const value = readOptionalStringEnv(name);
   if (!value) throw new Error(`Missing required env: ${name}`);
   return value;
 }
+
+const chatDayTimeZone = ensureValidTimeZone(readRequiredStringEnv("CHAT_DAY_TIME_ZONE"), { name: "CHAT_DAY_TIME_ZONE" });
 
 function readOptionalBoolEnv(name) {
   return readBoolEnv(name, undefined);
@@ -259,7 +286,6 @@ const chatConfig = {
     name: "CHAT_MAX_CONTEXT_MESSAGES",
   }),
   maxContextChars: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_CHARS"), { name: "CHAT_MAX_CONTEXT_CHARS" }),
-  historyLimit: ensurePositiveInt(readRequiredIntEnv("CHAT_HISTORY_LIMIT"), { name: "CHAT_HISTORY_LIMIT" }),
   trashRetentionDays: ensureNonNegativeInt(readRequiredIntEnv("CHAT_TRASH_RETENTION_DAYS"), {
     name: "CHAT_TRASH_RETENTION_DAYS",
   }),
@@ -297,6 +323,194 @@ const chatConfig = {
   },
 };
 
+const chatMemoryConfig = (() => {
+  const rollingSummaryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_ROLLING_SUMMARY_MAX_CHARS"), {
+    name: "CHAT_ROLLING_SUMMARY_MAX_CHARS",
+  });
+
+  const rollingSummaryUpdateEveryNTurns = ensurePositiveInt(
+    readRequiredIntEnv("CHAT_MEMORY_ROLLING_SUMMARY_UPDATE_EVERY_N_TURNS"),
+    { name: "CHAT_MEMORY_ROLLING_SUMMARY_UPDATE_EVERY_N_TURNS" }
+  );
+
+  const gapBridgeMaxMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES"), {
+    name: "CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES",
+  });
+
+  const gapBridgeMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS"), {
+    name: "CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS",
+  });
+
+  const workerProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_MEMORY_WORKER_PROVIDER"), {
+    name: "CHAT_MEMORY_WORKER_PROVIDER",
+  });
+
+  const workerModelId = ensureSupportedModel(workerProviderId, readRequiredStringEnv("CHAT_MEMORY_WORKER_MODEL"), {
+    name: "CHAT_MEMORY_WORKER_MODEL",
+  });
+
+  const workerConcurrency = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_WORKER_CONCURRENCY"), {
+    name: "CHAT_MEMORY_WORKER_CONCURRENCY",
+  });
+
+  const backfillBatchMessages = ensurePositiveInt(
+    readRequiredIntEnv("CHAT_MEMORY_BACKFILL_BATCH_MESSAGES"),
+    { name: "CHAT_MEMORY_BACKFILL_BATCH_MESSAGES" }
+  );
+
+  const backfillCooldownMs = ensureNonNegativeInt(
+    readRequiredIntEnv("CHAT_MEMORY_BACKFILL_COOLDOWN_MS"),
+    { name: "CHAT_MEMORY_BACKFILL_COOLDOWN_MS" }
+  );
+
+  const writeRetryMax = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_WRITE_RETRY_MAX"), {
+    name: "CHAT_MEMORY_WRITE_RETRY_MAX",
+  });
+
+  const syncRebuildTimeoutMs = ensurePositiveInt(
+    readRequiredIntEnv("CHAT_MEMORY_SYNC_REBUILD_TIMEOUT_MS"),
+    { name: "CHAT_MEMORY_SYNC_REBUILD_TIMEOUT_MS" }
+  );
+
+  function sanitizeWorkerSettings(rawSettings) {
+    if (!isPlainObject(rawSettings)) return {};
+
+    const sanitized = {};
+
+    const keys = [
+      "temperature",
+      "topP",
+      "maxOutputTokens",
+      "presencePenalty",
+      "frequencyPenalty",
+      "thinkingBudget",
+      "stream",
+      "enableWebSearch",
+    ];
+
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(rawSettings, key)) continue;
+      if (key === "stream" || key === "enableWebSearch") {
+        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
+        continue;
+      }
+
+      const number = Number(rawSettings[key]);
+      if (Number.isFinite(number)) sanitized[key] = number;
+    }
+
+    const definition = getProviderDefinition(workerProviderId);
+    const schema = Array.isArray(definition?.settingsSchema) ? definition.settingsSchema : [];
+    const modelId = workerModelId;
+
+    for (const control of schema) {
+      const key = normalizeKey(control?.key);
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
+
+      const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
+      if (modelId && blocklist.includes(modelId)) continue;
+
+      const type = normalizeKey(control?.type);
+
+      if (type === "toggle") {
+        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
+        continue;
+      }
+
+      if (type === "select") {
+        if (typeof rawSettings[key] !== "string") continue;
+        const value = rawSettings[key].trim();
+        if (!value) continue;
+
+        const options = Array.isArray(control.options) ? control.options : [];
+        const allowed = new Set(options.map((option) => normalizeKey(option?.value)).filter(Boolean));
+        if (!allowed.has(value)) continue;
+
+        sanitized[key] = value;
+        continue;
+      }
+
+      if (type === "range" || type === "number") {
+        const number = Number(rawSettings[key]);
+        if (Number.isFinite(number)) sanitized[key] = number;
+      }
+    }
+
+    return sanitized;
+  }
+
+  function normalizeWorkerSettings(settings) {
+    if (!isPlainObject(settings)) return {};
+
+    const normalized = { ...settings };
+    const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"];
+
+    for (const key of keys) {
+      if (normalized[key] === undefined) continue;
+
+      const range = getProviderNumericRange(workerProviderId, key);
+      const fallbackRange = getGlobalNumericRange(key);
+      const nextValue = clampNumberWithRange(normalized[key], range || fallbackRange);
+
+      if (!Number.isFinite(nextValue)) {
+        delete normalized[key];
+        continue;
+      }
+
+      if (key === "maxOutputTokens" || key === "thinkingBudget") {
+        normalized[key] = Math.trunc(nextValue);
+      } else {
+        normalized[key] = nextValue;
+      }
+    }
+
+    return normalized;
+  }
+
+  const workerConfigFile = readOptionalStringEnv("CHAT_MEMORY_WORKER_CONFIG_FILE");
+  const workerConfigFileJson = workerConfigFile ? readJsonFile(workerConfigFile, { name: "CHAT_MEMORY_WORKER_CONFIG_FILE" }) : null;
+  const workerConfig = workerConfigFileJson?.value;
+
+  const fileSettings = isPlainObject(workerConfig?.settings) ? workerConfig.settings : {};
+  const rawSection = isPlainObject(workerConfig?.raw) ? workerConfig.raw : {};
+
+  const openaiCompatibleBody = isPlainObject(rawSection?.openaiCompatibleBody)
+    ? rawSection.openaiCompatibleBody
+    : isPlainObject(workerConfig?.openaiCompatibleBody)
+    ? workerConfig.openaiCompatibleBody
+    : {};
+
+  const googleGenAiConfig = isPlainObject(rawSection?.googleGenAiConfig)
+    ? rawSection.googleGenAiConfig
+    : isPlainObject(workerConfig?.googleGenAiConfig)
+    ? workerConfig.googleGenAiConfig
+    : {};
+
+  const workerSettingsOverrides = normalizeWorkerSettings(sanitizeWorkerSettings(fileSettings));
+  const workerSettings = { ...workerSettingsOverrides, stream: false, enableWebSearch: false };
+
+  return {
+    rollingSummaryMaxChars,
+    rollingSummaryUpdateEveryNTurns,
+    gapBridgeMaxMessages,
+    gapBridgeMaxChars,
+    workerProviderId,
+    workerModelId,
+    workerConcurrency,
+    backfillBatchMessages,
+    backfillCooldownMs,
+    writeRetryMax,
+    syncRebuildTimeoutMs,
+    workerConfigFile: workerConfigFileJson?.path || "",
+    workerSettings,
+    workerRaw: {
+      openaiCompatibleBody,
+      googleGenAiConfig,
+    },
+  };
+})();
+
 const llmConfig = {
   timeoutMs: ensurePositiveInt(readRequiredIntEnv("LLM_TIMEOUT_MS"), { name: "LLM_TIMEOUT_MS" }),
 };
@@ -312,6 +526,7 @@ const articleConfig = {
 
 module.exports = {
   chatConfig,
+  chatMemoryConfig,
   llmConfig,
   articleConfig,
 };

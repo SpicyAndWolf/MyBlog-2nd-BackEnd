@@ -1,0 +1,115 @@
+const { createChatCompletion } = require("../../llm/chatCompletions");
+
+function normalizeText(value) {
+  return String(value || "");
+}
+
+function stripCodeFences(text) {
+  const raw = String(text || "");
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("```")) return trimmed;
+
+  const lines = trimmed.split(/\r?\n/);
+  if (lines.length < 2) return trimmed;
+  if (!lines[lines.length - 1].trim().startsWith("```")) return trimmed;
+
+  return lines.slice(1, -1).join("\n").trim();
+}
+
+function clipText(text, maxChars) {
+  const normalized = String(text || "");
+  if (!Number.isFinite(maxChars) || maxChars <= 0) return normalized;
+  if (normalized.length <= maxChars) return normalized;
+  return normalized.slice(0, maxChars);
+}
+
+function formatTranscript(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const lines = [];
+
+  for (const message of list) {
+    const role = String(message?.role || "").trim();
+    if (!role) continue;
+    const content = normalizeText(message?.content).trim();
+    if (!content) continue;
+    lines.push(`${role}: ${content}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars }) {
+  const normalizedPrevious = String(previousSummary || "").trim();
+  const transcript = formatTranscript(newMessages);
+
+  const system = `
+你是一个“对话滚动摘要”写作助手。你将根据【已有摘要】与【新增对话片段】更新摘要，供后续对话注入 system message。
+
+要求：
+- 输出必须是纯文本（不要 Markdown 代码块/JSON/XML）
+- 使用固定结构 + 项目符号（每条以“- ”开头）
+- 只保留：已确认的长期事实、用户偏好/边界、承诺/待办、未完成事项（open loops）、当前进度（1~3条）
+- 禁止编造；不确定信息必须标注“未确认/可能/待澄清”
+- 默认中文；若最近对话主要语言为英文则用英文；混合则中文为主并保留关键术语原文
+- 不要包含无关细节与大段原文引用
+- 总长度硬上限：${Math.floor(maxChars)} 字符；超限时删除低价值细节，保留高价值事实/偏好/待办
+
+输出结构（可为空）：
+[长期事实]
+- ...
+[偏好/边界]
+- ...
+[承诺/待办]
+- ...
+[未完成事项]
+- ...
+[当前进度]
+- ...
+`.trim();
+
+  const user = `
+【已有摘要】
+${normalizedPrevious || "(空)"}
+
+【新增对话片段】
+${transcript || "(无)"}
+`.trim();
+
+  return {
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+  };
+}
+
+async function generateRollingSummary({
+  providerId,
+  modelId,
+  previousSummary,
+  newMessages,
+  maxChars,
+  timeoutMs,
+  settings,
+  raw,
+} = {}) {
+  const prompt = buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars });
+
+  const { content } = await createChatCompletion({
+    providerId,
+    model: modelId,
+    messages: prompt.messages,
+    timeoutMs,
+    settings,
+    rawBody: raw?.openaiCompatibleBody,
+    rawConfig: raw?.googleGenAiConfig,
+  });
+
+  const cleaned = stripCodeFences(content);
+  const clipped = clipText(cleaned, maxChars);
+  return clipped.trim();
+}
+
+module.exports = {
+  generateRollingSummary,
+};
