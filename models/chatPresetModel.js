@@ -131,17 +131,10 @@ const chatPresetModel = {
     return mapRow(rows[0]) || null;
   },
 
-  async updatePreset(userId, presetId, { id, name, systemPrompt, avatarUrl } = {}) {
+  async updatePreset(userId, presetId, { name, systemPrompt, avatarUrl } = {}) {
     if (isBuiltinPresetId(presetId)) {
       const error = new Error("Builtin preset cannot be updated");
       error.code = "BUILTIN_PRESET_READONLY";
-      throw error;
-    }
-
-    const nextId = id ?? presetId;
-    if (isBuiltinPresetId(nextId)) {
-      const error = new Error("Builtin preset id is reserved");
-      error.code = "BUILTIN_PRESET_ID";
       throw error;
     }
 
@@ -170,22 +163,22 @@ const chatPresetModel = {
       const { rows } = await client.query(
         `
           UPDATE chat_prompt_presets
-          SET preset_id = $1,
-              name = COALESCE($2, name),
-              system_prompt = $3,
-              avatar_url = COALESCE($4, avatar_url),
+          SET name = COALESCE($1, name),
+              system_prompt = $2,
+              avatar_url = COALESCE($3, avatar_url),
               updated_at = NOW()
-          WHERE user_id = $5 AND preset_id = $6 AND deleted_at IS NULL
+          WHERE user_id = $4 AND preset_id = $5 AND deleted_at IS NULL
           RETURNING preset_id, name, system_prompt, avatar_url, created_at, updated_at, deleted_at
         `,
-        [nextId, name ?? null, nextSystemPrompt, avatarUrl ?? null, userId, presetId]
+        [name ?? null, nextSystemPrompt, avatarUrl ?? null, userId, presetId]
       );
 
       const updated = mapRow(rows[0]) || null;
 
       const shouldUpdateSessions =
         Boolean(updated) &&
-        (nextId !== presetId || (typeof systemPrompt === "string" && nextSystemPrompt !== previousSystemPrompt));
+        typeof systemPrompt === "string" &&
+        nextSystemPrompt !== previousSystemPrompt;
 
       if (shouldUpdateSessions) {
         await client.query(
@@ -198,7 +191,7 @@ const chatPresetModel = {
                 updated_at = NOW()
             WHERE user_id = $3 AND preset_id = $1
           `,
-          [nextId, updated.systemPrompt || "", userId]
+          [presetId, updated.systemPrompt || "", userId]
         );
       }
 

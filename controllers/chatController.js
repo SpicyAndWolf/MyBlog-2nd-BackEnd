@@ -424,13 +424,8 @@ const chatController = {
         return res.status(400).json({ error: "Builtin preset cannot be updated" });
       }
 
-      let nextId = undefined;
       if (Object.prototype.hasOwnProperty.call(req.body || {}, "id")) {
-        nextId = normalizePresetId(req.body?.id);
-        if (!nextId) return res.status(400).json({ error: "Invalid preset id" });
-        if (chatPresetModel.isBuiltinPresetId(nextId)) {
-          return res.status(400).json({ error: "Builtin preset id is reserved" });
-        }
+        return res.status(400).json({ error: "Preset id cannot be updated" });
       }
 
       let nextName = undefined;
@@ -445,7 +440,6 @@ const chatController = {
       }
 
       const preset = await chatPresetModel.updatePreset(userId, currentId, {
-        id: nextId,
         name: nextName,
         systemPrompt: nextSystemPrompt,
       });
