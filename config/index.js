@@ -372,6 +372,11 @@ const chatMemoryConfig = (() => {
     { name: "CHAT_MEMORY_SYNC_REBUILD_TIMEOUT_MS" }
   );
 
+  const syncRebuildTotalTimeoutMs = ensureNonNegativeInt(
+    readOptionalIntEnvStrict("CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS") ?? 0,
+    { name: "CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS" }
+  );
+
   function sanitizeWorkerSettings(rawSettings) {
     if (!isPlainObject(rawSettings)) return {};
 
@@ -502,6 +507,7 @@ const chatMemoryConfig = (() => {
     backfillCooldownMs,
     writeRetryMax,
     syncRebuildTimeoutMs,
+    syncRebuildTotalTimeoutMs,
     workerConfigFile: workerConfigFileJson?.path || "",
     workerSettings,
     workerRaw: {

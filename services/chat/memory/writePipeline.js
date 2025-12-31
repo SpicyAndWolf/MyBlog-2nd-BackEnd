@@ -110,7 +110,7 @@ async function computeRollingSummaryTarget({ userId, presetId } = {}) {
   };
 }
 
-async function catchUpRollingSummaryOnce({ userId, presetId, deadline } = {}) {
+async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = false } = {}) {
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
   const maxChars = chatMemoryConfig.rollingSummaryMaxChars;
@@ -145,7 +145,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline } = {}) {
     rollingSummary = "";
   }
 
-  if (!deadline && !isDirty && afterMessageId < targetUntilMessageId) {
+  if (!force && !isDirty && afterMessageId < targetUntilMessageId) {
     const updateEveryNTurns = chatMemoryConfig.rollingSummaryUpdateEveryNTurns;
     const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
     const probeLimit = Math.min(500, thresholdMessages);
@@ -344,10 +344,16 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
   if (!normalizedPresetId) throw new Error("Missing presetId");
 
   const key = buildKey(normalizedUserId, normalizedPresetId);
-  const deadline = Date.now() + chatMemoryConfig.syncRebuildTimeoutMs;
+  const totalTimeoutMs = Number(chatMemoryConfig.syncRebuildTotalTimeoutMs) || 0;
+  const deadline = totalTimeoutMs > 0 ? Date.now() + totalTimeoutMs : null;
 
   return await enqueueKeyTask(key, async () => {
-    const result = await catchUpRollingSummaryOnce({ userId: normalizedUserId, presetId: normalizedPresetId, deadline });
+    const result = await catchUpRollingSummaryOnce({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      deadline,
+      force: true,
+    });
     if (result?.updated) {
       logger.info("chat_memory_rolling_summary_rebuilt_sync", {
         userId: normalizedUserId,
