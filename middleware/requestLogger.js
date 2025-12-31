@@ -3,6 +3,14 @@ const { logger } = require("../logger");
 
 const IGNORED_PREFIXES = ["/uploads"];
 
+function normalizeHeader(value, { maxLength = 512 } = {}) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength)}…`;
+}
+
 function generateRequestId() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return crypto.randomBytes(16).toString("hex");
@@ -31,6 +39,15 @@ function requestLogger(req, res, next) {
     const statusCode = res.statusCode || 0;
     const level = statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info";
 
+    const userAgent = normalizeHeader(req.get?.("user-agent") || req.headers["user-agent"]);
+    const referer = normalizeHeader(req.get?.("referer") || req.get?.("referrer") || req.headers.referer || req.headers.referrer, {
+      maxLength: 1024,
+    });
+    const host = normalizeHeader(req.get?.("host") || req.headers.host);
+    const xForwardedFor = normalizeHeader(req.get?.("x-forwarded-for") || req.headers["x-forwarded-for"], {
+      maxLength: 1024,
+    });
+
     logger[level]("http_request", {
       requestId,
       method: req.method,
@@ -38,6 +55,10 @@ function requestLogger(req, res, next) {
       statusCode,
       durationMs: roundedDuration,
       ip: req.ip,
+      host,
+      userAgent,
+      referer,
+      xForwardedFor,
       userId: req.user?.id || null,
     });
   });
