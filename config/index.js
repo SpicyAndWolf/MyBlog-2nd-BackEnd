@@ -1,5 +1,3 @@
-const fs = require("fs");
-const path = require("path");
 const { readBoolEnv, readFloatEnv, readIntEnv, readStringEnv } = require("./readEnv");
 const { getGlobalNumericRange, getProviderNumericRange, clampNumberWithRange } = require("../services/llm/settingsSchema");
 const { getProviderDefinition } = require("../services/llm/providers");
@@ -16,37 +14,21 @@ function readOptionalStringEnv(name) {
   return readStringEnv(name, undefined);
 }
 
-function resolveConfigPath(rawPath) {
-  const normalized = String(rawPath || "").trim();
-  if (!normalized) return "";
-  if (path.isAbsolute(normalized)) return normalized;
-  const fromRoot = path.resolve(__dirname, "..", normalized);
-  if (fs.existsSync(fromRoot)) return fromRoot;
+function readRequiredJsonEnv(name) {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || !raw.trim()) throw new Error(`Missing required env: ${name}`);
 
-  const fromConfig = path.resolve(__dirname, normalized);
-  if (fs.existsSync(fromConfig)) return fromConfig;
-
-  return fromRoot;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Env ${name} is not valid JSON`);
+  }
 }
 
-function readJsonFile(filePath, { name } = {}) {
-  const resolvedPath = resolveConfigPath(filePath);
-  if (!resolvedPath) return null;
-  const label = name || "JSON config";
-
-  let text = "";
-  try {
-    text = fs.readFileSync(resolvedPath, "utf8");
-  } catch (error) {
-    throw new Error(`${label} file not found: ${resolvedPath}`);
-  }
-
-  try {
-    const parsed = JSON.parse(text);
-    return { path: resolvedPath, value: parsed };
-  } catch (error) {
-    throw new Error(`${label} file is not valid JSON: ${resolvedPath}`);
-  }
+function readRequiredJsonObjectEnv(name) {
+  const value = readRequiredJsonEnv(name);
+  if (!isPlainObject(value)) throw new Error(`Env ${name} must be a JSON object`);
+  return value;
 }
 
 function ensureValidTimeZone(timeZone, { name } = {}) {
@@ -373,7 +355,7 @@ const chatMemoryConfig = (() => {
   );
 
   const syncRebuildTotalTimeoutMs = ensureNonNegativeInt(
-    readOptionalIntEnvStrict("CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS") ?? 0,
+    readRequiredIntEnv("CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS"),
     { name: "CHAT_MEMORY_SYNC_REBUILD_TOTAL_TIMEOUT_MS" }
   );
 
@@ -473,27 +455,31 @@ const chatMemoryConfig = (() => {
     return normalized;
   }
 
-  const workerConfigFile = readOptionalStringEnv("CHAT_MEMORY_WORKER_CONFIG_FILE");
-  const workerConfigFileJson = workerConfigFile ? readJsonFile(workerConfigFile, { name: "CHAT_MEMORY_WORKER_CONFIG_FILE" }) : null;
-  const workerConfig = workerConfigFileJson?.value;
+  const rawWorkerSettings = {
+    temperature: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TEMPERATURE", {
+      key: "temperature",
+      providerId: workerProviderId,
+    }),
+    topP: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TOP_P", { key: "topP", providerId: workerProviderId }),
+    maxOutputTokens: readRequiredSettingNumber("CHAT_MEMORY_WORKER_MAX_OUTPUT_TOKENS", {
+      key: "maxOutputTokens",
+      providerId: workerProviderId,
+      integer: true,
+    }),
+    stream: readRequiredBoolEnv("CHAT_MEMORY_WORKER_STREAM"),
+    enableWebSearch: readRequiredBoolEnv("CHAT_MEMORY_WORKER_ENABLE_WEB_SEARCH"),
+    thinkingLevel: readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
+    thinkingBudget: readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
+    safetyHarassment: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HARASSMENT"),
+    safetyHateSpeech: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HATE_SPEECH"),
+    safetySexuallyExplicit: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
+    safetyDangerousContent: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_DANGEROUS_CONTENT"),
+  };
 
-  const fileSettings = isPlainObject(workerConfig?.settings) ? workerConfig.settings : {};
-  const rawSection = isPlainObject(workerConfig?.raw) ? workerConfig.raw : {};
+  const workerSettings = normalizeWorkerSettings(sanitizeWorkerSettings(rawWorkerSettings));
 
-  const openaiCompatibleBody = isPlainObject(rawSection?.openaiCompatibleBody)
-    ? rawSection.openaiCompatibleBody
-    : isPlainObject(workerConfig?.openaiCompatibleBody)
-    ? workerConfig.openaiCompatibleBody
-    : {};
-
-  const googleGenAiConfig = isPlainObject(rawSection?.googleGenAiConfig)
-    ? rawSection.googleGenAiConfig
-    : isPlainObject(workerConfig?.googleGenAiConfig)
-    ? workerConfig.googleGenAiConfig
-    : {};
-
-  const workerSettingsOverrides = normalizeWorkerSettings(sanitizeWorkerSettings(fileSettings));
-  const workerSettings = { ...workerSettingsOverrides, stream: false, enableWebSearch: false };
+  const openaiCompatibleBody = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_OPENAI_COMPATIBLE_BODY_JSON");
+  const googleGenAiConfig = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_GOOGLE_GENAI_CONFIG_JSON");
 
   return {
     rollingSummaryMaxChars,
@@ -508,7 +494,6 @@ const chatMemoryConfig = (() => {
     writeRetryMax,
     syncRebuildTimeoutMs,
     syncRebuildTotalTimeoutMs,
-    workerConfigFile: workerConfigFileJson?.path || "",
     workerSettings,
     workerRaw: {
       openaiCompatibleBody,
