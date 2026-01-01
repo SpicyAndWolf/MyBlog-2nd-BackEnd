@@ -63,7 +63,7 @@ function buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars }) {
 - 格式：纯文本，无Markdown代码块，严格遵守下方结构。
 - 语言：简体中文。
 - 长度限制：总字符数控制在 ${Math.floor(maxChars)} 以内。优先保留：长期事实、承诺/待办、共同经历。
-- **由繁入简**：对于已结束的“共同经历”，仅保留一句话概述（如“日期+事件名”），释放空间给新信息。
+- **由繁入简**：对于已结束的“共同经历”，仅保留一句话概述（如“日期+事件名”）。
 
 输出结构（若某项为空可省略）：
 [长期事实]
