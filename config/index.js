@@ -288,6 +288,9 @@ const chatConfig = {
     gemini: ensureSupportedModel("gemini", readRequiredStringEnv("GEMINI_DEFAULT_MODEL"), {
       name: "GEMINI_DEFAULT_MODEL",
     }),
+    openrouter: ensureSupportedModel("openrouter", readRequiredStringEnv("OPENROUTER_DEFAULT_MODEL"), {
+      name: "OPENROUTER_DEFAULT_MODEL",
+    }),
   },
   defaultSettings: baseChatDefaultSettings,
   defaultSettingsByProvider: {
@@ -300,6 +303,11 @@ const chatConfig = {
     gemini: readProviderDefaultSettings({
       providerId: "gemini",
       envPrefix: "GEMINI",
+      baseDefaults: baseChatDefaultSettings,
+    }),
+    openrouter: readProviderDefaultSettings({
+      providerId: "openrouter",
+      envPrefix: "OPENROUTER",
       baseDefaults: baseChatDefaultSettings,
     }),
   },
