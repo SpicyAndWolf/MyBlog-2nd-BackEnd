@@ -62,6 +62,32 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+// openrouter
+function buildHeaderExtensions({ providerId, model, settings }) {
+  const definition = getProviderDefinition(providerId);
+  const extensions = definition?.openaiCompatible?.headers;
+
+  let raw = {};
+  if (typeof extensions === "function") {
+    const value = extensions({ model, settings: settings || {} });
+    raw = isPlainObject(value) ? value : {};
+  } else if (isPlainObject(extensions)) {
+    raw = extensions;
+  }
+
+  const headers = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const name = String(key || "").trim();
+    if (!name) continue;
+    if (value === undefined || value === null) continue;
+    const normalizedValue = typeof value === "string" ? value.trim() : String(value);
+    if (!normalizedValue) continue;
+    headers[name] = normalizedValue;
+  }
+
+  return headers;
+}
+
 function buildBodyExtensions({ providerId, model, settings }) {
   const definition = getProviderDefinition(providerId);
   const extensions = definition?.openaiCompatible?.bodyExtensions;
@@ -133,7 +159,8 @@ function buildBody({
 
   if (normalizedTemperature !== null && isBodyParamAllowed(providerId, "temperature", { model, settings }))
     body.temperature = normalizedTemperature;
-  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings })) body.top_p = normalizedTopP;
+  if (normalizedTopP !== null && isBodyParamAllowed(providerId, "top_p", { model, settings }))
+    body.top_p = normalizedTopP;
   if (normalizedMaxTokens !== null && isBodyParamAllowed(providerId, "max_tokens", { model, settings }))
     body.max_tokens = normalizedMaxTokens;
   if (normalizedPresencePenalty !== null && isBodyParamAllowed(providerId, "presence_penalty", { model, settings }))
@@ -156,6 +183,7 @@ function buildBody({
 async function createChatCompletion({ providerId, model, messages, timeoutMs = llmConfig.timeoutMs, ...rest } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "chat/completions");
+  const headerExtensions = buildHeaderExtensions({ providerId: provider.id, model, settings: rest?.settings }); // openrouter
 
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(new Error("LLM request timeout")), timeoutMs);
@@ -164,6 +192,7 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
     const response = await fetch(url, {
       method: "POST",
       headers: {
+        ...headerExtensions, // openrouter
         "Content-Type": "application/json",
         Authorization: `Bearer ${provider.apiKey}`,
       },
@@ -210,10 +239,12 @@ async function createChatCompletion({ providerId, model, messages, timeoutMs = l
 async function createChatCompletionStreamResponse({ providerId, model, messages, signal, ...rest } = {}) {
   const provider = getProviderConfig(providerId);
   const url = buildUrl(provider.baseUrl, "chat/completions");
+  const headerExtensions = buildHeaderExtensions({ providerId: provider.id, model, settings: rest?.settings }); // openrouter
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
+      ...headerExtensions, // openrouter
       "Content-Type": "application/json",
       Authorization: `Bearer ${provider.apiKey}`,
     },
