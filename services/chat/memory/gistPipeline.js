@@ -143,7 +143,7 @@ async function generateAssistantGist({ content }) {
   return normalized;
 }
 
-async function generateAndStoreGist({ userId, presetId, messageId, content }) {
+async function generateAndStoreGist({ userId, presetId, messageId, content, force = false }) {
   const normalizedContent = String(content || "").trim();
   if (!normalizedContent) return;
 
@@ -160,7 +160,7 @@ async function generateAndStoreGist({ userId, presetId, messageId, content }) {
     throw error;
   }
 
-  if (existing?.contentHash && existing.contentHash === contentHash) return;
+  if (!force && existing?.contentHash && existing.contentHash === contentHash) return;
 
   const startedAt = Date.now();
   const gistText = await generateAssistantGist({ content: normalizedContent });
@@ -184,11 +184,12 @@ async function generateAndStoreGist({ userId, presetId, messageId, content }) {
     durationMs: Date.now() - startedAt,
     providerId: chatGistConfig.workerProviderId,
     modelId: chatGistConfig.workerModelId,
+    forced: Boolean(force),
     updated: Boolean(result),
   });
 }
 
-function requestAssistantGistGeneration({ userId, presetId, messageId, content } = {}) {
+function requestAssistantGistGeneration({ userId, presetId, messageId, content, force = false } = {}) {
   if (!chatGistConfig.enabled) return;
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -197,7 +198,7 @@ function requestAssistantGistGeneration({ userId, presetId, messageId, content }
 
   const key = buildKey(normalizedUserId, normalizedMessageId);
 
-  void enqueueKeyTask(key, async () => {
+  return enqueueKeyTask(key, async () => {
     const release = await workerSemaphore.acquire();
     try {
       await generateAndStoreGist({
@@ -205,6 +206,7 @@ function requestAssistantGistGeneration({ userId, presetId, messageId, content }
         presetId: normalizedPresetId,
         messageId: normalizedMessageId,
         content,
+        force,
       });
     } catch (error) {
       logger.error("chat_message_gist_generate_failed", {
