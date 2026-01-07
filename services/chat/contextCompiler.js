@@ -3,6 +3,7 @@ const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
 const chatMessageGistModel = require("@models/chatMessageGistModel");
 const { chatConfig, chatMemoryConfig, chatGistConfig } = require("../../config");
 const { logger } = require("../../logger");
+const { requestAssistantGistGeneration } = require("./memory/gistPipeline");
 
 function normalizeText(value) {
   return String(value || "");
@@ -190,24 +191,25 @@ function selectRecentWindowMessages(
 
     let effectiveContent = content;
     let assistantGist = false;
+    let assistantShouldGist = false;
+    let assistantGistCacheHit = false;
 
     if (normalizedAssistantGistEnabled && role === "assistant") {
       const shouldKeepRaw = assistantMessagesSelected < normalizedAssistantRawLastN;
-      if (!shouldKeepRaw) {
-        const cachedGistBody = getAssistantGistFromMap(assistantGistMap, messageId);
+      assistantShouldGist = !shouldKeepRaw;
+      let cachedGistBody = "";
+      if (assistantShouldGist) {
+        cachedGistBody = getAssistantGistFromMap(assistantGistMap, messageId);
         let gistMessage = "";
         if (cachedGistBody) {
           gistMessage = buildAssistantGistMessageFromBody(cachedGistBody, {
             prefix: normalizedAssistantGistPrefix,
             maxBodyChars: normalizedAssistantGistMaxChars,
           });
-          if (gistMessage) assistantGistFromCache += 1;
-        }
-        if (!gistMessage) {
-          gistMessage = buildAssistantGistMessage(content, {
-            prefix: normalizedAssistantGistPrefix,
-            maxBodyChars: normalizedAssistantGistMaxChars,
-          });
+          if (gistMessage) {
+            assistantGistFromCache += 1;
+            assistantGistCacheHit = true;
+          }
         }
         if (gistMessage) {
           effectiveContent = gistMessage;
@@ -226,6 +228,9 @@ function selectRecentWindowMessages(
       role,
       content: effectiveContent,
       assistantGist,
+      assistantShouldGist,
+      assistantGistCacheHit,
+      originalContent: role === "assistant" ? content : "",
       originalContentLength: content.length,
     });
     totalChars = nextChars;
@@ -244,6 +249,17 @@ function selectRecentWindowMessages(
     droppedToUserBoundary++;
   }
 
+  const assistantGistCandidates = [];
+  for (let i = selectedReversed.length - 1; i >= 0; i--) {
+    const row = selectedReversed[i];
+    if (!row || row.role !== "assistant" || !row.assistantShouldGist) continue;
+    const messageId = normalizeMessageId(row.id);
+    if (messageId === null) continue;
+    const originalContent = String(row.originalContent || "").trim();
+    if (!originalContent) continue;
+    assistantGistCandidates.push({ messageId, content: originalContent });
+  }
+
   const windowStartMessageId = selectedReversed.length ? selectedReversed[0]?.id : null;
   const windowEndMessageId = selectedReversed.length ? selectedReversed[selectedReversed.length - 1]?.id : null;
 
@@ -258,6 +274,7 @@ function selectRecentWindowMessages(
 
   return {
     messages: selectedReversed.map(({ role, content }) => ({ role, content })),
+    assistantGistCandidates,
     stats: {
       maxMessages: normalizedMaxMessages,
       maxChars: normalizedMaxChars,
@@ -332,6 +349,36 @@ async function safeLoadAssistantGistMap({ userId, presetId, candidates } = {}) {
   }
 }
 
+function scheduleRecentWindowAssistantGistBackfill({ userId, presetId, recentWindow, assistantGistMap } = {}) {
+  if (!chatGistConfig?.enabled) return { scheduled: 0, reason: "gist_disabled" };
+  if (!chatMemoryConfig?.recentWindowAssistantGistEnabled) return { scheduled: 0, reason: "recent_window_gist_disabled" };
+
+  const candidates = Array.isArray(recentWindow?.assistantGistCandidates) ? recentWindow.assistantGistCandidates : [];
+  if (!candidates.length) return { scheduled: 0, reason: "no_candidates" };
+
+  const workerConcurrency = Number(chatGistConfig.workerConcurrency) || 1;
+  const maxPerRequest = Math.max(1, Math.min(30, Math.floor(workerConcurrency) * 5));
+
+  let scheduled = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i] || {};
+    const messageId = normalizeMessageId(candidate.messageId);
+    if (messageId === null) continue;
+
+    const content = String(candidate.content || "").trim();
+    if (!content) continue;
+
+    const cachedGistBody = getAssistantGistFromMap(assistantGistMap, messageId);
+    if (cachedGistBody) continue;
+
+    requestAssistantGistGeneration({ userId, presetId, messageId, content });
+    scheduled += 1;
+    if (scheduled >= maxPerRequest) break;
+  }
+
+  return { scheduled, maxPerRequest, candidatesCount: candidates.length };
+}
+
 async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -365,6 +412,16 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
     assistantGistMap,
   });
+
+  const gistBackfill = scheduleRecentWindowAssistantGistBackfill({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    recentWindow: recent,
+    assistantGistMap,
+  });
+  if (recent?.stats?.assistantAntiEcho) {
+    recent.stats.assistantAntiEcho.gistBackfill = gistBackfill;
+  }
   const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
   const reachedCandidateLimit = recentCandidates.length === candidateLimit;
   const needsMemory = reachedCandidateLimit || recentCandidates.length > selectedBeforeUserBoundary;
