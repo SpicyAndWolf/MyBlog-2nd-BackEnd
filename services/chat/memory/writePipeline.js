@@ -90,7 +90,14 @@ async function computeRollingSummaryTarget({ userId, presetId } = {}) {
   const candidateLimit = maxMessages + 1;
 
   const candidates = await chatModel.listRecentMessagesByPreset(userId, presetId, { limit: candidateLimit });
-  const recent = selectRecentWindowMessages(candidates, { maxMessages, maxChars });
+  const recent = selectRecentWindowMessages(candidates, {
+    maxMessages,
+    maxChars,
+    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
+    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
+    assistantGistMaxChars: chatMemoryConfig.recentWindowAssistantGistMaxChars,
+    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
+  });
 
   const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
   const reachedCandidateLimit = candidates.length === candidateLimit;

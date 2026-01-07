@@ -311,6 +311,30 @@ const chatConfig = {
       baseDefaults: baseChatDefaultSettings,
     }),
   },
+  outputRewriteGate: {
+    enabled: readRequiredBoolEnv("CHAT_OUTPUT_REWRITE_GATE_ENABLED"),
+    recentK: ensureNonNegativeInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_RECENT_K"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_RECENT_K",
+    }),
+    threshold: ensureNumberInRange(readRequiredFloatEnv("CHAT_OUTPUT_REWRITE_GATE_THRESHOLD"), { min: 0, max: 1 }, {
+      name: "CHAT_OUTPUT_REWRITE_GATE_THRESHOLD",
+    }),
+    minChars: ensureNonNegativeInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_MIN_CHARS"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_MIN_CHARS",
+    }),
+    timeoutMs: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_TIMEOUT_MS"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_TIMEOUT_MS",
+    }),
+    sampleMaxChars: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_SAMPLE_MAX_CHARS"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_SAMPLE_MAX_CHARS",
+    }),
+    fallbackMaxChars: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_FALLBACK_MAX_CHARS"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_FALLBACK_MAX_CHARS",
+    }),
+    candidateLimit: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_CANDIDATE_LIMIT"), {
+      name: "CHAT_OUTPUT_REWRITE_GATE_CANDIDATE_LIMIT",
+    }),
+  },
 };
 
 const chatMemoryConfig = (() => {
@@ -330,6 +354,18 @@ const chatMemoryConfig = (() => {
   const gapBridgeMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS"), {
     name: "CHAT_MEMORY_GAP_BRIDGE_MAX_CHARS",
   });
+
+  const recentWindowAssistantGistEnabled = readRequiredBoolEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_ENABLED");
+
+  const recentWindowAssistantRawLastN = ensureNonNegativeInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N"), {
+    name: "CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N",
+  });
+
+  const recentWindowAssistantGistMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_MAX_CHARS"), {
+    name: "CHAT_RECENT_WINDOW_ASSISTANT_GIST_MAX_CHARS",
+  });
+
+  const recentWindowAssistantGistPrefix = readRequiredStringEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX");
 
   const workerProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_MEMORY_WORKER_PROVIDER"), {
     name: "CHAT_MEMORY_WORKER_PROVIDER",
@@ -494,6 +530,10 @@ const chatMemoryConfig = (() => {
     rollingSummaryUpdateEveryNTurns,
     gapBridgeMaxMessages,
     gapBridgeMaxChars,
+    recentWindowAssistantGistEnabled,
+    recentWindowAssistantRawLastN,
+    recentWindowAssistantGistMaxChars,
+    recentWindowAssistantGistPrefix,
     workerProviderId,
     workerModelId,
     workerConcurrency,
@@ -502,6 +542,163 @@ const chatMemoryConfig = (() => {
     writeRetryMax,
     syncRebuildTimeoutMs,
     syncRebuildTotalTimeoutMs,
+    workerSettings,
+    workerRaw: {
+      openaiCompatibleBody,
+      googleGenAiConfig,
+    },
+  };
+})();
+
+const chatGistConfig = (() => {
+  const enabled = readRequiredBoolEnv("CHAT_GIST_ENABLED");
+  const maxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_GIST_MAX_CHARS"), { name: "CHAT_GIST_MAX_CHARS" });
+
+  const workerProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_GIST_WORKER_PROVIDER"), {
+    name: "CHAT_GIST_WORKER_PROVIDER",
+  });
+
+  const workerModelId = ensureSupportedModel(workerProviderId, readRequiredStringEnv("CHAT_GIST_WORKER_MODEL"), {
+    name: "CHAT_GIST_WORKER_MODEL",
+  });
+
+  const workerConcurrency = ensurePositiveInt(readRequiredIntEnv("CHAT_GIST_WORKER_CONCURRENCY"), {
+    name: "CHAT_GIST_WORKER_CONCURRENCY",
+  });
+
+  const workerTimeoutMs = ensurePositiveInt(readRequiredIntEnv("CHAT_GIST_WORKER_TIMEOUT_MS"), {
+    name: "CHAT_GIST_WORKER_TIMEOUT_MS",
+  });
+
+  function sanitizeWorkerSettings(rawSettings) {
+    if (!isPlainObject(rawSettings)) return {};
+
+    const sanitized = {};
+
+    const keys = [
+      "temperature",
+      "topP",
+      "maxOutputTokens",
+      "presencePenalty",
+      "frequencyPenalty",
+      "thinkingBudget",
+      "stream",
+      "enableWebSearch",
+    ];
+
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(rawSettings, key)) continue;
+      if (key === "stream" || key === "enableWebSearch") {
+        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
+        continue;
+      }
+
+      const number = Number(rawSettings[key]);
+      if (Number.isFinite(number)) sanitized[key] = number;
+    }
+
+    const definition = getProviderDefinition(workerProviderId);
+    const schema = Array.isArray(definition?.settingsSchema) ? definition.settingsSchema : [];
+    const modelId = workerModelId;
+
+    for (const control of schema) {
+      const key = normalizeKey(control?.key);
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(sanitized, key)) continue;
+
+      const blocklist = Array.isArray(control?.modelBlocklist) ? control.modelBlocklist : [];
+      if (modelId && blocklist.includes(modelId)) continue;
+
+      const type = normalizeKey(control?.type);
+
+      if (type === "toggle") {
+        if (typeof rawSettings[key] === "boolean") sanitized[key] = rawSettings[key];
+        continue;
+      }
+
+      if (type === "select") {
+        if (typeof rawSettings[key] !== "string") continue;
+        const value = rawSettings[key].trim();
+        if (!value) continue;
+
+        const options = Array.isArray(control.options) ? control.options : [];
+        const allowed = new Set(options.map((option) => normalizeKey(option?.value)).filter(Boolean));
+        if (!allowed.has(value)) continue;
+
+        sanitized[key] = value;
+        continue;
+      }
+
+      if (type === "range" || type === "number") {
+        const number = Number(rawSettings[key]);
+        if (Number.isFinite(number)) sanitized[key] = number;
+      }
+    }
+
+    return sanitized;
+  }
+
+  function normalizeWorkerSettings(settings) {
+    if (!isPlainObject(settings)) return {};
+
+    const normalized = { ...settings };
+    const keys = ["temperature", "topP", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "thinkingBudget"];
+
+    for (const key of keys) {
+      if (normalized[key] === undefined) continue;
+
+      const range = getProviderNumericRange(workerProviderId, key);
+      const fallbackRange = getGlobalNumericRange(key);
+      const nextValue = clampNumberWithRange(normalized[key], range || fallbackRange);
+
+      if (!Number.isFinite(nextValue)) {
+        delete normalized[key];
+        continue;
+      }
+
+      if (key === "maxOutputTokens" || key === "thinkingBudget") {
+        normalized[key] = Math.trunc(nextValue);
+      } else {
+        normalized[key] = nextValue;
+      }
+    }
+
+    return normalized;
+  }
+
+  const rawWorkerSettings = {
+    temperature: readRequiredSettingNumber("CHAT_GIST_WORKER_TEMPERATURE", {
+      key: "temperature",
+      providerId: workerProviderId,
+    }),
+    topP: readRequiredSettingNumber("CHAT_GIST_WORKER_TOP_P", { key: "topP", providerId: workerProviderId }),
+    maxOutputTokens: readRequiredSettingNumber("CHAT_GIST_WORKER_MAX_OUTPUT_TOKENS", {
+      key: "maxOutputTokens",
+      providerId: workerProviderId,
+      integer: true,
+    }),
+    stream: readRequiredBoolEnv("CHAT_GIST_WORKER_STREAM"),
+    enableWebSearch: readRequiredBoolEnv("CHAT_GIST_WORKER_ENABLE_WEB_SEARCH"),
+    thinkingLevel: readOptionalStringEnv("CHAT_GIST_WORKER_THINKING_LEVEL"),
+    thinkingBudget: readOptionalIntEnvStrict("CHAT_GIST_WORKER_THINKING_BUDGET"),
+    safetyHarassment: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_HARASSMENT"),
+    safetyHateSpeech: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_HATE_SPEECH"),
+    safetySexuallyExplicit: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
+    safetyDangerousContent: readOptionalStringEnv("CHAT_GIST_WORKER_SAFETY_DANGEROUS_CONTENT"),
+  };
+
+  const workerSettings = normalizeWorkerSettings(sanitizeWorkerSettings(rawWorkerSettings));
+
+  const openaiCompatibleBody = readRequiredJsonObjectEnv("CHAT_GIST_WORKER_OPENAI_COMPATIBLE_BODY_JSON");
+  const googleGenAiConfig = readRequiredJsonObjectEnv("CHAT_GIST_WORKER_GOOGLE_GENAI_CONFIG_JSON");
+
+  return {
+    enabled,
+    maxChars,
+    workerProviderId,
+    workerModelId,
+    workerConcurrency,
+    workerTimeoutMs,
     workerSettings,
     workerRaw: {
       openaiCompatibleBody,
@@ -526,6 +723,7 @@ const articleConfig = {
 module.exports = {
   chatConfig,
   chatMemoryConfig,
+  chatGistConfig,
   llmConfig,
   articleConfig,
 };

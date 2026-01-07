@@ -20,6 +20,7 @@ const LOG_ERROR_FILE = readStringEnv("LOG_ERROR_FILE", "error.log");
 const LOG_WARN_FILE = readStringEnv("LOG_WARN_FILE", "warn.log");
 const LOG_INFO_FILE = readStringEnv("LOG_INFO_FILE", "info.log");
 const LOG_DEBUG_FILE = readStringEnv("LOG_DEBUG_FILE", "debug.log");
+const LOG_CHAT_FILE = readStringEnv("LOG_CHAT_FILE", "");
 
 function resolveLogPath(logDir, rawPath) {
   const normalized = typeof rawPath === "string" ? rawPath.trim() : "";
@@ -34,6 +35,7 @@ const levelLogFilePaths = {
   info: resolveLogPath(logDir, LOG_INFO_FILE),
   debug: resolveLogPath(logDir, LOG_DEBUG_FILE),
 };
+const chatLogFilePath = resolveLogPath(logDir, LOG_CHAT_FILE);
 
 if (LOG_TO_FILE) {
   fs.mkdirSync(logDir, { recursive: true });
@@ -110,6 +112,12 @@ function emitLevelFile(level, entry) {
   fs.appendFile(filePath, `${line}\n`, () => {});
 }
 
+function emitChatFile(entry) {
+  if (!chatLogFilePath) return;
+  const line = safeJsonStringify(entry);
+  fs.appendFile(chatLogFilePath, `${line}\n`, () => {});
+}
+
 function log(level, message, meta) {
   if (!shouldLog(level)) return;
   const normalizedMeta = normalizeMeta(meta);
@@ -135,6 +143,24 @@ const logger = {
   error: (message, meta) => log("error", message, meta),
   warn: (message, meta) => log("warn", message, meta),
   info: (message, meta) => log("info", message, meta),
+  chat: (message, meta) => {
+    const normalizedMeta = normalizeMeta(meta);
+    const entry = {
+      timestamp: new Date().toISOString(),
+      level: "chat",
+      message,
+    };
+    if (normalizedMeta && Object.keys(normalizedMeta).length > 0) {
+      entry.meta = normalizedMeta;
+    }
+
+    if (LOG_TO_CONSOLE && shouldLog("info")) {
+      emitConsole("info", entry, normalizedMeta);
+    }
+    if (LOG_TO_FILE) {
+      emitChatFile(entry);
+    }
+  },
   debug: (message, meta) => log("debug", message, meta),
 };
 
