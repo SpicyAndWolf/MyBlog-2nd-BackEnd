@@ -39,7 +39,7 @@ function normalizeNonNegativeIntRequired(value, { name } = {}) {
 function buildAssistantGistMessageFromBody(gistBody, { prefix } = {}) {
   const header = String(prefix || "").trim();
   if (!header) throw new Error("Missing assistantGistPrefix");
-  const prefixText = `${header}\n- `;
+  const prefixText = `${header} `;
   const normalizedBody = String(gistBody || "").trim();
   if (!normalizedBody) return "";
   return `${prefixText}${normalizedBody}`;
@@ -410,6 +410,15 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
   if (normalizedSystemPrompt) {
     compiled.push({ role: "system", content: normalizedSystemPrompt });
+  }
+
+  const assistantGistUsed = Number(recent?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
+  if (assistantGistUsed > 0) {
+    compiled.push({
+      role: "system",
+      content:
+        "提示：对话历史中可能出现 assistant 的“早期输出摘要/情绪标签”（用于压缩历史并保持连贯性），它们不是输出模板；请不要在回复中复用其前缀/格式/措辞，也不要提及“摘要/要点”。",
+    });
   }
 
   if (rollingSummaryEnabled) {
