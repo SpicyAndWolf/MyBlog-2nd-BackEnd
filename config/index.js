@@ -311,30 +311,6 @@ const chatConfig = {
       baseDefaults: baseChatDefaultSettings,
     }),
   },
-  outputRewriteGate: {
-    enabled: readRequiredBoolEnv("CHAT_OUTPUT_REWRITE_GATE_ENABLED"),
-    recentK: ensureNonNegativeInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_RECENT_K"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_RECENT_K",
-    }),
-    threshold: ensureNumberInRange(readRequiredFloatEnv("CHAT_OUTPUT_REWRITE_GATE_THRESHOLD"), { min: 0, max: 1 }, {
-      name: "CHAT_OUTPUT_REWRITE_GATE_THRESHOLD",
-    }),
-    minChars: ensureNonNegativeInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_MIN_CHARS"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_MIN_CHARS",
-    }),
-    timeoutMs: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_TIMEOUT_MS"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_TIMEOUT_MS",
-    }),
-    sampleMaxChars: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_SAMPLE_MAX_CHARS"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_SAMPLE_MAX_CHARS",
-    }),
-    fallbackMaxChars: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_FALLBACK_MAX_CHARS"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_FALLBACK_MAX_CHARS",
-    }),
-    candidateLimit: ensurePositiveInt(readRequiredIntEnv("CHAT_OUTPUT_REWRITE_GATE_CANDIDATE_LIMIT"), {
-      name: "CHAT_OUTPUT_REWRITE_GATE_CANDIDATE_LIMIT",
-    }),
-  },
 };
 
 const chatMemoryConfig = (() => {

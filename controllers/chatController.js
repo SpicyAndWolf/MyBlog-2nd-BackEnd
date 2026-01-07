@@ -5,7 +5,6 @@ const path = require("path");
 const sharp = require("sharp");
 const { chatConfig, llmConfig, chatMemoryConfig } = require("../config");
 const { compileChatContextMessages, selectRecentWindowMessages } = require("../services/chat/contextCompiler");
-const { runOutputRewriteGate } = require("../services/chat/outputRewriteGate");
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,
@@ -943,63 +942,14 @@ const chatController = {
           settings: providerSettings,
         });
 
-        let finalAssistantContent = assistantContent;
-        const gateConfig = chatConfig.outputRewriteGate;
-        if (gateConfig?.enabled) {
-          try {
-            const gateCandidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
-              limit: gateConfig.candidateLimit,
-              upToMessageId: messageId,
-            });
-
-            const gateResult = await runOutputRewriteGate({
-              enabled: gateConfig.enabled,
-              providerId,
-              modelId,
-              userMessageText: updatedUserMessage?.content,
-              assistantDraftText: assistantContent,
-              recentAssistantMessages: gateCandidates,
-              settings: providerSettings,
-              threshold: gateConfig.threshold,
-              recentK: gateConfig.recentK,
-              minChars: gateConfig.minChars,
-              timeoutMs: gateConfig.timeoutMs,
-              sampleMaxChars: gateConfig.sampleMaxChars,
-              fallbackMaxChars: gateConfig.fallbackMaxChars,
-            });
-
-            if (gateResult?.content) finalAssistantContent = gateResult.content;
-
-            const gateAction = String(gateResult?.action || "");
-            if (gateAction && gateAction !== "pass") {
-              logger.chat(
-                "chat_output_rewrite_gate_triggered",
-                withRequestContext(req, { sessionId, presetId, action: gateAction, metrics: gateResult?.metrics })
-              );
-              logger.debug(
-                "chat_output_rewrite_gate",
-                withRequestContext(req, {
-                  sessionId,
-                  presetId,
-                  action: gateAction,
-                  metrics: gateResult?.metrics,
-                  finalChars: String(finalAssistantContent || "").length,
-                })
-              );
-            }
-          } catch (error) {
-            logger.warn("chat_output_rewrite_gate_failed", withRequestContext(req, { error, sessionId, presetId }));
-          }
-        }
-
-        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", finalAssistantContent);
+        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
         kickRollingSummaryUpdate({ userId, presetId, needsMemory });
         requestAssistantGistGeneration({
           userId,
           presetId,
           messageId: assistantMessage?.id,
-          content: finalAssistantContent,
+          content: assistantContent,
         });
 
         return res
@@ -1222,63 +1172,14 @@ const chatController = {
           settings: effectiveSettings,
         });
 
-        let finalAssistantContent = assistantContent;
-        const gateConfig = chatConfig.outputRewriteGate;
-        if (gateConfig?.enabled) {
-          try {
-            const gateCandidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
-              limit: gateConfig.candidateLimit,
-              upToMessageId: userMessage.id,
-            });
-
-            const gateResult = await runOutputRewriteGate({
-              enabled: gateConfig.enabled,
-              providerId,
-              modelId,
-              userMessageText: content,
-              assistantDraftText: assistantContent,
-              recentAssistantMessages: gateCandidates,
-              settings: effectiveSettings,
-              threshold: gateConfig.threshold,
-              recentK: gateConfig.recentK,
-              minChars: gateConfig.minChars,
-              timeoutMs: gateConfig.timeoutMs,
-              sampleMaxChars: gateConfig.sampleMaxChars,
-              fallbackMaxChars: gateConfig.fallbackMaxChars,
-            });
-
-            if (gateResult?.content) finalAssistantContent = gateResult.content;
-
-            const gateAction = String(gateResult?.action || "");
-            if (gateAction && gateAction !== "pass") {
-              logger.chat(
-                "chat_output_rewrite_gate_triggered",
-                withRequestContext(req, { sessionId, presetId, action: gateAction, metrics: gateResult?.metrics })
-              );
-              logger.debug(
-                "chat_output_rewrite_gate",
-                withRequestContext(req, {
-                  sessionId,
-                  presetId,
-                  action: gateAction,
-                  metrics: gateResult?.metrics,
-                  finalChars: String(finalAssistantContent || "").length,
-                })
-              );
-            }
-          } catch (error) {
-            logger.warn("chat_output_rewrite_gate_failed", withRequestContext(req, { error, sessionId, presetId }));
-          }
-        }
-
-        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", finalAssistantContent);
+        const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
         kickRollingSummaryUpdate({ userId, presetId, needsMemory });
         requestAssistantGistGeneration({
           userId,
           presetId,
           messageId: assistantMessage?.id,
-          content: finalAssistantContent,
+          content: assistantContent,
         });
 
         return res
