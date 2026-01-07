@@ -25,17 +25,6 @@ function normalizePositiveIntLimit(value, fallback, { name } = {}) {
   return Math.floor(number);
 }
 
-function normalizePositiveIntRequired(value, { name } = {}) {
-  if (value === undefined || value === null) {
-    throw new Error(`Missing required ${name || "limit"}`);
-  }
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0) {
-    throw new Error(`Invalid ${name || "limit"}: ${String(value)}`);
-  }
-  return Math.floor(number);
-}
-
 function normalizeNonNegativeIntRequired(value, { name } = {}) {
   if (value === undefined || value === null) {
     throw new Error(`Missing required ${name || "limit"}`);
@@ -47,87 +36,13 @@ function normalizeNonNegativeIntRequired(value, { name } = {}) {
   return Math.floor(number);
 }
 
-function clipText(text, maxChars) {
-  const normalized = String(text || "");
-  if (!Number.isFinite(maxChars) || maxChars <= 0) return normalized;
-  if (normalized.length <= maxChars) return normalized;
-  return normalized.slice(0, maxChars);
-}
-
-function stripMarkdownForGist(rawText) {
-  let text = String(rawText || "");
-
-  text = text.replace(/```[\s\S]*?```/g, " ");
-  text = text.replace(/!\[[^\]]*\]\([^)]+\)/g, " ");
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-  text = text.replace(/`([^`]+)`/g, "$1");
-
-  text = text
-    .split(/\r?\n/)
-    .map((line) =>
-      line
-        .replace(/^#{1,6}\s+/, "")
-        .replace(/^>\s+/, "")
-        .trim()
-    )
-    .filter(Boolean)
-    .join("\n");
-
-  text = text.replace(/[ \t]+/g, " ").trim();
-  return text;
-}
-
-function buildAssistantGistBody(rawText, { maxChars } = {}) {
-  const normalizedRaw = String(rawText || "").trim();
-  if (!normalizedRaw) return "";
-
-  const cleaned = stripMarkdownForGist(normalizedRaw);
-  const sourceText = cleaned || normalizedRaw;
-
-  const lines = sourceText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const bulletLines = lines
-    .filter((line) => /^([-*•]|\d+\.)\s+/.test(line))
-    .map((line) => line.replace(/^([-*•]|\d+\.)\s+/, "").trim())
-    .filter(Boolean);
-
-  let gist = "";
-  if (bulletLines.length) {
-    gist = bulletLines.join("；");
-  } else {
-    gist = lines.join(" ");
-  }
-
-  gist = gist
-    .replace(/[“”"']/g, "")
-    .replace(/[。！？!?]+/g, "；")
-    .replace(/[；;]+/g, "；")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return clipText(gist, maxChars).trim();
-}
-
-function buildAssistantGistMessageFromBody(gistBody, { prefix, maxBodyChars } = {}) {
+function buildAssistantGistMessageFromBody(gistBody, { prefix } = {}) {
   const header = String(prefix || "").trim();
   if (!header) throw new Error("Missing assistantGistPrefix");
   const prefixText = `${header}\n- `;
-
-  const maxChars = normalizePositiveIntRequired(maxBodyChars, { name: "assistantGistMaxChars" });
-
-  const normalizedBody = clipText(String(gistBody || "").trim(), maxChars).trim();
+  const normalizedBody = String(gistBody || "").trim();
   if (!normalizedBody) return "";
   return `${prefixText}${normalizedBody}`;
-}
-
-function buildAssistantGistMessage(rawText, { prefix, maxBodyChars } = {}) {
-  const maxChars = normalizePositiveIntRequired(maxBodyChars, { name: "assistantGistMaxChars" });
-  const body = buildAssistantGistBody(rawText, { maxChars });
-  if (!body) return "";
-  return buildAssistantGistMessageFromBody(body, { prefix, maxBodyChars: maxChars });
 }
 
 function getAssistantGistFromMap(assistantGistMap, messageId) {
@@ -148,7 +63,6 @@ function selectRecentWindowMessages(
     maxChars,
     assistantGistEnabled,
     assistantRawLastN,
-    assistantGistMaxChars,
     assistantGistPrefix,
     assistantGistMap,
   } = {}
@@ -161,9 +75,6 @@ function selectRecentWindowMessages(
   const normalizedAssistantGistEnabled = Boolean(assistantGistEnabled);
   const normalizedAssistantRawLastN = normalizedAssistantGistEnabled
     ? normalizeNonNegativeIntRequired(assistantRawLastN, { name: "assistantRawLastN" })
-    : 0;
-  const normalizedAssistantGistMaxChars = normalizedAssistantGistEnabled
-    ? normalizePositiveIntRequired(assistantGistMaxChars, { name: "assistantGistMaxChars" })
     : 0;
   const normalizedAssistantGistPrefix = normalizedAssistantGistEnabled ? String(assistantGistPrefix || "").trim() : "";
   if (normalizedAssistantGistEnabled && !normalizedAssistantGistPrefix) {
@@ -204,7 +115,6 @@ function selectRecentWindowMessages(
         if (cachedGistBody) {
           gistMessage = buildAssistantGistMessageFromBody(cachedGistBody, {
             prefix: normalizedAssistantGistPrefix,
-            maxBodyChars: normalizedAssistantGistMaxChars,
           });
           if (gistMessage) {
             assistantGistFromCache += 1;
@@ -287,7 +197,6 @@ function selectRecentWindowMessages(
       assistantAntiEcho: normalizedAssistantGistEnabled
         ? {
             assistantRawLastN: normalizedAssistantRawLastN,
-            assistantGistMaxChars: normalizedAssistantGistMaxChars,
             assistantTotal,
             assistantGistUsed,
             assistantGistFromCache,
@@ -408,7 +317,6 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     maxChars,
     assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
     assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistMaxChars: chatMemoryConfig.recentWindowAssistantGistMaxChars,
     assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
     assistantGistMap,
   });

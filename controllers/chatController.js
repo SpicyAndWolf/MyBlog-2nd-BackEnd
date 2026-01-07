@@ -300,7 +300,6 @@ async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) 
     maxChars,
     assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
     assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistMaxChars: chatMemoryConfig.recentWindowAssistantGistMaxChars,
     assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
   });
   const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;

@@ -337,10 +337,6 @@ const chatMemoryConfig = (() => {
     name: "CHAT_RECENT_WINDOW_ASSISTANT_RAW_LAST_N",
   });
 
-  const recentWindowAssistantGistMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_MAX_CHARS"), {
-    name: "CHAT_RECENT_WINDOW_ASSISTANT_GIST_MAX_CHARS",
-  });
-
   const recentWindowAssistantGistPrefix = readRequiredStringEnv("CHAT_RECENT_WINDOW_ASSISTANT_GIST_PREFIX");
 
   const workerProviderId = ensureSupportedProvider(readRequiredStringEnv("CHAT_MEMORY_WORKER_PROVIDER"), {
@@ -508,7 +504,6 @@ const chatMemoryConfig = (() => {
     gapBridgeMaxChars,
     recentWindowAssistantGistEnabled,
     recentWindowAssistantRawLastN,
-    recentWindowAssistantGistMaxChars,
     recentWindowAssistantGistPrefix,
     workerProviderId,
     workerModelId,

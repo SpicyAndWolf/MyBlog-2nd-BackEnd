@@ -95,7 +95,6 @@ async function computeRollingSummaryTarget({ userId, presetId } = {}) {
     maxChars,
     assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
     assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistMaxChars: chatMemoryConfig.recentWindowAssistantGistMaxChars,
     assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
   });
 
