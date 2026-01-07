@@ -21,6 +21,12 @@ const LOG_WARN_FILE = readStringEnv("LOG_WARN_FILE", "warn.log");
 const LOG_INFO_FILE = readStringEnv("LOG_INFO_FILE", "info.log");
 const LOG_DEBUG_FILE = readStringEnv("LOG_DEBUG_FILE", "debug.log");
 const LOG_CHAT_FILE = readStringEnv("LOG_CHAT_FILE", "");
+const LOG_DEBUG_FULL_FILE = readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log");
+const LOG_DEBUG_ROLLING_FILE = readStringEnv("LOG_DEBUG_ROLLING_FILE", "debug-rolling.log");
+const LOG_DEBUG_GIST_FILE = readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log");
+const LOG_DEBUG_FULL_ENABLED = readBoolEnv("LOG_DEBUG_FULL_ENABLED", true);
+const LOG_DEBUG_ROLLING_ENABLED = readBoolEnv("LOG_DEBUG_ROLLING_ENABLED", true);
+const LOG_DEBUG_GIST_ENABLED = readBoolEnv("LOG_DEBUG_GIST_ENABLED", true);
 
 function resolveLogPath(logDir, rawPath) {
   const normalized = typeof rawPath === "string" ? rawPath.trim() : "";
@@ -36,6 +42,9 @@ const levelLogFilePaths = {
   debug: resolveLogPath(logDir, LOG_DEBUG_FILE),
 };
 const chatLogFilePath = resolveLogPath(logDir, LOG_CHAT_FILE);
+const debugFullLogFilePath = LOG_DEBUG_FULL_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_FULL_FILE) : "";
+const debugRollingLogFilePath = LOG_DEBUG_ROLLING_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_ROLLING_FILE) : "";
+const debugGistLogFilePath = LOG_DEBUG_GIST_ENABLED ? resolveLogPath(logDir, LOG_DEBUG_GIST_FILE) : "";
 
 if (LOG_TO_FILE) {
   fs.mkdirSync(logDir, { recursive: true });
@@ -71,6 +80,19 @@ function normalizeMeta(meta) {
     }
   }
   return normalized;
+}
+
+function buildEntry(level, message, meta) {
+  const normalizedMeta = normalizeMeta(meta);
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    message,
+  };
+  if (normalizedMeta && Object.keys(normalizedMeta).length > 0) {
+    entry.meta = normalizedMeta;
+  }
+  return { entry, normalizedMeta };
 }
 
 function safeJsonStringify(value) {
@@ -112,23 +134,19 @@ function emitLevelFile(level, entry) {
   fs.appendFile(filePath, `${line}\n`, () => {});
 }
 
-function emitChatFile(entry) {
-  if (!chatLogFilePath) return;
+function emitCustomFile(filePath, entry) {
+  if (!filePath) return;
   const line = safeJsonStringify(entry);
-  fs.appendFile(chatLogFilePath, `${line}\n`, () => {});
+  fs.appendFile(filePath, `${line}\n`, () => {});
+}
+
+function emitChatFile(entry) {
+  emitCustomFile(chatLogFilePath, entry);
 }
 
 function log(level, message, meta) {
   if (!shouldLog(level)) return;
-  const normalizedMeta = normalizeMeta(meta);
-  const entry = {
-    timestamp: new Date().toISOString(),
-    level,
-    message,
-  };
-  if (normalizedMeta && Object.keys(normalizedMeta).length > 0) {
-    entry.meta = normalizedMeta;
-  }
+  const { entry, normalizedMeta } = buildEntry(level, message, meta);
 
   if (LOG_TO_CONSOLE) {
     emitConsole(level, entry, normalizedMeta);
@@ -138,30 +156,28 @@ function log(level, message, meta) {
   }
 }
 
+function logCustom(level, message, meta, { filePath, consoleLevel } = {}) {
+  const { entry, normalizedMeta } = buildEntry(level, message, meta);
+  if (LOG_TO_CONSOLE && consoleLevel && shouldLog(consoleLevel)) {
+    emitConsole(consoleLevel, entry, normalizedMeta);
+  }
+  if (LOG_TO_FILE) {
+    emitCustomFile(filePath, entry);
+  }
+}
+
 const logger = {
   log,
   error: (message, meta) => log("error", message, meta),
   warn: (message, meta) => log("warn", message, meta),
   info: (message, meta) => log("info", message, meta),
   chat: (message, meta) => {
-    const normalizedMeta = normalizeMeta(meta);
-    const entry = {
-      timestamp: new Date().toISOString(),
-      level: "chat",
-      message,
-    };
-    if (normalizedMeta && Object.keys(normalizedMeta).length > 0) {
-      entry.meta = normalizedMeta;
-    }
-
-    if (LOG_TO_CONSOLE && shouldLog("info")) {
-      emitConsole("info", entry, normalizedMeta);
-    }
-    if (LOG_TO_FILE) {
-      emitChatFile(entry);
-    }
+    logCustom("chat", message, meta, { filePath: chatLogFilePath, consoleLevel: "info" });
   },
   debug: (message, meta) => log("debug", message, meta),
+  debugFull: (message, meta) => logCustom("debug_full", message, meta, { filePath: debugFullLogFilePath }),
+  debugRolling: (message, meta) => logCustom("debug_rolling", message, meta, { filePath: debugRollingLogFilePath }),
+  debugGist: (message, meta) => logCustom("debug_gist", message, meta, { filePath: debugGistLogFilePath }),
 };
 
 function withRequestContext(req, meta = {}) {

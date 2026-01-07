@@ -122,6 +122,11 @@ async function generateAssistantGist({ content }) {
   const workerRaw = chatGistConfig.workerRaw;
 
   const prompt = buildAssistantGistPrompt({ content, maxChars });
+  logger.debugGist("chat_message_gist_request", {
+    providerId,
+    modelId,
+    messages: prompt.messages,
+  });
 
   const response = await createChatCompletion({
     providerId,

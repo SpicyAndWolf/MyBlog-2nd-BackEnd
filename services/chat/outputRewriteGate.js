@@ -1,4 +1,5 @@
 const { createChatCompletion } = require("../llm/chatCompletions");
+const { logger } = require("../../logger");
 
 function normalizeForSimilarity(text) {
   return String(text || "")
@@ -251,6 +252,11 @@ async function runOutputRewriteGate({
     assistantDraftText,
     avoidAssistantSamples: avoidSamples,
     sampleMaxChars: normalizedSampleMaxChars,
+  });
+  logger.debugFull("chat_output_rewrite_gate_request", {
+    providerId,
+    modelId,
+    messages: prompt.messages,
   });
 
   if (!settings || typeof settings !== "object") throw new Error("Missing rewrite settings");

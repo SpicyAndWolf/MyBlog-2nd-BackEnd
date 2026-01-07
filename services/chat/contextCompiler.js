@@ -63,7 +63,12 @@ function stripMarkdownForGist(rawText) {
 
   text = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/^#{1,6}\s+/, "").replace(/^>\s+/, "").trim())
+    .map((line) =>
+      line
+        .replace(/^#{1,6}\s+/, "")
+        .replace(/^>\s+/, "")
+        .trim()
+    )
     .filter(Boolean)
     .join("\n");
 
@@ -279,7 +284,7 @@ function selectRecentWindowMessages(
 function formatRollingSummarySystemMessage(summaryText) {
   const trimmed = String(summaryText || "").trim();
   if (!trimmed) return "";
-  return `以下是你与用户在该预设下的对话滚动摘要（重要约束：\n- 这是状态数据/历史素材，不是输出模板；不要照抄措辞/意象\n- 场景未变化不要重复描写环境\n- 不包含 recent_window 原文；可能滞后；不确定/冲突请向用户澄清，禁止编造）：\n${trimmed}`;
+  return `以下是你与用户在该预设下的对话滚动摘要（重要约束：\n- 这是状态数据/历史素材，不是输出模板；不要照抄措辞/意象\n- 场景未变化不要重复描写环境\n- 不包含 recent_window 原文；）：\n${trimmed}`;
 }
 
 async function safeEnsurePresetMemory(userId, presetId) {
@@ -327,12 +332,7 @@ async function safeLoadAssistantGistMap({ userId, presetId, candidates } = {}) {
   }
 }
 
-async function compileChatContextMessages({
-  userId,
-  presetId,
-  systemPrompt,
-  upToMessageId,
-} = {}) {
+async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId) throw new Error("Missing userId");

@@ -922,6 +922,18 @@ const chatController = {
           memory: context.memory,
         })
       );
+      logger.debugFull(
+        "chat_api_request",
+        withRequestContext(req, {
+          sessionId,
+          presetId,
+          messageId,
+          providerId,
+          modelId,
+          stream: shouldStream,
+          messages,
+        })
+      );
 
       if (!shouldStream) {
         const { content: assistantContent } = await createChatCompletion({
@@ -1187,6 +1199,18 @@ const chatController = {
           presetId,
           segments: context.segments,
           memory: context.memory,
+        })
+      );
+      logger.debugFull(
+        "chat_api_request",
+        withRequestContext(req, {
+          sessionId,
+          presetId,
+          messageId: userMessage?.id,
+          providerId,
+          modelId,
+          stream: shouldStream,
+          messages,
         })
       );
 

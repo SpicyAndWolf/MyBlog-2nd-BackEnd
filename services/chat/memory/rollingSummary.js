@@ -143,6 +143,11 @@ async function generateRollingSummary({
   raw,
 } = {}) {
   const prompt = buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars });
+  logger.debugRolling("chat_memory_rolling_summary_request", {
+    providerId,
+    modelId,
+    messages: prompt.messages,
+  });
 
   let content = "";
   try {

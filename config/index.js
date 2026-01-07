@@ -711,6 +711,24 @@ const llmConfig = {
   timeoutMs: ensurePositiveInt(readRequiredIntEnv("LLM_TIMEOUT_MS"), { name: "LLM_TIMEOUT_MS" }),
 };
 
+const logConfig = {
+  level: readStringEnv("LOG_LEVEL", "info"),
+  toConsole: readBoolEnv("LOG_TO_CONSOLE", true),
+  toFile: readBoolEnv("LOG_TO_FILE", true),
+  dir: readStringEnv("LOG_DIR", "logs"),
+  errorFile: readStringEnv("LOG_ERROR_FILE", "error.log"),
+  warnFile: readStringEnv("LOG_WARN_FILE", "warn.log"),
+  infoFile: readStringEnv("LOG_INFO_FILE", "info.log"),
+  debugFile: readStringEnv("LOG_DEBUG_FILE", "debug.log"),
+  chatFile: readStringEnv("LOG_CHAT_FILE", ""),
+  debugFullFile: readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log"),
+  debugRollingFile: readStringEnv("LOG_DEBUG_ROLLING_FILE", "debug-rolling.log"),
+  debugGistFile: readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log"),
+  debugFullEnabled: readBoolEnv("LOG_DEBUG_FULL_ENABLED", true),
+  debugRollingEnabled: readBoolEnv("LOG_DEBUG_ROLLING_ENABLED", true),
+  debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", true),
+};
+
 const articleConfig = {
   tempImageTtlMs: ensurePositiveInt(readRequiredIntEnv("ARTICLE_TEMP_IMAGE_TTL_MS"), {
     name: "ARTICLE_TEMP_IMAGE_TTL_MS",
@@ -725,5 +743,6 @@ module.exports = {
   chatMemoryConfig,
   chatGistConfig,
   llmConfig,
+  logConfig,
   articleConfig,
 };
