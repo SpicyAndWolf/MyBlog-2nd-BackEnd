@@ -288,55 +288,63 @@ function scheduleRecentWindowAssistantGistBackfill({ userId, presetId, recentWin
   return { scheduled, maxPerRequest, candidatesCount: candidates.length };
 }
 
-async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
-  const normalizedUserId = userId;
-  const normalizedPresetId = String(presetId || "").trim();
-  if (!normalizedUserId) throw new Error("Missing userId");
-  if (!normalizedPresetId) throw new Error("Missing presetId");
-
-  const maxMessages = chatConfig.maxContextMessages;
-  const maxChars = chatConfig.maxContextChars;
+async function buildRecentWindowContext({
+  userId,
+  presetId,
+  upToMessageId,
+  maxMessages,
+  maxChars,
+  assistantGistEnabled,
+  assistantRawLastN,
+  assistantGistPrefix,
+} = {}) {
   const candidateLimit = maxMessages + 1;
-
-  const gapBridgeMaxMessages = chatMemoryConfig.gapBridgeMaxMessages;
-  const gapBridgeMaxChars = chatMemoryConfig.gapBridgeMaxChars;
-
-  const recentCandidates = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, {
+  const recentCandidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
     limit: candidateLimit,
     upToMessageId,
   });
 
   const assistantGistMap = await safeLoadAssistantGistMap({
-    userId: normalizedUserId,
-    presetId: normalizedPresetId,
+    userId,
+    presetId,
     candidates: recentCandidates,
   });
 
   const recent = selectRecentWindowMessages(recentCandidates, {
     maxMessages,
     maxChars,
-    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
-    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
+    assistantGistEnabled,
+    assistantRawLastN,
+    assistantGistPrefix,
     assistantGistMap,
   });
 
   const gistBackfill = scheduleRecentWindowAssistantGistBackfill({
-    userId: normalizedUserId,
-    presetId: normalizedPresetId,
+    userId,
+    presetId,
     recentWindow: recent,
     assistantGistMap,
   });
   if (recent?.stats?.assistantAntiEcho) {
     recent.stats.assistantAntiEcho.gistBackfill = gistBackfill;
   }
+
   const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
   const reachedCandidateLimit = recentCandidates.length === candidateLimit;
   const needsMemory = reachedCandidateLimit || recentCandidates.length > selectedBeforeUserBoundary;
 
-  const memory = needsMemory ? await safeEnsurePresetMemory(normalizedUserId, normalizedPresetId) : null;
-  const recentWindowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
+  return {
+    recent,
+    recentCandidates,
+    selectedBeforeUserBoundary,
+    needsMemory,
+  };
+}
+
+async function buildMemorySnapshot({ userId, presetId, needsMemory, recentWindowStartMessageId } = {}) {
+  const memory = needsMemory ? await safeEnsurePresetMemory(userId, presetId) : null;
   const summarizedUntilMessageId = memory ? normalizeMessageId(memory.summarizedUntilMessageId) : null;
+
   const summaryOverlapsRecentWindow =
     Boolean(memory) &&
     recentWindowStartMessageId !== null &&
@@ -351,60 +359,131 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     !summaryOverlapsRecentWindow &&
     Boolean(String(memory.rollingSummary || "").trim());
 
-  let gapBridge = null;
+  return {
+    memory,
+    summarizedUntilMessageId,
+    rollingSummaryEnabled,
+  };
+}
+
+async function buildGapBridge({
+  userId,
+  presetId,
+  needsMemory,
+  memory,
+  recentWindowStartMessageId,
+  summarizedUntilMessageId,
+  gapBridgeMaxMessages,
+  gapBridgeMaxChars,
+} = {}) {
   if (
-    needsMemory &&
-    memory &&
-    !memory.rebuildRequired &&
-    recentWindowStartMessageId !== null &&
-    recentWindowStartMessageId > 0 &&
-    summarizedUntilMessageId !== null &&
-    summarizedUntilMessageId < recentWindowStartMessageId - 1
+    !needsMemory ||
+    !memory ||
+    memory.rebuildRequired ||
+    recentWindowStartMessageId === null ||
+    recentWindowStartMessageId <= 0 ||
+    summarizedUntilMessageId === null ||
+    summarizedUntilMessageId >= recentWindowStartMessageId - 1
   ) {
-    const gapStartId = summarizedUntilMessageId + 1;
-    const gapEndId = recentWindowStartMessageId - 1;
-
-    const gapCandidateLimit = Math.min(500, Math.max(1, gapBridgeMaxMessages) + 50);
-    const gapCandidates = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, {
-      limit: gapCandidateLimit,
-      upToMessageId: gapEndId,
-    });
-
-    const gapUnsummarized = gapCandidates.filter((row) => {
-      const id = normalizeMessageId(row?.id);
-      if (id === null) return false;
-      return id >= gapStartId && id <= gapEndId;
-    });
-
-    const selected = selectRecentWindowMessages(gapUnsummarized, {
-      maxMessages: gapBridgeMaxMessages,
-      maxChars: gapBridgeMaxChars,
-    });
-    if (selected.messages.length) {
-      gapBridge = {
-        messages: selected.messages,
-        stats: {
-          ...selected.stats,
-          candidates: gapCandidates.length,
-          candidateLimit: gapCandidateLimit,
-          gapStartId,
-          gapEndId,
-        },
-      };
-    } else {
-      gapBridge = {
-        messages: [],
-        stats: {
-          candidates: gapCandidates.length,
-          candidateLimit: gapCandidateLimit,
-          gapStartId,
-          gapEndId,
-          selected: 0,
-          selectedChars: 0,
-        },
-      };
-    }
+    return null;
   }
+
+  const gapStartId = summarizedUntilMessageId + 1;
+  const gapEndId = recentWindowStartMessageId - 1;
+
+  const gapCandidateLimit = Math.min(500, Math.max(1, gapBridgeMaxMessages) + 50);
+  const gapCandidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
+    limit: gapCandidateLimit,
+    upToMessageId: gapEndId,
+  });
+
+  const gapUnsummarized = gapCandidates.filter((row) => {
+    const id = normalizeMessageId(row?.id);
+    if (id === null) return false;
+    return id >= gapStartId && id <= gapEndId;
+  });
+
+  const selected = selectRecentWindowMessages(gapUnsummarized, {
+    maxMessages: gapBridgeMaxMessages,
+    maxChars: gapBridgeMaxChars,
+  });
+
+  if (selected.messages.length) {
+    return {
+      messages: selected.messages,
+      stats: {
+        ...selected.stats,
+        candidates: gapCandidates.length,
+        candidateLimit: gapCandidateLimit,
+        gapStartId,
+        gapEndId,
+      },
+    };
+  }
+
+  return {
+    messages: [],
+    stats: {
+      candidates: gapCandidates.length,
+      candidateLimit: gapCandidateLimit,
+      gapStartId,
+      gapEndId,
+      selected: 0,
+      selectedChars: 0,
+    },
+  };
+}
+
+async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
+  const normalizedUserId = userId;
+  const normalizedPresetId = String(presetId || "").trim();
+  if (!normalizedUserId) throw new Error("Missing userId");
+  if (!normalizedPresetId) throw new Error("Missing presetId");
+
+  const maxMessages = chatConfig.maxContextMessages;
+  const maxChars = chatConfig.maxContextChars;
+
+  const gapBridgeMaxMessages = chatMemoryConfig.gapBridgeMaxMessages;
+  const gapBridgeMaxChars = chatMemoryConfig.gapBridgeMaxChars;
+
+  const recentWindow = await buildRecentWindowContext({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    upToMessageId,
+    maxMessages,
+    maxChars,
+    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
+    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
+    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
+  });
+
+  const recentCandidates = recentWindow.recentCandidates;
+  const recent = recentWindow.recent;
+  const selectedBeforeUserBoundary = recentWindow.selectedBeforeUserBoundary;
+  const needsMemory = recentWindow.needsMemory;
+
+  const recentWindowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
+
+  const memorySnapshot = await buildMemorySnapshot({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    needsMemory,
+    recentWindowStartMessageId,
+  });
+  const memory = memorySnapshot.memory;
+  const summarizedUntilMessageId = memorySnapshot.summarizedUntilMessageId;
+  const rollingSummaryEnabled = memorySnapshot.rollingSummaryEnabled;
+
+  const gapBridge = await buildGapBridge({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    needsMemory,
+    memory,
+    recentWindowStartMessageId,
+    summarizedUntilMessageId,
+    gapBridgeMaxMessages,
+    gapBridgeMaxChars,
+  });
 
   const compiled = [];
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
