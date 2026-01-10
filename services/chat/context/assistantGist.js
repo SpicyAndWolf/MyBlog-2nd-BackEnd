@@ -1,7 +1,6 @@
 const chatMessageGistModel = require("@models/chatMessageGistModel");
-const { chatGistConfig, chatMemoryConfig } = require("../../../config");
+const { chatGistConfig } = require("../../../config");
 const { logger } = require("../../../logger");
-const { requestAssistantGistGeneration } = require("../memory/gistPipeline");
 const { normalizeMessageId, getAssistantGistFromMap } = require("./helpers");
 
 async function loadAssistantGistMap({ userId, presetId, candidates } = {}) {
@@ -37,17 +36,11 @@ async function loadAssistantGistMap({ userId, presetId, candidates } = {}) {
   }
 }
 
-function scheduleAssistantGistBackfill({ userId, presetId, assistantGistCandidates, assistantGistMap } = {}) {
-  if (!chatGistConfig?.enabled) return { scheduled: 0, reason: "gist_disabled" };
-  if (!chatMemoryConfig?.recentWindowAssistantGistEnabled) return { scheduled: 0, reason: "assistant_gist_disabled" };
-
+function buildAssistantGistBackfillCandidates({ assistantGistCandidates, assistantGistMap } = {}) {
   const candidates = Array.isArray(assistantGistCandidates) ? assistantGistCandidates : [];
-  if (!candidates.length) return { scheduled: 0, reason: "no_candidates" };
+  if (!candidates.length) return [];
 
-  const workerConcurrency = Number(chatGistConfig.workerConcurrency) || 1;
-  const maxPerRequest = Math.max(1, Math.min(30, Math.floor(workerConcurrency) * 5));
-
-  let scheduled = 0;
+  const backfill = [];
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i] || {};
     const messageId = normalizeMessageId(candidate.messageId);
@@ -59,16 +52,13 @@ function scheduleAssistantGistBackfill({ userId, presetId, assistantGistCandidat
     const cachedGistBody = getAssistantGistFromMap(assistantGistMap, messageId);
     if (cachedGistBody) continue;
 
-    requestAssistantGistGeneration({ userId, presetId, messageId, content });
-    scheduled += 1;
-    if (scheduled >= maxPerRequest) break;
+    backfill.push({ messageId, content });
   }
 
-  return { scheduled, maxPerRequest, candidatesCount: candidates.length };
+  return backfill;
 }
 
 module.exports = {
   loadAssistantGistMap,
-  scheduleAssistantGistBackfill,
+  buildAssistantGistBackfillCandidates,
 };
-

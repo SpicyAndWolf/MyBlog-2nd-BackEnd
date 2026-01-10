@@ -3,7 +3,7 @@ const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
 const { chatConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { generateRollingSummary } = require("./rollingSummary");
-const { selectRecentWindowMessages } = require("../contextCompiler");
+const { selectRecentWindowMessages } = require("../context/selectRecentWindowMessages");
 
 function sleep(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();

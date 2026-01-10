@@ -1,6 +1,6 @@
 const chatModel = require("@models/chatModel");
 const { chatMemoryConfig } = require("../../../config");
-const { loadAssistantGistMap, scheduleAssistantGistBackfill } = require("./assistantGist");
+const { loadAssistantGistMap, buildAssistantGistBackfillCandidates } = require("./assistantGist");
 const { normalizeMessageId } = require("./helpers");
 const { selectRecentWindowMessages } = require("./selectRecentWindowMessages");
 
@@ -56,19 +56,15 @@ async function buildGapBridge({
     assistantGistMap,
   });
 
-  const gistBackfill = scheduleAssistantGistBackfill({
-    userId,
-    presetId,
+  const gistBackfillCandidates = buildAssistantGistBackfillCandidates({
     assistantGistCandidates: selected.assistantGistCandidates,
     assistantGistMap,
   });
-  if (selected?.stats?.assistantAntiEcho) {
-    selected.stats.assistantAntiEcho.gistBackfill = gistBackfill;
-  }
 
   if (selected.messages.length) {
     return {
       messages: selected.messages,
+      gistBackfillCandidates,
       stats: {
         ...selected.stats,
         candidates: gapCandidates.length,
@@ -81,6 +77,7 @@ async function buildGapBridge({
 
   return {
     messages: [],
+    gistBackfillCandidates,
     stats: {
       candidates: gapCandidates.length,
       candidateLimit: gapCandidateLimit,

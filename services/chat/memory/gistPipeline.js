@@ -1,7 +1,7 @@
 ﻿const crypto = require("crypto");
 const chatModel = require("@models/chatModel");
 const chatMessageGistModel = require("@models/chatMessageGistModel");
-const { chatGistConfig } = require("../../../config");
+const { chatGistConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { createChatCompletion } = require("../../llm/chatCompletions");
 
@@ -299,6 +299,34 @@ function requestAssistantGistGeneration({ userId, presetId, messageId, content, 
   });
 }
 
+function scheduleAssistantGistBackfill({ userId, presetId, gistBackfillCandidates } = {}) {
+  if (!chatGistConfig?.enabled) return { scheduled: 0, reason: "gist_disabled" };
+  if (!chatMemoryConfig?.recentWindowAssistantGistEnabled) return { scheduled: 0, reason: "assistant_gist_disabled" };
+
+  const candidates = Array.isArray(gistBackfillCandidates) ? gistBackfillCandidates : [];
+  if (!candidates.length) return { scheduled: 0, reason: "no_candidates" };
+
+  const workerConcurrency = Number(chatGistConfig.workerConcurrency) || 1;
+  const maxPerRequest = Math.max(1, Math.min(30, Math.floor(workerConcurrency) * 5));
+
+  let scheduled = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i] || {};
+    const messageId = Number(candidate.messageId);
+    if (!Number.isFinite(messageId) || messageId <= 0) continue;
+
+    const content = String(candidate.content || "").trim();
+    if (!content) continue;
+
+    requestAssistantGistGeneration({ userId, presetId, messageId, content });
+    scheduled += 1;
+    if (scheduled >= maxPerRequest) break;
+  }
+
+  return { scheduled, maxPerRequest, candidatesCount: candidates.length };
+}
+
 module.exports = {
   requestAssistantGistGeneration,
+  scheduleAssistantGistBackfill,
 };

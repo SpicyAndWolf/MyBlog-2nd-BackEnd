@@ -9,7 +9,7 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const db = require("./db");
 const chatModel = require("@models/chatModel");
 const { chatConfig, chatMemoryConfig } = require("./config");
-const { selectRecentWindowMessages } = require("./services/chat/contextCompiler");
+const { selectRecentWindowMessages } = require("./services/chat/context/selectRecentWindowMessages");
 const { requestAssistantGistGeneration } = require("./services/chat/memory/gistPipeline");
 
 function parseArgs(argv) {

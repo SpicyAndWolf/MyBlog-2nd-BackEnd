@@ -4,7 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
 const { chatConfig, llmConfig, chatMemoryConfig } = require("../config");
-const { compileChatContextMessages, selectRecentWindowMessages } = require("../services/chat/contextCompiler");
+const { compileChatContextMessages } = require("../services/chat/contextCompiler");
+const { selectRecentWindowMessages } = require("../services/chat/context/selectRecentWindowMessages");
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,

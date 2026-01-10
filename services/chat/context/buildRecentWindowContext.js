@@ -1,6 +1,6 @@
 const chatModel = require("@models/chatModel");
 const { chatConfig, chatMemoryConfig } = require("../../../config");
-const { loadAssistantGistMap, scheduleAssistantGistBackfill } = require("./assistantGist");
+const { loadAssistantGistMap, buildAssistantGistBackfillCandidates } = require("./assistantGist");
 const { selectRecentWindowMessages } = require("./selectRecentWindowMessages");
 
 async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}) {
@@ -28,15 +28,10 @@ async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}
     assistantGistMap,
   });
 
-  const gistBackfill = scheduleAssistantGistBackfill({
-    userId,
-    presetId,
+  const gistBackfillCandidates = buildAssistantGistBackfillCandidates({
     assistantGistCandidates: recent.assistantGistCandidates,
     assistantGistMap,
   });
-  if (recent?.stats?.assistantAntiEcho) {
-    recent.stats.assistantAntiEcho.gistBackfill = gistBackfill;
-  }
 
   const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
   const reachedCandidateLimit = recentCandidates.length === candidateLimit;
@@ -47,6 +42,7 @@ async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}
     recentCandidates,
     selectedBeforeUserBoundary,
     needsMemory,
+    gistBackfillCandidates,
   };
 }
 

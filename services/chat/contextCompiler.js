@@ -3,7 +3,7 @@ const { buildMemorySnapshot } = require("./context/buildMemorySnapshot");
 const { buildGapBridge } = require("./context/buildGapBridge");
 const { buildContextSegments } = require("./context/segmentRegistry");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
-const { selectRecentWindowMessages } = require("./context/selectRecentWindowMessages");
+const { scheduleAssistantGistBackfill } = require("./memory/gistPipeline");
 
 async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
   const normalizedUserId = userId;
@@ -21,6 +21,16 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   const recent = recentWindow.recent;
   const selectedBeforeUserBoundary = recentWindow.selectedBeforeUserBoundary;
   const needsMemory = recentWindow.needsMemory;
+  const recentGistBackfillCandidates = recentWindow.gistBackfillCandidates;
+
+  const recentGistBackfill = scheduleAssistantGistBackfill({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    gistBackfillCandidates: recentGistBackfillCandidates,
+  });
+  if (recent?.stats?.assistantAntiEcho) {
+    recent.stats.assistantAntiEcho.gistBackfill = recentGistBackfill;
+  }
 
   const recentWindowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
 
@@ -42,6 +52,15 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     recentWindowStartMessageId,
     summarizedUntilMessageId,
   });
+
+  const gapGistBackfill = scheduleAssistantGistBackfill({
+    userId: normalizedUserId,
+    presetId: normalizedPresetId,
+    gistBackfillCandidates: gapBridge?.gistBackfillCandidates,
+  });
+  if (gapBridge?.stats?.assistantAntiEcho) {
+    gapBridge.stats.assistantAntiEcho.gistBackfill = gapGistBackfill;
+  }
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
 
@@ -79,6 +98,4 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 
 module.exports = {
   compileChatContextMessages,
-  selectRecentWindowMessages,
 };
-
