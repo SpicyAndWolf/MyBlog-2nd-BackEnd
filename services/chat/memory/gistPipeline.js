@@ -1,4 +1,5 @@
-const crypto = require("crypto");
+﻿const crypto = require("crypto");
+const chatModel = require("@models/chatModel");
 const chatMessageGistModel = require("@models/chatMessageGistModel");
 const { chatGistConfig } = require("../../../config");
 const { logger } = require("../../../logger");
@@ -77,34 +78,48 @@ function clipText(text, maxChars) {
 function normalizeGistText(text, maxChars) {
   const cleaned = stripCodeFences(text).trim();
   if (!cleaned) return "";
+
   const normalized = cleaned
     .split(/\r?\n/)
-    .map((line) => line.replace(/^([-*•]|\d+\.)\s+/, "").trim())
+    .map((line) => line.replace(/^(?:[-*•]|\d+\.)\s+/, "").trim())
     .filter(Boolean)
     .join("；")
     .replace(/[“”"']/g, "")
-    .replace(/[。！？!?]+/g, "；")
-    .replace(/[；;]+/g, "；")
+    .replace(/[。！？，；、]+/g, "；")
+    .replace(/[；]+/g, "；")
     .replace(/\s+/g, " ")
     .trim();
+
   return clipText(normalized, maxChars).trim();
 }
 
-function buildAssistantGistPrompt({ content, maxChars }) {
+function buildAssistantGistPrompt({ userContent, assistantContent, maxChars }) {
   const system = `
-你是“对话要点抽取器”。请将 assistant 的输出压缩为**中文要点**，用于情感对话的记忆压缩：去修辞/意象/套话，但保留“情绪/态度/关系温度”的信息（用中性标签/短语表示），并保留事实/动作/意图变化。
-
+你是「对话要点抽取器」。
+请将 assistant 的回复压缩为中文要点，用于对话记忆压缩：去修辞/意象/套话，但保留「情绪/态度/关系温度」等信息（用中性标签短语表示），并保留事实/动作/意图变化。
 绝对约束：
 0. 只输出要点正文，不要解释，不要前后缀。
 1. 禁止新增事实/设定；不确定就省略。
-2. 输出为一句或多短语，用“；”分隔（不要列表/换行/emoji）。
-3. 可选在开头加 0~1 个“情绪/态度”短语标签（例如：温柔安抚/共情心疼/认真道歉/轻松调侃/坚定支持/中性），不要复用原文的固定安慰话术/句式。
-4. 严格控制字数不超过 ${maxChars} 字。
+2. 输出为一句或多短语，用「；」分隔（不要列表/换行/emoji）。
+3. 可选在开头加 0~1 个「情绪/态度」标签短语（如：温柔安抚/共情心疼/认真严肃/轻松调侃/坚定支持/中性），不要复用原文固定安慰句式。
+4. 严格控制字符数不超过 ${maxChars}。
 `.trim();
 
-  const user = `
+  const normalizedUser = String(userContent || "").trim();
+  const normalizedAssistant = String(assistantContent || "").trim();
+  if (!normalizedAssistant) throw new Error("Missing assistant content");
+
+  const user = normalizedUser
+    ? `
+【user 原文】
+${normalizedUser}
+
 【assistant 原文】
-${String(content || "").trim()}
+${normalizedAssistant}
+`.trim()
+    : `
+【assistant 原文】
+${normalizedAssistant}
 `.trim();
 
   return {
@@ -115,18 +130,52 @@ ${String(content || "").trim()}
   };
 }
 
-async function generateAssistantGist({ content }) {
+async function loadAdjacentUserContent({ userId, presetId, messageId }) {
+  const normalizedPresetId = String(presetId || "").trim();
+  const normalizedMessageId = Number(messageId);
+  if (!userId || !normalizedPresetId || !Number.isFinite(normalizedMessageId)) return "";
+
+  try {
+    const rows = await chatModel.listRecentMessagesByPreset(userId, normalizedPresetId, {
+      limit: 6,
+      upToMessageId: normalizedMessageId,
+    });
+
+    if (!Array.isArray(rows) || rows.length < 2) return "";
+
+    let assistantIndex = rows.findIndex((row) => Number(row?.id) === normalizedMessageId);
+    if (assistantIndex === -1) assistantIndex = rows.length - 1;
+
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (String(rows[i]?.role || "").trim() !== "user") continue;
+      return String(rows[i]?.content || "").trim();
+    }
+  } catch (error) {
+    logger.warn("chat_message_gist_load_adjacent_user_failed", {
+      error,
+      userId,
+      presetId: normalizedPresetId,
+      messageId: normalizedMessageId,
+    });
+  }
+
+  return "";
+}
+
+async function generateAssistantGist({ userContent, assistantContent }) {
   const providerId = chatGistConfig.workerProviderId;
   const modelId = chatGistConfig.workerModelId;
   const maxChars = chatGistConfig.maxChars;
   const workerSettings = chatGistConfig.workerSettings;
   const workerRaw = chatGistConfig.workerRaw;
 
-  const prompt = buildAssistantGistPrompt({ content, maxChars });
+  const prompt = buildAssistantGistPrompt({ userContent, assistantContent, maxChars });
   logger.debugGist("chat_message_gist_request", {
     providerId,
     modelId,
-    messages: prompt.messages,
+    maxChars,
+    userChars: String(userContent || "").length,
+    assistantChars: String(assistantContent || "").length,
   });
 
   const response = await createChatCompletion({
@@ -143,11 +192,11 @@ async function generateAssistantGist({ content }) {
   return normalized;
 }
 
-async function generateAndStoreGist({ userId, presetId, messageId, content, force = false }) {
-  const normalizedContent = String(content || "").trim();
-  if (!normalizedContent) return;
+async function generateAndStoreGist({ userId, presetId, messageId, content, userContent, force = false }) {
+  const normalizedAssistantContent = String(content || "").trim();
+  if (!normalizedAssistantContent) return;
 
-  const contentHash = hashContent(normalizedContent);
+  const contentHash = hashContent(normalizedAssistantContent);
 
   let existing = null;
   try {
@@ -162,8 +211,14 @@ async function generateAndStoreGist({ userId, presetId, messageId, content, forc
 
   if (!force && existing?.contentHash && existing.contentHash === contentHash) return;
 
+  const normalizedUserContent =
+    String(userContent || "").trim() || (await loadAdjacentUserContent({ userId, presetId, messageId }));
+
   const startedAt = Date.now();
-  const gistText = await generateAssistantGist({ content: normalizedContent });
+  const gistText = await generateAssistantGist({
+    userContent: normalizedUserContent,
+    assistantContent: normalizedAssistantContent,
+  });
   if (!gistText) {
     logger.warn("chat_message_gist_empty", { userId, presetId, messageId });
     return;
@@ -189,7 +244,7 @@ async function generateAndStoreGist({ userId, presetId, messageId, content, forc
   });
 }
 
-function requestAssistantGistGeneration({ userId, presetId, messageId, content, force = false } = {}) {
+function requestAssistantGistGeneration({ userId, presetId, messageId, content, userContent, force = false } = {}) {
   if (!chatGistConfig.enabled) return;
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -206,6 +261,7 @@ function requestAssistantGistGeneration({ userId, presetId, messageId, content, 
         presetId: normalizedPresetId,
         messageId: normalizedMessageId,
         content,
+        userContent,
         force,
       });
     } catch (error) {

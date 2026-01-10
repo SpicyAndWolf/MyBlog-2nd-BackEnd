@@ -948,6 +948,7 @@ const chatController = {
           userId,
           presetId,
           messageId: assistantMessage?.id,
+          userContent: updatedUserMessage?.content,
           content: assistantContent,
         });
 
@@ -1036,6 +1037,7 @@ const chatController = {
         userId,
         presetId,
         messageId: assistantMessage?.id,
+        userContent: updatedUserMessage?.content,
         content: normalizedAssistantContent,
       });
 
@@ -1178,6 +1180,7 @@ const chatController = {
           userId,
           presetId,
           messageId: assistantMessage?.id,
+          userContent: userMessage?.content,
           content: assistantContent,
         });
 
@@ -1266,6 +1269,7 @@ const chatController = {
         userId,
         presetId,
         messageId: assistantMessage?.id,
+        userContent: userMessage?.content,
         content: normalizedAssistantContent,
       });
 
