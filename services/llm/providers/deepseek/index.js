@@ -35,7 +35,7 @@ module.exports = {
       label: "Max Tokens",
       type: "number",
       min: 128,
-      max: 64000,
+      max: 24000,
       step: 64,
       capability: "maxTokens",
     },
