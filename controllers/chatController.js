@@ -5,7 +5,7 @@ const path = require("path");
 const sharp = require("sharp");
 const { chatConfig, llmConfig, chatMemoryConfig } = require("../config");
 const { compileChatContextMessages } = require("../services/chat/contextCompiler");
-const { selectRecentWindowMessages } = require("../services/chat/context/selectRecentWindowMessages");
+const { buildRecentWindowContext } = require("../services/chat/context/buildRecentWindowContext");
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,
@@ -290,22 +290,8 @@ async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) 
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId || !normalizedPresetId) return false;
 
-  const maxMessages = chatConfig.recentWindowMaxMessages;
-  const maxChars = chatConfig.recentWindowMaxChars;
-  const candidateLimit = maxMessages + 1;
-  const candidates = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, {
-    limit: candidateLimit,
-  });
-  const recent = selectRecentWindowMessages(candidates, {
-    maxMessages,
-    maxChars,
-    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
-    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
-  });
-  const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
-  const reachedCandidateLimit = candidates.length === candidateLimit;
-  return reachedCandidateLimit || candidates.length > selectedBeforeUserBoundary;
+  const recentWindow = await buildRecentWindowContext({ userId: normalizedUserId, presetId: normalizedPresetId });
+  return Boolean(recentWindow?.needsMemory);
 }
 
 async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId } = {}) {

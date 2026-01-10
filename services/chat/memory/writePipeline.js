@@ -3,7 +3,7 @@ const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
 const { chatConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { generateRollingSummary } = require("./rollingSummary");
-const { selectRecentWindowMessages } = require("../context/selectRecentWindowMessages");
+const { buildRecentWindowContext } = require("../context/buildRecentWindowContext");
 
 function sleep(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
@@ -86,21 +86,12 @@ function normalizeMessageId(value) {
 
 async function computeRollingSummaryTarget({ userId, presetId } = {}) {
   const maxMessages = chatConfig.recentWindowMaxMessages;
-  const maxChars = chatConfig.recentWindowMaxChars;
   const candidateLimit = maxMessages + 1;
 
-  const candidates = await chatModel.listRecentMessagesByPreset(userId, presetId, { limit: candidateLimit });
-  const recent = selectRecentWindowMessages(candidates, {
-    maxMessages,
-    maxChars,
-    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
-    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
-  });
-
-  const selectedBeforeUserBoundary = recent.stats.selected + recent.stats.droppedToUserBoundary;
-  const reachedCandidateLimit = candidates.length === candidateLimit;
-  const hasOlderMessages = reachedCandidateLimit || candidates.length > selectedBeforeUserBoundary;
+  const recentWindow = await buildRecentWindowContext({ userId, presetId });
+  const candidates = recentWindow.recentCandidates;
+  const recent = recentWindow.recent;
+  const hasOlderMessages = recentWindow.needsMemory;
 
   const windowStartMessageId = normalizeMessageId(recent.stats.windowStartMessageId);
   const targetUntilMessageId =

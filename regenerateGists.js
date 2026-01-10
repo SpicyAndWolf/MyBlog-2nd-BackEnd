@@ -7,9 +7,8 @@ require("module-alias/register");
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const db = require("./db");
-const chatModel = require("@models/chatModel");
 const { chatConfig, chatMemoryConfig } = require("./config");
-const { selectRecentWindowMessages } = require("./services/chat/context/selectRecentWindowMessages");
+const { buildRecentWindowContext } = require("./services/chat/context/buildRecentWindowContext");
 const { requestAssistantGistGeneration } = require("./services/chat/memory/gistPipeline");
 
 function parseArgs(argv) {
@@ -66,21 +65,11 @@ Examples:
 
 async function listRecentWindowGistCandidates({ userId, presetId, upToMessageId } = {}) {
   const maxMessages = chatConfig.recentWindowMaxMessages;
-  const maxChars = chatConfig.recentWindowMaxChars;
   const candidateLimit = maxMessages + 1;
 
-  const candidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
-    limit: candidateLimit,
-    upToMessageId,
-  });
-
-  const recentWindow = selectRecentWindowMessages(candidates, {
-    maxMessages,
-    maxChars,
-    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
-    assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
-    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
-  });
+  const recentWindowContext = await buildRecentWindowContext({ userId, presetId, upToMessageId });
+  const candidates = recentWindowContext.recentCandidates;
+  const recentWindow = recentWindowContext.recent;
 
   const list = Array.isArray(recentWindow?.assistantGistCandidates) ? recentWindow.assistantGistCandidates : [];
 
