@@ -162,7 +162,7 @@ async function loadAdjacentUserContent({ userId, presetId, messageId }) {
   return "";
 }
 
-async function generateAssistantGist({ userContent, assistantContent }) {
+async function generateAssistantGist({ userId, presetId, messageId, userContent, assistantContent }) {
   const providerId = chatGistConfig.workerProviderId;
   const modelId = chatGistConfig.workerModelId;
   const maxChars = chatGistConfig.maxChars;
@@ -171,11 +171,15 @@ async function generateAssistantGist({ userContent, assistantContent }) {
 
   const prompt = buildAssistantGistPrompt({ userContent, assistantContent, maxChars });
   logger.debugGist("chat_message_gist_request", {
+    userId,
+    presetId,
+    messageId,
     providerId,
     modelId,
     maxChars,
     userChars: String(userContent || "").length,
     assistantChars: String(assistantContent || "").length,
+    messages: prompt.messages,
   });
 
   const response = await createChatCompletion({
@@ -188,7 +192,20 @@ async function generateAssistantGist({ userContent, assistantContent }) {
     rawConfig: workerRaw?.googleGenAiConfig,
   });
 
-  const normalized = normalizeGistText(response?.content || "", maxChars);
+  const rawText = String(response?.content || "");
+  const normalized = normalizeGistText(rawText, maxChars);
+
+  logger.debugGist("chat_message_gist_response", {
+    userId,
+    presetId,
+    messageId,
+    providerId,
+    modelId,
+    rawText,
+    normalized,
+    normalizedChars: normalized.length,
+  });
+
   return normalized;
 }
 
@@ -216,6 +233,9 @@ async function generateAndStoreGist({ userId, presetId, messageId, content, user
 
   const startedAt = Date.now();
   const gistText = await generateAssistantGist({
+    userId,
+    presetId,
+    messageId,
     userContent: normalizedUserContent,
     assistantContent: normalizedAssistantContent,
   });
