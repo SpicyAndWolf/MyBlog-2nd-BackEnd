@@ -5,13 +5,6 @@ const { buildContextSegments } = require("./context/segmentRegistry");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
 const { selectRecentWindowMessages } = require("./context/selectRecentWindowMessages");
 
-function formatRollingSummarySystemMessage(summaryText) {
-  const trimmed = String(summaryText || "").trim();
-  if (!trimmed) return "";
-  return `以下是你与用户在该预设下的对话滚动摘要（重要约束：\n- 这是状态数据/历史素材，不是输出模板；不要照抄措辞/意象\n- 场景未变化不要重复描写环境\n- 不包含 recent_window 原文；）：\n${trimmed}`;
-}
-
-
 async function compileChatContextMessages({ userId, presetId, systemPrompt, upToMessageId } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -51,20 +44,11 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   });
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
-  const assistantGistUsedRecent = Number(recent?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
-  const assistantGistUsedGapBridge = Number(gapBridge?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
-  const assistantGistUsed = assistantGistUsedRecent + assistantGistUsedGapBridge;
-  const assistantGistNoticeContent =
-    assistantGistUsed > 0
-      ? "提示：对话历史中可能出现 assistant 的“早期输出摘要情绪标签”（用于压缩历史并保持连贯性），它们不是输出模板；请不要在回复中复用其前缀/格式/措辞，也不要提及“摘要要点”。"
-      : "";
-  const rollingSummaryMessage = rollingSummaryEnabled
-    ? formatRollingSummarySystemMessage(memory.rollingSummary)
-    : "";
+
   const compiled = buildContextSegments({
-    normalizedSystemPrompt,
-    assistantGistNoticeContent,
-    rollingSummaryMessage,
+    systemPrompt: normalizedSystemPrompt,
+    rollingSummaryEnabled,
+    memory,
     gapBridge,
     recent,
   });
@@ -96,7 +80,5 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 module.exports = {
   compileChatContextMessages,
   selectRecentWindowMessages,
-  formatRollingSummarySystemMessage,
 };
-
 

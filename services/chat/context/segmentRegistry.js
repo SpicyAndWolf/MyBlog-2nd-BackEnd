@@ -1,27 +1,24 @@
-function buildSystemPromptSegment({ normalizedSystemPrompt } = {}) {
-  if (!normalizedSystemPrompt) return null;
-  return { messages: [{ role: "system", content: normalizedSystemPrompt }] };
-}
+const { buildSystemPromptSegment } = require("./segments/systemPrompt");
+const { buildAssistantGistNoticeSegment } = require("./segments/assistantGistNotice");
+const { buildRollingSummarySegment } = require("./segments/rollingSummary");
+const { buildGapBridgeSegment } = require("./segments/gapBridge");
+const { buildRecentWindowSegment } = require("./segments/recentWindow");
+const { assertContextState, assertSegmentResult } = require("./validateContextState");
 
-function buildAssistantGistNoticeSegment({ assistantGistNoticeContent } = {}) {
-  if (!assistantGistNoticeContent) return null;
-  return { messages: [{ role: "system", content: assistantGistNoticeContent }] };
-}
+/**
+ * @typedef {Object} ChatMessage
+ * @property {string} role
+ * @property {string} content
+ */
 
-function buildRollingSummarySegment({ rollingSummaryMessage } = {}) {
-  if (!rollingSummaryMessage) return null;
-  return { messages: [{ role: "system", content: rollingSummaryMessage }] };
-}
-
-function buildGapBridgeSegment({ gapBridge } = {}) {
-  if (!gapBridge?.messages?.length) return null;
-  return { messages: gapBridge.messages };
-}
-
-function buildRecentWindowSegment({ recent } = {}) {
-  if (!recent?.messages?.length) return null;
-  return { messages: recent.messages };
-}
+/**
+ * @typedef {Object} ContextState
+ * @property {string} systemPrompt
+ * @property {boolean} rollingSummaryEnabled
+ * @property {Object|null} memory
+ * @property {{messages: ChatMessage[], stats?: any}|null} gapBridge
+ * @property {{messages: ChatMessage[], stats?: any}} recent
+ */
 
 const segmentOrder = [
   "systemPrompt",
@@ -39,13 +36,19 @@ const segmentBuilders = {
   recentWindow: buildRecentWindowSegment,
 };
 
+/**
+ * @param {ContextState} contextState
+ * @returns {ChatMessage[]}
+ */
 function buildContextSegments(contextState = {}) {
+  assertContextState(contextState);
   const messages = [];
 
   for (const key of segmentOrder) {
     const builder = segmentBuilders[key];
     if (!builder) throw new Error(`Missing segment builder: ${key}`);
     const segment = builder(contextState);
+    assertSegmentResult(segment, { name: `contextState.segment.${key}` });
     if (!segment?.messages?.length) continue;
     messages.push(...segment.messages);
   }
