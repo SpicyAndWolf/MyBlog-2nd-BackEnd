@@ -85,8 +85,8 @@ function normalizeMessageId(value) {
 }
 
 async function computeRollingSummaryTarget({ userId, presetId } = {}) {
-  const maxMessages = chatConfig.maxContextMessages;
-  const maxChars = chatConfig.maxContextChars;
+  const maxMessages = chatConfig.recentWindowMaxMessages;
+  const maxChars = chatConfig.recentWindowMaxChars;
   const candidateLimit = maxMessages + 1;
 
   const candidates = await chatModel.listRecentMessagesByPreset(userId, presetId, { limit: candidateLimit });

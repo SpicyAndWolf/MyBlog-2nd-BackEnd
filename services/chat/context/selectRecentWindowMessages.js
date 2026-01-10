@@ -19,10 +19,10 @@ function selectRecentWindowMessages(
     assistantGistMap,
   } = {}
 ) {
-  const normalizedMaxMessages = normalizePositiveIntLimit(maxMessages, chatConfig.maxContextMessages, {
+  const normalizedMaxMessages = normalizePositiveIntLimit(maxMessages, chatConfig.recentWindowMaxMessages, {
     name: "maxMessages",
   });
-  const normalizedMaxChars = normalizePositiveIntLimit(maxChars, chatConfig.maxContextChars, { name: "maxChars" });
+  const normalizedMaxChars = normalizePositiveIntLimit(maxChars, chatConfig.recentWindowMaxChars, { name: "maxChars" });
 
   const normalizedAssistantGistEnabled = Boolean(assistantGistEnabled);
   const normalizedAssistantRawLastN = normalizedAssistantGistEnabled

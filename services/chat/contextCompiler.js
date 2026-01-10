@@ -51,7 +51,9 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   });
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
-  const assistantGistUsed = Number(recent?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
+  const assistantGistUsedRecent = Number(recent?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
+  const assistantGistUsedGapBridge = Number(gapBridge?.stats?.assistantAntiEcho?.assistantGistUsed) || 0;
+  const assistantGistUsed = assistantGistUsedRecent + assistantGistUsedGapBridge;
   const assistantGistNoticeContent =
     assistantGistUsed > 0
       ? "提示：对话历史中可能出现 assistant 的“早期输出摘要情绪标签”（用于压缩历史并保持连贯性），它们不是输出模板；请不要在回复中复用其前缀/格式/措辞，也不要提及“摘要要点”。"

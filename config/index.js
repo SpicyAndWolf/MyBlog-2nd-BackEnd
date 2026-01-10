@@ -264,10 +264,12 @@ const baseChatDefaultSettings = {
 
 const chatConfig = {
   dayTimeZone: chatDayTimeZone,
-  maxContextMessages: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_MESSAGES"), {
-    name: "CHAT_MAX_CONTEXT_MESSAGES",
+  recentWindowMaxMessages: ensurePositiveInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_MAX_MESSAGES"), {
+    name: "CHAT_RECENT_WINDOW_MAX_MESSAGES",
   }),
-  maxContextChars: ensurePositiveInt(readRequiredIntEnv("CHAT_MAX_CONTEXT_CHARS"), { name: "CHAT_MAX_CONTEXT_CHARS" }),
+  recentWindowMaxChars: ensurePositiveInt(readRequiredIntEnv("CHAT_RECENT_WINDOW_MAX_CHARS"), {
+    name: "CHAT_RECENT_WINDOW_MAX_CHARS",
+  }),
   trashRetentionDays: ensureNonNegativeInt(readRequiredIntEnv("CHAT_TRASH_RETENTION_DAYS"), {
     name: "CHAT_TRASH_RETENTION_DAYS",
   }),

@@ -1,5 +1,6 @@
 const chatModel = require("@models/chatModel");
 const { chatMemoryConfig } = require("../../../config");
+const { loadAssistantGistMap, scheduleAssistantGistBackfill } = require("./assistantGist");
 const { normalizeMessageId } = require("./helpers");
 const { selectRecentWindowMessages } = require("./selectRecentWindowMessages");
 
@@ -41,10 +42,29 @@ async function buildGapBridge({
     return id >= gapStartId && id <= gapEndId;
   });
 
+  const assistantGistEnabled = Boolean(chatMemoryConfig.recentWindowAssistantGistEnabled);
+  const assistantGistMap = assistantGistEnabled
+    ? await loadAssistantGistMap({ userId, presetId, candidates: gapUnsummarized })
+    : null;
+
   const selected = selectRecentWindowMessages(gapUnsummarized, {
     maxMessages: gapBridgeMaxMessages,
     maxChars: gapBridgeMaxChars,
+    assistantGistEnabled,
+    assistantRawLastN: 0,
+    assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
+    assistantGistMap,
   });
+
+  const gistBackfill = scheduleAssistantGistBackfill({
+    userId,
+    presetId,
+    assistantGistCandidates: selected.assistantGistCandidates,
+    assistantGistMap,
+  });
+  if (selected?.stats?.assistantAntiEcho) {
+    selected.stats.assistantAntiEcho.gistBackfill = gistBackfill;
+  }
 
   if (selected.messages.length) {
     return {

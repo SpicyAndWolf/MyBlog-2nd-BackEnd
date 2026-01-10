@@ -289,8 +289,8 @@ async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) 
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId || !normalizedPresetId) return false;
 
-  const maxMessages = chatConfig.maxContextMessages;
-  const maxChars = chatConfig.maxContextChars;
+  const maxMessages = chatConfig.recentWindowMaxMessages;
+  const maxChars = chatConfig.recentWindowMaxChars;
   const candidateLimit = maxMessages + 1;
   const candidates = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, {
     limit: candidateLimit,

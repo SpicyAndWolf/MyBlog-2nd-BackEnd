@@ -65,8 +65,8 @@ Examples:
 }
 
 async function listRecentWindowGistCandidates({ userId, presetId, upToMessageId } = {}) {
-  const maxMessages = chatConfig.maxContextMessages;
-  const maxChars = chatConfig.maxContextChars;
+  const maxMessages = chatConfig.recentWindowMaxMessages;
+  const maxChars = chatConfig.recentWindowMaxChars;
   const candidateLimit = maxMessages + 1;
 
   const candidates = await chatModel.listRecentMessagesByPreset(userId, presetId, {
@@ -270,4 +270,3 @@ async function regenerateGistsForMessages({ userId, presetId, messages, dryRun =
     db.end();
   }
 })();
-
