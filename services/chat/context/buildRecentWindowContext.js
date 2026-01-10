@@ -13,16 +13,19 @@ async function buildRecentWindowContext({ userId, presetId, upToMessageId } = {}
     upToMessageId,
   });
 
-  const assistantGistMap = await loadAssistantGistMap({
-    userId,
-    presetId,
-    candidates: recentCandidates,
-  });
+  const assistantGistEnabled = Boolean(chatMemoryConfig.recentWindowAssistantGistEnabled);
+  const assistantGistMap = assistantGistEnabled
+    ? await loadAssistantGistMap({
+        userId,
+        presetId,
+        candidates: recentCandidates,
+      })
+    : null;
 
   const recent = selectRecentWindowMessages(recentCandidates, {
     maxMessages,
     maxChars,
-    assistantGistEnabled: chatMemoryConfig.recentWindowAssistantGistEnabled,
+    assistantGistEnabled,
     assistantRawLastN: chatMemoryConfig.recentWindowAssistantRawLastN,
     assistantGistPrefix: chatMemoryConfig.recentWindowAssistantGistPrefix,
     assistantGistMap,
