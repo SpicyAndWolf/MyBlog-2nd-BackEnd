@@ -4,6 +4,7 @@ const { chatConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { generateRollingSummary } = require("./rollingSummary");
 const { buildRecentWindowContext } = require("../context/buildRecentWindowContext");
+const { createSemaphore, createKeyedTaskQueue } = require("./taskQueue");
 
 function sleep(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
@@ -14,47 +15,9 @@ function buildKey(userId, presetId) {
   return `${String(userId || "").trim()}:${String(presetId || "").trim()}`;
 }
 
-function createSemaphore(limit) {
-  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
-  let active = 0;
-  const waiters = [];
-
-  function release() {
-    active = Math.max(0, active - 1);
-    const next = waiters.shift();
-    if (next) next();
-  }
-
-  async function acquire() {
-    if (active < normalizedLimit) {
-      active += 1;
-      return release;
-    }
-
-    await new Promise((resolve) => waiters.push(resolve));
-    active += 1;
-    return release;
-  }
-
-  return { acquire };
-}
-
 const workerSemaphore = createSemaphore(chatMemoryConfig.workerConcurrency);
 
-const keyLocks = new Map();
-function enqueueKeyTask(key, task) {
-  const tail = keyLocks.get(key) || Promise.resolve();
-
-  const run = tail
-    .catch(() => {})
-    .then(task)
-    .finally(() => {
-      if (keyLocks.get(key) === run) keyLocks.delete(key);
-    });
-
-  keyLocks.set(key, run);
-  return run;
-}
+const { enqueue: enqueueKeyTask } = createKeyedTaskQueue();
 
 const catchUpStateByKey = new Map();
 

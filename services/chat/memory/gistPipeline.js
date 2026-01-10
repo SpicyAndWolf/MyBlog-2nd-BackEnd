@@ -4,75 +4,19 @@ const chatMessageGistModel = require("@models/chatMessageGistModel");
 const { chatGistConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { createChatCompletion } = require("../../llm/chatCompletions");
+const { createSemaphore, createKeyedTaskQueue } = require("./taskQueue");
+const { stripCodeFences, clipText } = require("./textUtils");
 
 function buildKey(userId, messageId) {
   return `${String(userId || "").trim()}:${String(messageId || "").trim()}`;
 }
 
-function createSemaphore(limit) {
-  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
-  let active = 0;
-  const waiters = [];
-
-  function release() {
-    active = Math.max(0, active - 1);
-    const next = waiters.shift();
-    if (next) next();
-  }
-
-  async function acquire() {
-    if (active < normalizedLimit) {
-      active += 1;
-      return release;
-    }
-
-    await new Promise((resolve) => waiters.push(resolve));
-    active += 1;
-    return release;
-  }
-
-  return { acquire };
-}
-
 const workerSemaphore = createSemaphore(chatGistConfig.workerConcurrency);
-const keyLocks = new Map();
-
-function enqueueKeyTask(key, task) {
-  const tail = keyLocks.get(key) || Promise.resolve();
-
-  const run = tail
-    .catch(() => {})
-    .then(task)
-    .finally(() => {
-      if (keyLocks.get(key) === run) keyLocks.delete(key);
-    });
-
-  keyLocks.set(key, run);
-  return run;
-}
+const { enqueue: enqueueKeyTask } = createKeyedTaskQueue();
 
 function hashContent(content) {
   const normalized = String(content || "");
   return crypto.createHash("sha256").update(normalized).digest("hex");
-}
-
-function stripCodeFences(text) {
-  const raw = String(text || "");
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("```")) return trimmed;
-
-  const lines = trimmed.split(/\r?\n/);
-  if (lines.length < 2) return trimmed;
-  if (!lines[lines.length - 1].trim().startsWith("```")) return trimmed;
-
-  return lines.slice(1, -1).join("\n").trim();
-}
-
-function clipText(text, maxChars) {
-  const normalized = String(text || "");
-  if (!Number.isFinite(maxChars) || maxChars <= 0) return normalized;
-  if (normalized.length <= maxChars) return normalized;
-  return normalized.slice(0, maxChars);
 }
 
 function normalizeGistText(text, maxChars) {
