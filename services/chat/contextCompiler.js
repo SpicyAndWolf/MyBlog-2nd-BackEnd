@@ -2,6 +2,7 @@ const { buildRecentWindowContext } = require("./context/buildRecentWindowContext
 const { buildMemorySnapshot } = require("./context/buildMemorySnapshot");
 const { buildGapBridge } = require("./context/buildGapBridge");
 const { buildContextSegments } = require("./context/segmentRegistry");
+const { buildTimeContextState } = require("./context/buildTimeContextState");
 const { normalizeText, normalizeMessageId } = require("./context/helpers");
 const { scheduleAssistantGistBackfill } = require("./memory/gistPipeline");
 
@@ -63,6 +64,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   }
 
   const normalizedSystemPrompt = normalizeText(systemPrompt).trim();
+  const timeContext = buildTimeContextState({ recentCandidates });
 
   const compiled = buildContextSegments({
     systemPrompt: normalizedSystemPrompt,
@@ -70,6 +72,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     memory,
     gapBridge,
     recent,
+    timeContext,
   });
 
   return {

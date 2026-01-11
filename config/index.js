@@ -315,6 +315,20 @@ const chatConfig = {
   },
 };
 
+const chatTimeContextConfig = (() => {
+  const enabled = readRequiredBoolEnv("CHAT_TIME_CONTEXT_ENABLED");
+  const timeZone = ensureValidTimeZone(readRequiredStringEnv("CHAT_TIME_CONTEXT_TIME_ZONE"), {
+    name: "CHAT_TIME_CONTEXT_TIME_ZONE",
+  });
+  const template = readRequiredStringEnv("CHAT_TIME_CONTEXT_TEMPLATE");
+
+  return {
+    enabled,
+    timeZone,
+    template,
+  };
+})();
+
 const chatMemoryConfig = (() => {
   const rollingSummaryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_ROLLING_SUMMARY_MAX_CHARS"), {
     name: "CHAT_ROLLING_SUMMARY_MAX_CHARS",
@@ -713,6 +727,7 @@ const articleConfig = {
 
 module.exports = {
   chatConfig,
+  chatTimeContextConfig,
   chatMemoryConfig,
   chatGistConfig,
   llmConfig,

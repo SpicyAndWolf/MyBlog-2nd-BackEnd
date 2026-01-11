@@ -17,6 +17,13 @@ function assertBoolean(value, { name } = {}) {
   }
 }
 
+function assertNumber(value, { name, allowNull = false } = {}) {
+  if (allowNull && (value === null || value === undefined)) return;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid ${name || "number"}: expected number`);
+  }
+}
+
 function assertChatMessages(messages, { name } = {}) {
   if (!Array.isArray(messages)) {
     throw new Error(`Invalid ${name || "messages"}: expected array`);
@@ -61,6 +68,13 @@ function assertContextState(contextState) {
     throw new Error("Invalid contextState.recent: expected object");
   }
   assertChatMessages(contextState.recent.messages, { name: "contextState.recent.messages" });
+
+  if (!isPlainObject(contextState.timeContext)) {
+    throw new Error("Invalid contextState.timeContext: expected object");
+  }
+  assertNumber(contextState.timeContext.nowMs, { name: "contextState.timeContext.nowMs" });
+  assertNumber(contextState.timeContext.lastMs, { name: "contextState.timeContext.lastMs", allowNull: true });
+  assertNumber(contextState.timeContext.gapMs, { name: "contextState.timeContext.gapMs", allowNull: true });
 }
 
 function assertSegmentResult(segment, { name } = {}) {
@@ -74,4 +88,3 @@ module.exports = {
   assertSegmentResult,
   assertChatMessages,
 };
-

@@ -3,6 +3,8 @@ const { buildAssistantGistNoticeSegment } = require("./segments/assistantGistNot
 const { buildRollingSummarySegment } = require("./segments/rollingSummary");
 const { buildGapBridgeSegment } = require("./segments/gapBridge");
 const { buildRecentWindowSegment } = require("./segments/recentWindow");
+const { buildTimeContextSegment } = require("./segments/timeContext");
+const { buildCurrentUserSegment } = require("./segments/currentUser");
 const { assertContextState, assertSegmentResult } = require("./validateContextState");
 
 /**
@@ -18,6 +20,7 @@ const { assertContextState, assertSegmentResult } = require("./validateContextSt
  * @property {Object|null} memory
  * @property {{messages: ChatMessage[], stats?: any}|null} gapBridge
  * @property {{messages: ChatMessage[], stats?: any}} recent
+ * @property {{nowMs: number, lastMs: number|null, gapMs: number|null}} timeContext
  */
 
 const segmentOrder = [
@@ -26,6 +29,8 @@ const segmentOrder = [
   "rollingSummary",
   "gapBridge",
   "recentWindow",
+  "timeContext",
+  "currentUser",
 ];
 
 const segmentBuilders = {
@@ -34,6 +39,8 @@ const segmentBuilders = {
   rollingSummary: buildRollingSummarySegment,
   gapBridge: buildGapBridgeSegment,
   recentWindow: buildRecentWindowSegment,
+  timeContext: buildTimeContextSegment,
+  currentUser: buildCurrentUserSegment,
 };
 
 /**
