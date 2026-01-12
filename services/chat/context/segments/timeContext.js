@@ -1,7 +1,9 @@
 const { chatTimeContextConfig } = require("../../../../config");
+const { isTimeQuery } = require("../isTimeQuery");
 
 const TIME_CONTEXT_TIME_ZONE = chatTimeContextConfig.timeZone;
 const TIME_CONTEXT_TEMPLATE = chatTimeContextConfig.template;
+const TIME_CONTEXT_USER_TEMPLATE = chatTimeContextConfig.userTemplate;
 
 let timeContextDateTimeFormatter = null;
 function getTimeContextDateTimeFormatter() {
@@ -72,7 +74,15 @@ function renderTemplate(rawTemplate, vars) {
   return rendered;
 }
 
-function buildTimeContextSegment({ timeContext } = {}) {
+function readCurrentUserMessageContent({ recent } = {}) {
+  const messages = Array.isArray(recent?.messages) ? recent.messages : [];
+  if (!messages.length) return "";
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return "";
+  return String(last.content || "");
+}
+
+function buildTimeContextSegment({ timeContext, recent } = {}) {
   if (!chatTimeContextConfig.enabled) return null;
 
   const nowMs = Number(timeContext?.nowMs);
@@ -93,8 +103,7 @@ function buildTimeContextSegment({ timeContext } = {}) {
   const gapHours = gapMs === null ? "" : Math.floor(gapMs / (60 * 60 * 1000));
   const gapDays = gapMs === null ? "" : Math.floor(gapMs / (24 * 60 * 60 * 1000));
 
-  const template = normalizeTemplate(TIME_CONTEXT_TEMPLATE);
-  const content = renderTemplate(template, {
+  const vars = {
     time_zone: TIME_CONTEXT_TIME_ZONE,
     now: nowText,
     last: lastText,
@@ -104,11 +113,25 @@ function buildTimeContextSegment({ timeContext } = {}) {
     gap_hours: gapHours,
     gap_days: gapDays,
     gap_human: gapHuman,
-  }).trim();
+  };
 
-  if (!content) return null;
+  const template = normalizeTemplate(TIME_CONTEXT_TEMPLATE);
+  const systemContent = renderTemplate(template, vars).trim();
+  const currentUserContent = readCurrentUserMessageContent({ recent });
+  const messages = [];
 
-  return { messages: [{ role: "user", content }] };
+  if (isTimeQuery(currentUserContent)) {
+    const userTemplate = normalizeTemplate(TIME_CONTEXT_USER_TEMPLATE);
+    const userContent = renderTemplate(userTemplate, vars).trim();
+    if (userContent) {
+      messages.push({ role: "user", content: userContent });
+    }
+  } else if (systemContent) {
+    messages.push({ role: "system", content: systemContent });
+  }
+
+  if (!messages.length) return null;
+  return { messages };
 }
 
 module.exports = {

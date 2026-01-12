@@ -321,11 +321,13 @@ const chatTimeContextConfig = (() => {
     name: "CHAT_TIME_CONTEXT_TIME_ZONE",
   });
   const template = readRequiredStringEnv("CHAT_TIME_CONTEXT_TEMPLATE");
+  const userTemplate = readRequiredStringEnv("CHAT_TIME_CONTEXT_USER_TEMPLATE");
 
   return {
     enabled,
     timeZone,
     template,
+    userTemplate,
   };
 })();
 
