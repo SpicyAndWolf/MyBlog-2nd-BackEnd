@@ -56,7 +56,9 @@ function formatGapHuman(ms) {
 }
 
 function normalizeTemplate(value) {
-  return String(value || "").split("\\n").join("\n");
+  return String(value || "")
+    .split("\\n")
+    .join("\n");
 }
 
 function renderTemplate(rawTemplate, vars) {
@@ -106,10 +108,9 @@ function buildTimeContextSegment({ timeContext } = {}) {
 
   if (!content) return null;
 
-  return { messages: [{ role: "system", content }] };
+  return { messages: [{ role: "user", content }] };
 }
 
 module.exports = {
   buildTimeContextSegment,
 };
-
