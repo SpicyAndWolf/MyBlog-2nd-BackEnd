@@ -531,7 +531,7 @@ async function getPresetMemoryStatus({ userId, presetId } = {}) {
   return await chatPresetMemoryModel.getMemory(normalizedUserId, normalizedPresetId);
 }
 
-async function markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired = false } = {}) {
+async function markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired = false, reason } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId) throw new Error("Missing userId");
@@ -539,10 +539,39 @@ async function markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuild
 
   const key = buildKey(normalizedUserId, normalizedPresetId);
   return await enqueueKeyTask(key, async () => {
-    return await chatPresetMemoryModel.markDirtyAndClear(normalizedUserId, normalizedPresetId, {
+    const updated = await chatPresetMemoryModel.markDirtyAndClear(normalizedUserId, normalizedPresetId, {
       sinceMessageId,
       rebuildRequired,
     });
+
+    logger.info("chat_memory_cleared_for_consistency", {
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      sinceMessageId,
+      rebuildRequired: Boolean(rebuildRequired),
+      reason,
+    });
+
+    return updated;
+  });
+}
+
+async function clearPresetCoreMemory({ userId, presetId, sinceMessageId, reason } = {}) {
+  const normalizedUserId = userId;
+  const normalizedPresetId = String(presetId || "").trim();
+  if (!normalizedUserId) throw new Error("Missing userId");
+  if (!normalizedPresetId) throw new Error("Missing presetId");
+
+  const key = buildKey(normalizedUserId, normalizedPresetId);
+  return await enqueueKeyTask(key, async () => {
+    const updated = await chatPresetMemoryModel.clearCoreMemory(normalizedUserId, normalizedPresetId);
+    logger.info("chat_memory_core_cleared_for_consistency", {
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      sinceMessageId,
+      reason,
+    });
+    return updated;
   });
 }
 
@@ -551,4 +580,5 @@ module.exports = {
   rebuildRollingSummarySync,
   getPresetMemoryStatus,
   markPresetMemoryDirty,
+  clearPresetCoreMemory,
 };

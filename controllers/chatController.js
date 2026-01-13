@@ -9,6 +9,7 @@ const { buildRecentWindowContext } = require("../services/chat/context/buildRece
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,
+  clearPresetCoreMemory,
   rebuildRollingSummarySync,
   requestRollingSummaryCatchUp,
 } = require("../services/chat/memory/writePipeline");
@@ -294,7 +295,7 @@ async function isPresetHistoryLongerThanRecentWindow({ userId, presetId } = {}) 
   return Boolean(recentWindow?.needsMemory);
 }
 
-async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId } = {}) {
+async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason } = {}) {
   let existing = null;
   try {
     existing = await getPresetMemoryStatus({ userId, presetId });
@@ -314,7 +315,7 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId 
   if (!existing && !needsMemory) return;
 
   try {
-    await markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: needsMemory });
+    await markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: needsMemory, reason });
   } catch (error) {
     if (error?.code !== "42P01") throw error;
     return;
@@ -332,7 +333,13 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId 
     });
 
     // Avoid a permanent 423 lock if the sync rebuild fails; fall back to "recent_window only".
-    void markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuildRequired: false }).catch((unlockError) => {
+    void markPresetMemoryDirty({
+      userId,
+      presetId,
+      sinceMessageId,
+      rebuildRequired: false,
+      reason: "rebuild_unlock",
+    }).catch((unlockError) => {
       if (unlockError?.code === "42P01") return;
       logger.error("chat_memory_rebuild_unlock_failed", { error: unlockError, userId, presetId });
     });
@@ -528,7 +535,12 @@ const chatController = {
 
       if (preset?.systemPromptChanged) {
         try {
-          await lockAndRebuildChatMemoryAsync({ userId, presetId: preset.id, sinceMessageId: 0 });
+          await lockAndRebuildChatMemoryAsync({
+            userId,
+            presetId: preset.id,
+            sinceMessageId: 0,
+            reason: "system_prompt_changed",
+          });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId: preset.id }));
         }
@@ -716,7 +728,7 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0 });
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0, reason: "session_trashed" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -741,7 +753,7 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0 });
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0, reason: "session_restored" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -842,9 +854,21 @@ const chatController = {
 
       try {
         const existing = await getPresetMemoryStatus({ userId, presetId });
-        const summarizedUntilMessageId = Number(existing?.summarizedUntilMessageId) || 0;
-        if (existing && summarizedUntilMessageId >= messageId) {
-          await markPresetMemoryDirty({ userId, presetId, sinceMessageId: messageId, rebuildRequired: false });
+        if (existing) {
+          const summarizedUntilMessageId = Number(existing?.summarizedUntilMessageId) || 0;
+          const coreCoveredUntilMessageId = Number(existing?.coreMemory?.meta?.coveredUntilMessageId) || 0;
+
+          if (summarizedUntilMessageId >= messageId) {
+            await markPresetMemoryDirty({
+              userId,
+              presetId,
+              sinceMessageId: messageId,
+              rebuildRequired: false,
+              reason: "edit_truncate",
+            });
+          } else if (coreCoveredUntilMessageId >= messageId) {
+            await clearPresetCoreMemory({ userId, presetId, sinceMessageId: messageId, reason: "edit_truncate" });
+          }
         }
       } catch (error) {
         if (error?.code !== "42P01") throw error;
