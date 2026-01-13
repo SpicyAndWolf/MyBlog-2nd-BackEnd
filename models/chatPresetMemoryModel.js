@@ -1,5 +1,11 @@
 const db = require("../db");
 
+const CORE_MEMORY_VERSION = 1;
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function normalizePresetId(rawPresetId) {
   const normalized = String(rawPresetId || "").trim();
   return normalized || null;
@@ -10,6 +16,38 @@ function normalizeMessageId(rawMessageId) {
   const value = Number(rawMessageId);
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return null;
   return value;
+}
+
+function normalizeCoreMemory(rawCoreMemory) {
+  if (typeof rawCoreMemory === "string") {
+    return { v: CORE_MEMORY_VERSION, updatedAt: null, text: rawCoreMemory, meta: {} };
+  }
+  if (!isPlainObject(rawCoreMemory)) {
+    return { v: CORE_MEMORY_VERSION, updatedAt: null, text: "", meta: {} };
+  }
+
+  const version = Number(rawCoreMemory.v);
+  const updatedAt = typeof rawCoreMemory.updatedAt === "string" ? rawCoreMemory.updatedAt : null;
+  const text = typeof rawCoreMemory.text === "string" ? rawCoreMemory.text : "";
+  const meta = isPlainObject(rawCoreMemory.meta) ? rawCoreMemory.meta : {};
+
+  return {
+    v: Number.isFinite(version) ? version : CORE_MEMORY_VERSION,
+    updatedAt,
+    text,
+    meta,
+  };
+}
+
+function buildCoreMemoryPayload(rawCoreMemory) {
+  const normalized = normalizeCoreMemory(rawCoreMemory);
+  const updatedAt = new Date().toISOString();
+  return {
+    v: CORE_MEMORY_VERSION,
+    updatedAt,
+    text: String(normalized.text || "").trim(),
+    meta: isPlainObject(normalized.meta) ? normalized.meta : {},
+  };
 }
 
 function mapRow(row) {
@@ -23,7 +61,7 @@ function mapRow(row) {
     summarizedUntilMessageId: Number(row.summarized_until_message_id) || 0,
     dirtySinceMessageId: row.dirty_since_message_id === null ? null : Number(row.dirty_since_message_id),
     rebuildRequired: Boolean(row.rebuild_required),
-    coreMemory: row.core_memory || {},
+    coreMemory: normalizeCoreMemory(row.core_memory),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -130,6 +168,46 @@ const chatPresetMemoryModel = {
                 core_memory, created_at, updated_at
     `;
     const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedSummary, normalizedUntil]);
+    return mapRow(rows[0]) || null;
+  },
+
+  async writeCoreMemory(userId, presetId, { coreMemory } = {}) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const normalizedCoreMemory = buildCoreMemoryPayload(coreMemory);
+
+    const query = `
+      INSERT INTO chat_preset_memory (user_id, preset_id, core_memory)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, preset_id) DO UPDATE
+      SET core_memory = EXCLUDED.core_memory,
+          updated_at = NOW()
+      RETURNING id, user_id, preset_id, rolling_summary, rolling_summary_updated_at,
+                summarized_until_message_id, dirty_since_message_id, rebuild_required,
+                core_memory, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedCoreMemory]);
+    return mapRow(rows[0]) || null;
+  },
+
+  async clearCoreMemory(userId, presetId) {
+    const normalizedPresetId = normalizePresetId(presetId);
+    if (!normalizedPresetId) throw new Error("Preset id is required");
+
+    const normalizedCoreMemory = buildCoreMemoryPayload({ text: "" });
+
+    const query = `
+      INSERT INTO chat_preset_memory (user_id, preset_id, core_memory)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, preset_id) DO UPDATE
+      SET core_memory = EXCLUDED.core_memory,
+          updated_at = NOW()
+      RETURNING id, user_id, preset_id, rolling_summary, rolling_summary_updated_at,
+                summarized_until_message_id, dirty_since_message_id, rebuild_required,
+                core_memory, created_at, updated_at
+    `;
+    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedCoreMemory]);
     return mapRow(rows[0]) || null;
   },
 

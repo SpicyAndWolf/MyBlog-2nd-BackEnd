@@ -1,5 +1,6 @@
 const { buildSystemPromptSegment } = require("./segments/systemPrompt");
 const { buildAssistantGistNoticeSegment } = require("./segments/assistantGistNotice");
+const { buildCoreMemorySegment } = require("./segments/coreMemory");
 const { buildRollingSummarySegment } = require("./segments/rollingSummary");
 const { buildGapBridgeSegment } = require("./segments/gapBridge");
 const { buildRecentWindowSegment } = require("./segments/recentWindow");
@@ -16,6 +17,9 @@ const { assertContextState, assertSegmentResult } = require("./validateContextSt
 /**
  * @typedef {Object} ContextState
  * @property {string} systemPrompt
+ * @property {boolean} coreMemoryEnabled
+ * @property {string} coreMemoryText
+ * @property {number} coreMemoryChars
  * @property {boolean} rollingSummaryEnabled
  * @property {Object|null} memory
  * @property {{messages: ChatMessage[], stats?: any}|null} gapBridge
@@ -26,6 +30,7 @@ const { assertContextState, assertSegmentResult } = require("./validateContextSt
 const segmentOrder = [
   "systemPrompt",
   "assistantGistNotice",
+  "coreMemory",
   "rollingSummary",
   "gapBridge",
   "recentWindow",
@@ -36,6 +41,7 @@ const segmentOrder = [
 const segmentBuilders = {
   systemPrompt: buildSystemPromptSegment,
   assistantGistNotice: buildAssistantGistNoticeSegment,
+  coreMemory: buildCoreMemorySegment,
   rollingSummary: buildRollingSummarySegment,
   gapBridge: buildGapBridgeSegment,
   recentWindow: buildRecentWindowSegment,

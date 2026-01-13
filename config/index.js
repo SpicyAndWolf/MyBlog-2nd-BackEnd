@@ -341,6 +341,17 @@ const chatMemoryConfig = (() => {
     { name: "CHAT_MEMORY_ROLLING_SUMMARY_UPDATE_EVERY_N_TURNS" }
   );
 
+  const coreMemoryEnabled = readRequiredBoolEnv("CHAT_MEMORY_CORE_ENABLED");
+
+  const coreMemoryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_CORE_MAX_CHARS"), {
+    name: "CHAT_MEMORY_CORE_MAX_CHARS",
+  });
+
+  const coreMemoryUpdateEveryNTurns = ensurePositiveInt(
+    readRequiredIntEnv("CHAT_MEMORY_CORE_UPDATE_EVERY_N_TURNS"),
+    { name: "CHAT_MEMORY_CORE_UPDATE_EVERY_N_TURNS" }
+  );
+
   const gapBridgeMaxMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES"), {
     name: "CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES",
   });
@@ -518,6 +529,9 @@ const chatMemoryConfig = (() => {
   return {
     rollingSummaryMaxChars,
     rollingSummaryUpdateEveryNTurns,
+    coreMemoryEnabled,
+    coreMemoryMaxChars,
+    coreMemoryUpdateEveryNTurns,
     gapBridgeMaxMessages,
     gapBridgeMaxChars,
     recentWindowAssistantGistEnabled,

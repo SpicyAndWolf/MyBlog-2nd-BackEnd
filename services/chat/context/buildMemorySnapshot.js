@@ -1,6 +1,20 @@
 const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
+const { chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { normalizeMessageId } = require("./helpers");
+const { clipText } = require("../memory/textUtils");
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readCoreMemoryText(rawMemory) {
+  const coreMemory = rawMemory?.coreMemory;
+  if (typeof coreMemory === "string") return coreMemory;
+  if (!isPlainObject(coreMemory)) return "";
+  if (typeof coreMemory.text !== "string") return "";
+  return coreMemory.text;
+}
 
 async function ensurePresetMemory(userId, presetId) {
   try {
@@ -32,10 +46,21 @@ async function buildMemorySnapshot({ userId, presetId, needsMemory, recentWindow
     !summaryOverlapsRecentWindow &&
     Boolean(String(memory.rollingSummary || "").trim());
 
+  const coreFeatureEnabled = Boolean(chatMemoryConfig.coreMemoryEnabled);
+  const coreMemoryText =
+    coreFeatureEnabled && needsMemory && memory
+      ? clipText(String(readCoreMemoryText(memory) || "").trim(), chatMemoryConfig.coreMemoryMaxChars).trim()
+      : "";
+  const coreMemoryChars = coreMemoryText.length;
+  const coreMemoryEnabled = coreFeatureEnabled && needsMemory && Boolean(memory) && coreMemoryChars > 0;
+
   return {
     memory,
     summarizedUntilMessageId,
     rollingSummaryEnabled,
+    coreMemoryEnabled,
+    coreMemoryText,
+    coreMemoryChars,
   };
 }
 

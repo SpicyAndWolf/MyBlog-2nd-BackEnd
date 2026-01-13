@@ -44,6 +44,9 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
   const memory = memorySnapshot.memory;
   const summarizedUntilMessageId = memorySnapshot.summarizedUntilMessageId;
   const rollingSummaryEnabled = memorySnapshot.rollingSummaryEnabled;
+  const coreMemoryEnabled = memorySnapshot.coreMemoryEnabled;
+  const coreMemoryText = memorySnapshot.coreMemoryText;
+  const coreMemoryChars = memorySnapshot.coreMemoryChars;
 
   const gapBridge = await buildGapBridge({
     userId: normalizedUserId,
@@ -68,6 +71,9 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
 
   const compiled = buildContextSegments({
     systemPrompt: normalizedSystemPrompt,
+    coreMemoryEnabled,
+    coreMemoryText,
+    coreMemoryChars,
     rollingSummaryEnabled,
     memory,
     gapBridge,
@@ -80,6 +86,7 @@ async function compileChatContextMessages({ userId, presetId, systemPrompt, upTo
     needsMemory,
     segments: {
       systemPromptChars: normalizedSystemPrompt.length,
+      coreMemoryChars: coreMemoryEnabled ? coreMemoryChars : 0,
       rollingSummaryChars: rollingSummaryEnabled ? String(memory.rollingSummary || "").length : 0,
       gapBridge: gapBridge ? gapBridge.stats : null,
       recentWindow: {
