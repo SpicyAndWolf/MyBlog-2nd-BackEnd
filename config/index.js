@@ -394,6 +394,14 @@ const chatMemoryConfig = (() => {
     { name: "CHAT_MEMORY_BACKFILL_COOLDOWN_MS" }
   );
 
+  const checkpointEveryNMessages = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES"), {
+    name: "CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES",
+  });
+
+  const checkpointKeepLastN = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N"), {
+    name: "CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N",
+  });
+
   const writeRetryMax = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_WRITE_RETRY_MAX"), {
     name: "CHAT_MEMORY_WRITE_RETRY_MAX",
   });
@@ -552,6 +560,8 @@ const chatMemoryConfig = (() => {
     workerConcurrency,
     backfillBatchMessages,
     backfillCooldownMs,
+    checkpointEveryNMessages,
+    checkpointKeepLastN,
     writeRetryMax,
     syncRebuildTimeoutMs,
     syncRebuildTotalTimeoutMs,

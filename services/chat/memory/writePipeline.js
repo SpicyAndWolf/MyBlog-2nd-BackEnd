@@ -1,5 +1,6 @@
 const chatModel = require("@models/chatModel");
 const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
+const chatPresetMemoryCheckpointModel = require("@models/chatPresetMemoryCheckpointModel");
 const { chatConfig, chatMemoryConfig } = require("../../../config");
 const { logger } = require("../../../logger");
 const { generateRollingSummary } = require("./rollingSummary");
@@ -21,11 +22,103 @@ const workerSemaphore = createSemaphore(chatMemoryConfig.workerConcurrency);
 
 const { enqueue: enqueueKeyTask } = createKeyedTaskQueue();
 
-const catchUpStateByKey = new Map();
+const memoryTickStateByKey = new Map();
 const CORE_MEMORY_TEMPLATE_ID = "core-memory-v1";
+const CHECKPOINT_KIND_ROLLING_SUMMARY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.rollingSummary;
+const CHECKPOINT_KIND_CORE_MEMORY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.coreMemory;
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isCheckpointFeatureEnabled() {
+  const everyNMessages = Number(chatMemoryConfig.checkpointEveryNMessages);
+  const keepLastN = Number(chatMemoryConfig.checkpointKeepLastN);
+  return Number.isFinite(everyNMessages) && everyNMessages > 0 && Number.isFinite(keepLastN) && keepLastN > 0;
+}
+
+async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, payload } = {}) {
+  if (!isCheckpointFeatureEnabled()) return false;
+
+  const checkpointMessageId = normalizeMessageId(messageId);
+  if (checkpointMessageId === null || checkpointMessageId <= 0) return false;
+  if (!payload || typeof payload !== "object") return false;
+
+  try {
+    await chatPresetMemoryCheckpointModel.upsertCheckpoint(userId, presetId, {
+      kind,
+      messageId: checkpointMessageId,
+      payload,
+    });
+  } catch (error) {
+    if (error?.code === "42P01") return false;
+    logger.error("chat_memory_checkpoint_write_failed", { error, userId, presetId, kind, messageId: checkpointMessageId });
+    return false;
+  }
+
+  try {
+    await chatPresetMemoryCheckpointModel.pruneKeepLastN(userId, presetId, {
+      kind,
+      keepLastN: chatMemoryConfig.checkpointKeepLastN,
+    });
+  } catch (error) {
+    if (error?.code === "42P01") return true;
+    logger.error("chat_memory_checkpoint_prune_failed", {
+      error,
+      userId,
+      presetId,
+      kind,
+      keepLastN: chatMemoryConfig.checkpointKeepLastN,
+    });
+  }
+
+  return true;
+}
+
+async function loadCheckpointBestEffort({ userId, presetId, kind, maxMessageId } = {}) {
+  if (!isCheckpointFeatureEnabled()) return null;
+
+  const normalizedMax = normalizeMessageId(maxMessageId);
+  if (normalizedMax === null) return null;
+
+  try {
+    return await chatPresetMemoryCheckpointModel.getLatestCheckpointBeforeOrAt(userId, presetId, {
+      kind,
+      maxMessageId: normalizedMax,
+    });
+  } catch (error) {
+    if (error?.code === "42P01") return null;
+    logger.error("chat_memory_checkpoint_load_failed", { error, userId, presetId, kind, maxMessageId: normalizedMax });
+    return null;
+  }
+}
+
+async function loadLatestCheckpointBestEffort({ userId, presetId, kind } = {}) {
+  if (!isCheckpointFeatureEnabled()) return null;
+
+  try {
+    return await chatPresetMemoryCheckpointModel.getLatestCheckpoint(userId, presetId, { kind });
+  } catch (error) {
+    if (error?.code === "42P01") return null;
+    logger.error("chat_memory_checkpoint_load_failed", { error, userId, presetId, kind });
+    return null;
+  }
+}
+
+async function deleteCheckpointsFromMessageIdBestEffort({ userId, presetId, fromMessageId, reason } = {}) {
+  const normalizedFrom = normalizeMessageId(fromMessageId);
+  if (normalizedFrom === null) return 0;
+
+  try {
+    return await chatPresetMemoryCheckpointModel.deleteCheckpointsFromMessageId(userId, presetId, {
+      kinds: [CHECKPOINT_KIND_ROLLING_SUMMARY, CHECKPOINT_KIND_CORE_MEMORY],
+      fromMessageId: normalizedFrom,
+    });
+  } catch (error) {
+    if (error?.code === "42P01") return 0;
+    logger.error("chat_memory_checkpoint_delete_failed", { error, userId, presetId, fromMessageId: normalizedFrom, reason });
+    return 0;
+  }
 }
 
 async function runWithWorkerSlot(task) {
@@ -89,6 +182,16 @@ async function computeRollingSummaryTarget({ userId, presetId } = {}) {
   };
 }
 
+async function computeCoreMemoryTarget({ userId, presetId } = {}) {
+  const latestRows = await chatModel.listRecentMessagesByPreset(userId, presetId, { limit: 1 });
+  const latestMessageId = normalizeMessageId(latestRows[0]?.id);
+  const targetMessageId = latestMessageId !== null ? latestMessageId : 0;
+
+  return {
+    targetMessageId,
+  };
+}
+
 async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = false, keepRebuildLock = false } = {}) {
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
@@ -118,8 +221,68 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   }
 
   const isDirty = memory.dirtySinceMessageId !== null;
-  let afterMessageId = isDirty ? 0 : Number(memory.summarizedUntilMessageId) || 0;
-  let rollingSummary = isDirty ? "" : String(memory.rollingSummary || "").trim();
+  let afterMessageId = Number(memory.summarizedUntilMessageId) || 0;
+  let rollingSummary = String(memory.rollingSummary || "").trim();
+  if (afterMessageId <= 0) {
+    afterMessageId = 0;
+    rollingSummary = "";
+  }
+
+  const checkpointEveryNMessages = Number(chatMemoryConfig.checkpointEveryNMessages);
+  let lastRollingSummaryCheckpointId = null;
+
+  if (isCheckpointFeatureEnabled() && afterMessageId > 0) {
+    const latest = await loadLatestCheckpointBestEffort({ userId, presetId, kind: CHECKPOINT_KIND_ROLLING_SUMMARY });
+    const latestMessageId = normalizeMessageId(latest?.messageId);
+    if (latestMessageId !== null && latestMessageId <= afterMessageId) {
+      lastRollingSummaryCheckpointId = latestMessageId;
+    }
+  }
+
+  if (
+    isDirty &&
+    isCheckpointFeatureEnabled() &&
+    afterMessageId === 0 &&
+    !rollingSummary &&
+    normalizeMessageId(memory.dirtySinceMessageId) !== null
+  ) {
+    const rollbackMessageId = Math.max(0, Number(memory.dirtySinceMessageId) - 1);
+    const maxCheckpointMessageId = Math.min(targetUntilMessageId, rollbackMessageId);
+
+    const checkpoint = await loadCheckpointBestEffort({
+      userId,
+      presetId,
+      kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+      maxMessageId: maxCheckpointMessageId,
+    });
+
+    const checkpointText =
+      checkpoint && typeof checkpoint.payload?.text === "string" ? checkpoint.payload.text.trim() : "";
+    const checkpointMessageId = normalizeMessageId(checkpoint?.messageId);
+
+    if (checkpointMessageId !== null && checkpointMessageId > 0 && checkpointText) {
+      afterMessageId = checkpointMessageId;
+      rollingSummary = checkpointText;
+      lastRollingSummaryCheckpointId = checkpointMessageId;
+
+      try {
+        await chatPresetMemoryModel.writeRollingSummaryProgress(userId, presetId, {
+          rollingSummary,
+          summarizedUntilMessageId: afterMessageId,
+        });
+      } catch (error) {
+        if (error?.code !== "42P01") throw error;
+      }
+
+      logger.info("chat_memory_checkpoint_restored", {
+        userId,
+        presetId,
+        kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+        messageId: checkpointMessageId,
+        dirtySinceMessageId: memory.dirtySinceMessageId,
+      });
+    }
+  }
 
   if (!isDirty && afterMessageId > targetUntilMessageId) {
     afterMessageId = 0;
@@ -241,6 +404,23 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
       });
     }
 
+    if (isCheckpointFeatureEnabled() && rollingSummary) {
+      const shouldWriteCheckpoint =
+        lastRollingSummaryCheckpointId === null ||
+        afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
+
+      if (shouldWriteCheckpoint) {
+        const wrote = await writeCheckpointBestEffort({
+          userId,
+          presetId,
+          kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+          messageId: afterMessageId,
+          payload: { text: rollingSummary },
+        });
+        if (wrote) lastRollingSummaryCheckpointId = afterMessageId;
+      }
+    }
+
     updated = true;
 
     if (afterMessageId >= targetUntilMessageId) break;
@@ -256,16 +436,40 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
       rebuildRequired: keepRebuildLock,
     });
     updated = true;
+
+    if (isCheckpointFeatureEnabled() && rollingSummary) {
+      const shouldWriteCheckpoint =
+        lastRollingSummaryCheckpointId === null ||
+        afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
+      if (shouldWriteCheckpoint) {
+        const wrote = await writeCheckpointBestEffort({
+          userId,
+          presetId,
+          kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+          messageId: afterMessageId,
+          payload: { text: rollingSummary },
+        });
+        if (wrote) lastRollingSummaryCheckpointId = afterMessageId;
+      }
+    }
   }
 
   return { updated, processedBatches, processedMessages, targetUntilMessageId, needsMemory };
 }
 
-async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntilMessageId, deadline } = {}) {
+async function catchUpCoreMemoryOnce({
+  userId,
+  presetId,
+  needsMemory,
+  targetMessageId,
+  deadline,
+  force = false,
+} = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId || !normalizedPresetId) return { updated: false, reason: "missing_identifier" };
   if (!needsMemory) return { updated: false, reason: "needs_memory_false" };
+  if (!chatMemoryConfig.coreMemoryEnabled) return { updated: false, reason: "disabled" };
 
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
@@ -273,6 +477,11 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntil
   const workerSettings = chatMemoryConfig.coreMemoryWorkerSettings;
   const workerRaw = chatMemoryConfig.workerRaw;
   const retryMax = chatMemoryConfig.writeRetryMax;
+  const deltaMessageLimit = chatMemoryConfig.coreMemoryDeltaBatchMessages;
+
+  const updateEveryNTurns = chatMemoryConfig.coreMemoryUpdateEveryNTurns;
+  const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
+  const probeLimit = thresholdMessages;
 
   const memory = await chatPresetMemoryModel.ensureMemory(normalizedUserId, normalizedPresetId);
   if (!memory) return { updated: false, reason: "memory_missing" };
@@ -281,18 +490,57 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntil
   let coreMemoryText = clipText(String(coreMemorySnapshot.text || "").trim(), maxChars).trim();
   let coreMeta = coreMemorySnapshot.meta;
 
-  const rollingSummaryText = clipText(
+  let coveredUntilMessageId = normalizeMessageId(coreMeta?.coveredUntilMessageId) || 0;
+  let needsRebuild = Boolean(coreMeta?.needsRebuild);
+  const coreDirtySinceMessageId = normalizeMessageId(coreMeta?.dirtySinceMessageId);
+
+  let resolvedTargetMessageId = normalizeMessageId(targetMessageId);
+  if (resolvedTargetMessageId === null) {
+    const target = await computeCoreMemoryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
+    resolvedTargetMessageId = normalizeMessageId(target.targetMessageId) || 0;
+  }
+
+  if (!needsRebuild && coveredUntilMessageId > resolvedTargetMessageId) {
+    needsRebuild = true;
+    coveredUntilMessageId = 0;
+    coreMemoryText = "";
+  }
+
+  const summarizedUntilMessageId = normalizeMessageId(memory.summarizedUntilMessageId) || 0;
+  const rollingSummaryRaw = clipText(
     String(memory.rollingSummary || "").trim(),
     chatMemoryConfig.rollingSummaryMaxChars
   ).trim();
+  const summaryUsable =
+    memory.dirtySinceMessageId === null && summarizedUntilMessageId > 0 && Boolean(rollingSummaryRaw);
+  const summarySafe = summaryUsable && summarizedUntilMessageId <= resolvedTargetMessageId;
 
-  let coveredUntilMessageId = normalizeMessageId(coreMeta?.coveredUntilMessageId) || 0;
-  const updateEveryNTurns = chatMemoryConfig.coreMemoryUpdateEveryNTurns;
-  const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
-  const probeLimit = thresholdMessages;
-  const deltaMessageLimit = chatMemoryConfig.coreMemoryDeltaBatchMessages;
-  const needsRebuild = Boolean(coreMeta?.needsRebuild);
-  let rebuildTargetMessageId = normalizeMessageId(targetUntilMessageId);
+  let rollingSummarySkipReason = null;
+  if (!summaryUsable) {
+    if (memory.dirtySinceMessageId !== null) rollingSummarySkipReason = "memory_dirty";
+    else if (summarizedUntilMessageId <= 0) rollingSummarySkipReason = "missing_progress";
+    else if (!rollingSummaryRaw) rollingSummarySkipReason = "missing_text";
+    else rollingSummarySkipReason = "unusable";
+  } else if (!summarySafe) {
+    rollingSummarySkipReason = "summary_beyond_target";
+  }
+
+  let rollingSummaryUsedBootstrap = false;
+  let rollingSummaryUsedDelta = false;
+
+  function attachSummaryUsage(result) {
+    const rollingSummaryUsed = rollingSummaryUsedBootstrap || rollingSummaryUsedDelta;
+    return {
+      ...result,
+      summarizedUntilMessageId,
+      rollingSummaryUsable: summaryUsable,
+      rollingSummarySafe: summarySafe,
+      rollingSummaryUsed,
+      rollingSummaryUsedBootstrap,
+      rollingSummaryUsedDelta,
+      rollingSummarySkipReason: rollingSummaryUsed ? null : rollingSummarySkipReason,
+    };
+  }
 
   function buildNextMeta(nextCoveredUntilMessageId, { nextNeedsRebuild } = {}) {
     const nextMeta = {
@@ -322,25 +570,6 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntil
     coreMeta = nextMeta;
   }
 
-  if (!needsRebuild) {
-    const probeRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
-      afterMessageId: coveredUntilMessageId,
-      limit: probeLimit,
-    });
-
-    if (!probeRows.length) {
-      return { updated: false, reason: "no_new_messages", thresholdMessages };
-    }
-    if (probeRows.length < thresholdMessages) {
-      return {
-        updated: false,
-        reason: "throttled",
-        pendingMessages: probeRows.length,
-        thresholdMessages,
-      };
-    }
-  }
-
   async function generateWithRetry(args) {
     let attempt = 0;
     while (true) {
@@ -365,16 +594,151 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntil
   let processedBatches = 0;
   let processedMessages = 0;
   let usedFallback = false;
+  const checkpointEveryNMessages = Number(chatMemoryConfig.checkpointEveryNMessages);
+  let lastCoreCheckpointId = null;
 
-  if (needsRebuild) {
-    if (rebuildTargetMessageId === null) {
-      const latestRows = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, { limit: 1 });
-      const latestMessageId = normalizeMessageId(latestRows[0]?.id);
-      rebuildTargetMessageId = latestMessageId !== null ? latestMessageId : coveredUntilMessageId;
+  if (isCheckpointFeatureEnabled() && coveredUntilMessageId > 0) {
+    const latest = await loadLatestCheckpointBestEffort({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      kind: CHECKPOINT_KIND_CORE_MEMORY,
+    });
+    const latestMessageId = normalizeMessageId(latest?.messageId);
+    if (latestMessageId !== null && latestMessageId <= coveredUntilMessageId) {
+      lastCoreCheckpointId = latestMessageId;
     }
-    if (coveredUntilMessageId >= rebuildTargetMessageId) {
+  }
+
+  if (
+    needsRebuild &&
+    isCheckpointFeatureEnabled() &&
+    !coreMemoryText &&
+    coveredUntilMessageId === 0 &&
+    coreDirtySinceMessageId !== null &&
+    coreDirtySinceMessageId > 0
+  ) {
+    const rollbackMessageId = Math.max(0, coreDirtySinceMessageId - 1);
+    const maxCheckpointMessageId = Math.min(resolvedTargetMessageId, rollbackMessageId);
+
+    const checkpoint = await loadCheckpointBestEffort({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      kind: CHECKPOINT_KIND_CORE_MEMORY,
+      maxMessageId: maxCheckpointMessageId,
+    });
+
+    const checkpointText =
+      checkpoint && typeof checkpoint.payload?.text === "string" ? checkpoint.payload.text.trim() : "";
+    const checkpointMessageId = normalizeMessageId(checkpoint?.messageId);
+
+    if (checkpointMessageId !== null && checkpointMessageId > 0 && checkpointText) {
+      coreMemoryText = clipText(checkpointText, maxChars).trim();
+      coveredUntilMessageId = checkpointMessageId;
+      needsRebuild = true;
+      lastCoreCheckpointId = checkpointMessageId;
+
+      await writeProgress(coreMemoryText, coveredUntilMessageId, {
+        nextNeedsRebuild: coveredUntilMessageId < resolvedTargetMessageId,
+      });
+      updated = true;
+
+      logger.info("chat_memory_checkpoint_restored", {
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        kind: CHECKPOINT_KIND_CORE_MEMORY,
+        messageId: checkpointMessageId,
+        dirtySinceMessageId: coreDirtySinceMessageId,
+      });
+    }
+  }
+
+  if (
+    needsRebuild &&
+    !coreMemoryText &&
+    coveredUntilMessageId === 0 &&
+    summarySafe
+  ) {
+    let bootstrap = null;
+    try {
+      rollingSummaryUsedBootstrap = true;
+      bootstrap = await generateWithRetry({
+        providerId,
+        modelId,
+        previousCoreMemoryText: "",
+        rollingSummaryText: rollingSummaryRaw,
+        deltaMessages: [],
+        maxChars,
+        timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
+        settings: workerSettings,
+        raw: workerRaw,
+      });
+    } catch (error) {
+      if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
+        logger.warn("chat_memory_core_rebuild_timeout", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          providerId,
+          modelId,
+        });
+        return attachSummaryUsage({
+          updated,
+          reason: "timeout",
+          thresholdMessages,
+          coveredUntilMessageId,
+          processedBatches,
+          processedMessages,
+          targetMessageId: resolvedTargetMessageId,
+        });
+      }
+      logger.error("chat_memory_core_generate_failed", {
+        error,
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        providerId,
+        modelId,
+      });
+    }
+
+    if (bootstrap && bootstrap.valid) {
+      coreMemoryText = String(bootstrap.text || "").trim();
+      coveredUntilMessageId = summarizedUntilMessageId;
+      processedBatches += 1;
+
+      await writeProgress(coreMemoryText, coveredUntilMessageId, {
+        nextNeedsRebuild: coveredUntilMessageId < resolvedTargetMessageId,
+      });
+      updated = true;
+      needsRebuild = coveredUntilMessageId < resolvedTargetMessageId;
+
+      if (isCheckpointFeatureEnabled() && coreMemoryText) {
+        const shouldWriteCheckpoint =
+          lastCoreCheckpointId === null || coveredUntilMessageId - lastCoreCheckpointId >= checkpointEveryNMessages;
+        if (shouldWriteCheckpoint) {
+          const wrote = await writeCheckpointBestEffort({
+            userId: normalizedUserId,
+            presetId: normalizedPresetId,
+            kind: CHECKPOINT_KIND_CORE_MEMORY,
+            messageId: coveredUntilMessageId,
+            payload: { text: coreMemoryText },
+          });
+          if (wrote) lastCoreCheckpointId = coveredUntilMessageId;
+        }
+      }
+    } else if (bootstrap && !bootstrap.valid) {
+      logger.warn("chat_memory_core_invalid_output", {
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        providerId,
+        modelId,
+        reason: bootstrap?.reason,
+      });
+    }
+  }
+
+  if (coveredUntilMessageId >= resolvedTargetMessageId) {
+    if (Boolean(coreMeta?.needsRebuild)) {
       await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
-      return {
+      return attachSummaryUsage({
         updated: true,
         reason: "caught_up",
         durationMs: Date.now() - startedAt,
@@ -383,260 +747,328 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntil
         usedFallback,
         processedBatches,
         processedMessages,
-      };
+        targetMessageId: resolvedTargetMessageId,
+      });
     }
 
-    while (coveredUntilMessageId < rebuildTargetMessageId) {
-      if (deadline && Date.now() > deadline) {
-        return {
+    return attachSummaryUsage({
+      updated: false,
+      reason: "no_new_messages",
+      thresholdMessages,
+      targetMessageId: resolvedTargetMessageId,
+    });
+  }
+
+  if (!force && !needsRebuild) {
+    const probeRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
+      afterMessageId: coveredUntilMessageId,
+      limit: probeLimit,
+    });
+
+    if (!probeRows.length) {
+      return attachSummaryUsage({
+        updated: false,
+        reason: "no_new_messages",
+        thresholdMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+
+    let eligibleCount = 0;
+    for (const row of probeRows) {
+      const id = normalizeMessageId(row?.id);
+      if (id === null) continue;
+      if (id <= resolvedTargetMessageId) eligibleCount += 1;
+    }
+
+    if (eligibleCount < probeLimit) {
+      return attachSummaryUsage({
+        updated: false,
+        reason: "throttled",
+        pendingMessages: eligibleCount,
+        thresholdMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+  }
+
+  while (coveredUntilMessageId < resolvedTargetMessageId) {
+    if (deadline && Date.now() > deadline) {
+      return attachSummaryUsage({
+        updated,
+        reason: "timeout",
+        thresholdMessages,
+        coveredUntilMessageId,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+
+    const rows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
+      afterMessageId: coveredUntilMessageId,
+      limit: deltaMessageLimit,
+    });
+
+    if (!rows.length) {
+      return attachSummaryUsage({
+        updated,
+        reason: "no_new_messages",
+        thresholdMessages,
+        coveredUntilMessageId,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+
+    const withinTarget = rows.filter((row) => {
+      const id = normalizeMessageId(row?.id);
+      return id !== null && id <= resolvedTargetMessageId;
+    });
+
+    if (!withinTarget.length) {
+      coveredUntilMessageId = resolvedTargetMessageId;
+      await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
+      updated = true;
+      break;
+    }
+
+    const lastMessageId = normalizeMessageId(withinTarget[withinTarget.length - 1]?.id);
+    const nextCoveredUntilMessageId = lastMessageId !== null ? lastMessageId : coveredUntilMessageId;
+    if (nextCoveredUntilMessageId <= coveredUntilMessageId) {
+      return attachSummaryUsage({
+        updated,
+        reason: "no_progress",
+        thresholdMessages,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+
+    const deltaMessages = normalizeMessagesForSummary(withinTarget);
+
+    if (!deltaMessages.length) {
+      coveredUntilMessageId = nextCoveredUntilMessageId;
+      await writeProgress(coreMemoryText, coveredUntilMessageId, {
+        nextNeedsRebuild: coveredUntilMessageId < resolvedTargetMessageId,
+      });
+      updated = true;
+      continue;
+    }
+
+    const rollingSummaryText = summarySafe && summarizedUntilMessageId <= coveredUntilMessageId ? rollingSummaryRaw : "";
+    if (rollingSummaryText) {
+      rollingSummaryUsedDelta = true;
+    } else if (summarySafe && summarizedUntilMessageId > coveredUntilMessageId && !rollingSummarySkipReason) {
+      rollingSummarySkipReason = "summary_ahead_of_core_covered";
+    }
+
+    let generation = null;
+    try {
+      generation = await generateWithRetry({
+        providerId,
+        modelId,
+        previousCoreMemoryText: coreMemoryText,
+        rollingSummaryText,
+        deltaMessages,
+        maxChars,
+        timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
+        settings: workerSettings,
+        raw: workerRaw,
+      });
+    } catch (error) {
+      if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
+        logger.warn("chat_memory_core_rebuild_timeout", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          providerId,
+          modelId,
+        });
+        return attachSummaryUsage({
           updated,
           reason: "timeout",
           thresholdMessages,
           coveredUntilMessageId,
           processedBatches,
           processedMessages,
-        };
+          targetMessageId: resolvedTargetMessageId,
+        });
       }
-      const rows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
-        afterMessageId: coveredUntilMessageId,
-        limit: deltaMessageLimit,
+      logger.error("chat_memory_core_generate_failed", {
+        error,
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        providerId,
+        modelId,
       });
-
-      if (!rows.length) {
-        return {
-          updated,
-          reason: "no_new_messages",
-          thresholdMessages,
-          coveredUntilMessageId,
-          processedBatches,
-          processedMessages,
-        };
-      }
-
-      const withinTarget = rows.filter((row) => {
-        const id = normalizeMessageId(row?.id);
-        return id !== null && id <= rebuildTargetMessageId;
+      return attachSummaryUsage({
+        updated,
+        reason: "generate_failed",
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
       });
-
-      if (!withinTarget.length) {
-        coveredUntilMessageId = rebuildTargetMessageId;
-        await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
-        updated = true;
-        break;
-      }
-
-      const lastMessageId = normalizeMessageId(withinTarget[withinTarget.length - 1]?.id);
-      const nextCoveredUntilMessageId = lastMessageId !== null ? lastMessageId : coveredUntilMessageId;
-      if (nextCoveredUntilMessageId <= coveredUntilMessageId) {
-        return { updated, reason: "no_progress", thresholdMessages, processedBatches, processedMessages };
-      }
-
-      const deltaMessages = normalizeMessagesForSummary(withinTarget);
-
-      if (!deltaMessages.length) {
-        coveredUntilMessageId = nextCoveredUntilMessageId;
-        await writeProgress(coreMemoryText, coveredUntilMessageId, {
-          nextNeedsRebuild: coveredUntilMessageId < rebuildTargetMessageId,
-        });
-        updated = true;
-        continue;
-      }
-
-      let generation = null;
-      try {
-        generation = await generateWithRetry({
-          providerId,
-          modelId,
-          previousCoreMemoryText: coreMemoryText,
-          rollingSummaryText,
-          deltaMessages,
-          maxChars,
-          timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
-          settings: workerSettings,
-          raw: workerRaw,
-        });
-      } catch (error) {
-        if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
-          logger.warn("chat_memory_core_rebuild_timeout", {
-            userId: normalizedUserId,
-            presetId: normalizedPresetId,
-            providerId,
-            modelId,
-          });
-          return {
-            updated,
-            reason: "timeout",
-            thresholdMessages,
-            coveredUntilMessageId,
-            processedBatches,
-            processedMessages,
-          };
-        }
-        logger.error("chat_memory_core_generate_failed", {
-          error,
-          userId: normalizedUserId,
-          presetId: normalizedPresetId,
-          providerId,
-          modelId,
-        });
-        return { updated, reason: "generate_failed", processedBatches, processedMessages };
-      }
-
-      if (!generation?.valid) {
-        logger.warn("chat_memory_core_invalid_output", {
-          userId: normalizedUserId,
-          presetId: normalizedPresetId,
-          providerId,
-          modelId,
-          reason: generation?.reason,
-        });
-        return {
-          updated,
-          reason: "invalid_output",
-          invalidReason: generation?.reason,
-          thresholdMessages,
-          processedBatches,
-          processedMessages,
-        };
-      }
-
-      processedBatches += 1;
-      processedMessages += deltaMessages.length;
-
-      let nextText = String(generation.text || "").trim();
-      const batchUsedFallback = !nextText && Boolean(coreMemoryText);
-      if (batchUsedFallback) {
-        usedFallback = true;
-        nextText = coreMemoryText;
-      }
-
-      coreMemoryText = nextText;
-      coveredUntilMessageId = nextCoveredUntilMessageId;
-
-      await writeProgress(coreMemoryText, coveredUntilMessageId, {
-        nextNeedsRebuild: coveredUntilMessageId < rebuildTargetMessageId,
-      });
-      updated = true;
-
-      if (coveredUntilMessageId >= rebuildTargetMessageId) break;
-      if (withinTarget.length < rows.length) break;
-      if (rows.length < deltaMessageLimit) break;
-      await sleep(chatMemoryConfig.backfillCooldownMs);
     }
 
-    return {
-      updated,
-      durationMs: Date.now() - startedAt,
-      coreMemoryChars: coreMemoryText.length,
-      coveredUntilMessageId,
-      usedFallback,
-      processedBatches,
-      processedMessages,
-    };
-  }
+    if (!generation?.valid) {
+      logger.warn("chat_memory_core_invalid_output", {
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        providerId,
+        modelId,
+        reason: generation?.reason,
+      });
+      return attachSummaryUsage({
+        updated,
+        reason: "invalid_output",
+        invalidReason: generation?.reason,
+        thresholdMessages,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
 
-  const deltaRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
-    afterMessageId: coveredUntilMessageId,
-    limit: deltaMessageLimit,
-  });
+    processedBatches += 1;
+    processedMessages += deltaMessages.length;
 
-  const deltaMessages = normalizeMessagesForSummary(deltaRows);
-  if (!deltaMessages.length) return { updated: false, reason: "no_delta_messages" };
+    let nextText = String(generation.text || "").trim();
+    const batchUsedFallback = !nextText && Boolean(coreMemoryText);
+    if (batchUsedFallback) {
+      usedFallback = true;
+      nextText = coreMemoryText;
+    }
 
-  const lastMessageId = normalizeMessageId(deltaRows[deltaRows.length - 1]?.id);
-  const nextCoveredUntilMessageId = lastMessageId !== null ? lastMessageId : coveredUntilMessageId;
-  if (nextCoveredUntilMessageId <= coveredUntilMessageId) {
-    return { updated: false, reason: "no_progress" };
-  }
+    coreMemoryText = nextText;
+    coveredUntilMessageId = nextCoveredUntilMessageId;
 
-  let generation = null;
-
-  try {
-    generation = await generateWithRetry({
-      providerId,
-      modelId,
-      previousCoreMemoryText: coreMemoryText,
-      rollingSummaryText,
-      deltaMessages,
-      maxChars,
-      timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
-      settings: workerSettings,
-      raw: workerRaw,
+    await writeProgress(coreMemoryText, coveredUntilMessageId, {
+      nextNeedsRebuild: coveredUntilMessageId < resolvedTargetMessageId,
     });
-  } catch (error) {
-    logger.error("chat_memory_core_generate_failed", {
-      error,
-      userId: normalizedUserId,
-      presetId: normalizedPresetId,
-      providerId,
-      modelId,
-    });
-    return { updated: false, reason: "generate_failed" };
+    updated = true;
+
+    if (isCheckpointFeatureEnabled() && coreMemoryText) {
+      const shouldWriteCheckpoint =
+        lastCoreCheckpointId === null || coveredUntilMessageId - lastCoreCheckpointId >= checkpointEveryNMessages;
+      if (shouldWriteCheckpoint) {
+        const wrote = await writeCheckpointBestEffort({
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          kind: CHECKPOINT_KIND_CORE_MEMORY,
+          messageId: coveredUntilMessageId,
+          payload: { text: coreMemoryText },
+        });
+        if (wrote) lastCoreCheckpointId = coveredUntilMessageId;
+      }
+    }
+
+    if (coveredUntilMessageId >= resolvedTargetMessageId) break;
+    if (withinTarget.length < rows.length) break;
+    if (rows.length < deltaMessageLimit) break;
+    await sleep(chatMemoryConfig.backfillCooldownMs);
   }
 
-  if (!generation?.valid) {
-    logger.warn("chat_memory_core_invalid_output", {
-      userId: normalizedUserId,
-      presetId: normalizedPresetId,
-      providerId,
-      modelId,
-      reason: generation?.reason,
-    });
-    return { updated: false, reason: "invalid_output", invalidReason: generation?.reason, thresholdMessages };
-  }
-
-  let finalText = String(generation.text || "").trim();
-  const singleUsedFallback = !finalText && Boolean(coreMemoryText);
-  if (singleUsedFallback) finalText = coreMemoryText;
-
-  await writeProgress(finalText, nextCoveredUntilMessageId, { nextNeedsRebuild: false });
-
-  return {
-    updated: true,
+  return attachSummaryUsage({
+    updated,
+    reason: coveredUntilMessageId >= resolvedTargetMessageId ? "caught_up" : "partial",
     durationMs: Date.now() - startedAt,
-    coreMemoryChars: finalText.length,
-    coveredUntilMessageId: nextCoveredUntilMessageId,
-    usedFallback: singleUsedFallback,
-  };
+    coreMemoryChars: coreMemoryText.length,
+    coveredUntilMessageId,
+    usedFallback,
+    processedBatches,
+    processedMessages,
+    thresholdMessages,
+    targetMessageId: resolvedTargetMessageId,
+  });
 }
 
-function requestRollingSummaryCatchUp({ userId, presetId } = {}) {
+async function updateCoreMemoryOnce({
+  userId,
+  presetId,
+  needsMemory,
+  targetMessageId,
+  deadline,
+  force = false,
+} = {}) {
+  return await catchUpCoreMemoryOnce({
+    userId,
+    presetId,
+    needsMemory,
+    targetMessageId,
+    deadline,
+    force,
+  });
+}
+
+function requestMemoryTick({ userId, presetId } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId || !normalizedPresetId) return;
 
   const key = buildKey(normalizedUserId, normalizedPresetId);
-  const state = catchUpStateByKey.get(key) || { scheduled: false, rerun: false };
+  const state = memoryTickStateByKey.get(key) || { scheduled: false, rerun: false };
 
   if (state.scheduled) {
     state.rerun = true;
-    catchUpStateByKey.set(key, state);
+    memoryTickStateByKey.set(key, state);
     return;
   }
 
   state.scheduled = true;
   state.rerun = false;
-  catchUpStateByKey.set(key, state);
+  memoryTickStateByKey.set(key, state);
 
   void enqueueKeyTask(key, async () => {
     try {
       while (true) {
-        const result = await catchUpRollingSummaryOnce({ userId: normalizedUserId, presetId: normalizedPresetId });
-        if (result?.updated) {
-          logger.info("chat_memory_rolling_summary_updated", {
+        let summaryResult = null;
+        try {
+          summaryResult = await catchUpRollingSummaryOnce({ userId: normalizedUserId, presetId: normalizedPresetId });
+        } catch (error) {
+          logger.error("chat_memory_rolling_summary_update_failed", {
+            error,
             userId: normalizedUserId,
             presetId: normalizedPresetId,
-            processedBatches: result.processedBatches,
-            processedMessages: result.processedMessages,
+            providerId: chatMemoryConfig.workerProviderId,
+            modelId: chatMemoryConfig.workerModelId,
           });
         }
 
+        if (summaryResult?.updated) {
+          logger.info("chat_memory_rolling_summary_updated", {
+            userId: normalizedUserId,
+            presetId: normalizedPresetId,
+            processedBatches: summaryResult.processedBatches,
+            processedMessages: summaryResult.processedMessages,
+          });
+        }
+
+        const needsMemory = summaryResult ? Boolean(summaryResult.needsMemory) : true;
+
         let coreResult = null;
         try {
+          let coreTargetMessageId = null;
+          if (needsMemory && chatMemoryConfig.coreMemoryEnabled) {
+            try {
+              const coreTarget = await computeCoreMemoryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
+              coreTargetMessageId = normalizeMessageId(coreTarget.targetMessageId);
+            } catch (error) {
+              logger.error("chat_memory_core_target_compute_failed", {
+                error,
+                userId: normalizedUserId,
+                presetId: normalizedPresetId,
+              });
+              coreTargetMessageId = null;
+            }
+          }
+
           coreResult = await updateCoreMemoryOnce({
             userId: normalizedUserId,
             presetId: normalizedPresetId,
-            needsMemory: result?.needsMemory,
+            needsMemory,
+            targetMessageId: coreTargetMessageId,
           });
         } catch (error) {
           logger.error("chat_memory_core_update_failed", {
@@ -655,10 +1087,16 @@ function requestRollingSummaryCatchUp({ userId, presetId } = {}) {
             coreMemoryChars: coreResult.coreMemoryChars,
             durationMs: coreResult.durationMs,
             coveredUntilMessageId: coreResult.coveredUntilMessageId,
+            targetMessageId: coreResult.targetMessageId,
             usedFallback: coreResult.usedFallback,
             processedBatches: coreResult.processedBatches,
             processedMessages: coreResult.processedMessages,
             reason: coreResult.reason,
+            summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+            rollingSummaryUsed: coreResult.rollingSummaryUsed,
+            rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+            rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+            rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
           });
         } else if (coreResult) {
           logger.debug("chat_memory_core_skipped", {
@@ -668,29 +1106,37 @@ function requestRollingSummaryCatchUp({ userId, presetId } = {}) {
             invalidReason: coreResult.invalidReason,
             pendingMessages: coreResult.pendingMessages,
             thresholdMessages: coreResult.thresholdMessages,
+            targetMessageId: coreResult.targetMessageId,
+            summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+            rollingSummaryUsed: coreResult.rollingSummaryUsed,
+            rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+            rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+            rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
           });
         }
 
-        const current = catchUpStateByKey.get(key);
+        const current = memoryTickStateByKey.get(key);
         if (current?.rerun) {
           current.rerun = false;
-          catchUpStateByKey.set(key, current);
+          memoryTickStateByKey.set(key, current);
           continue;
         }
         break;
       }
     } catch (error) {
-      logger.error("chat_memory_rolling_summary_update_failed", {
+      logger.error("chat_memory_tick_failed", {
         error,
         userId: normalizedUserId,
         presetId: normalizedPresetId,
-        providerId: chatMemoryConfig.workerProviderId,
-        modelId: chatMemoryConfig.workerModelId,
       });
     } finally {
-      catchUpStateByKey.delete(key);
+      memoryTickStateByKey.delete(key);
     }
   });
+}
+
+function requestRollingSummaryCatchUp(args = {}) {
+  requestMemoryTick(args);
 }
 
 async function rebuildRollingSummarySync({ userId, presetId } = {}) {
@@ -723,10 +1169,26 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
     let coreResult = null;
     if (result?.needsMemory) {
       try {
+        let coreTargetMessageId = null;
+        if (chatMemoryConfig.coreMemoryEnabled) {
+          try {
+            const coreTarget = await computeCoreMemoryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
+            coreTargetMessageId = normalizeMessageId(coreTarget.targetMessageId);
+          } catch (error) {
+            logger.error("chat_memory_core_target_compute_failed", {
+              error,
+              userId: normalizedUserId,
+              presetId: normalizedPresetId,
+            });
+            coreTargetMessageId = null;
+          }
+        }
+
         coreResult = await updateCoreMemoryOnce({
           userId: normalizedUserId,
           presetId: normalizedPresetId,
           needsMemory: true,
+          targetMessageId: coreTargetMessageId,
           deadline,
         });
       } catch (error) {
@@ -746,10 +1208,16 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           coreMemoryChars: coreResult.coreMemoryChars,
           durationMs: coreResult.durationMs,
           coveredUntilMessageId: coreResult.coveredUntilMessageId,
+          targetMessageId: coreResult.targetMessageId,
           usedFallback: coreResult.usedFallback,
           processedBatches: coreResult.processedBatches,
           processedMessages: coreResult.processedMessages,
           reason: coreResult.reason,
+          summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+          rollingSummaryUsed: coreResult.rollingSummaryUsed,
+          rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+          rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+          rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
         });
       } else if (coreResult) {
         logger.debug("chat_memory_core_rebuild_sync_skipped", {
@@ -761,6 +1229,12 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           thresholdMessages: coreResult.thresholdMessages,
           processedBatches: coreResult.processedBatches,
           processedMessages: coreResult.processedMessages,
+          targetMessageId: coreResult.targetMessageId,
+          summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+          rollingSummaryUsed: coreResult.rollingSummaryUsed,
+          rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+          rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+          rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
         });
       }
     }
@@ -797,6 +1271,13 @@ async function markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuild
       rebuildRequired,
     });
 
+    await deleteCheckpointsFromMessageIdBestEffort({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      fromMessageId: sinceMessageId,
+      reason,
+    });
+
     logger.info("chat_memory_cleared_for_consistency", {
       userId: normalizedUserId,
       presetId: normalizedPresetId,
@@ -818,6 +1299,14 @@ async function clearPresetCoreMemory({ userId, presetId, sinceMessageId, reason 
   const key = buildKey(normalizedUserId, normalizedPresetId);
   return await enqueueKeyTask(key, async () => {
     const updated = await chatPresetMemoryModel.clearCoreMemory(normalizedUserId, normalizedPresetId, { sinceMessageId });
+
+    await deleteCheckpointsFromMessageIdBestEffort({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      fromMessageId: sinceMessageId,
+      reason,
+    });
+
     logger.info("chat_memory_core_cleared_for_consistency", {
       userId: normalizedUserId,
       presetId: normalizedPresetId,
@@ -829,6 +1318,7 @@ async function clearPresetCoreMemory({ userId, presetId, sinceMessageId, reason 
 }
 
 module.exports = {
+  requestMemoryTick,
   requestRollingSummaryCatchUp,
   rebuildRollingSummarySync,
   getPresetMemoryStatus,

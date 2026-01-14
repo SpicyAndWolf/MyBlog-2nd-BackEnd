@@ -11,7 +11,7 @@ const {
   markPresetMemoryDirty,
   clearPresetCoreMemory,
   rebuildRollingSummarySync,
-  requestRollingSummaryCatchUp,
+  requestMemoryTick,
 } = require("../services/chat/memory/writePipeline");
 const { requestAssistantGistGeneration } = require("../services/chat/memory/gistPipeline");
 const { logger, withRequestContext } = require("../logger");
@@ -346,12 +346,12 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId,
   });
 }
 
-function kickRollingSummaryUpdate({ userId, presetId, needsMemory } = {}) {
+function kickMemoryUpdate({ userId, presetId, needsMemory } = {}) {
   if (!needsMemory) return;
   try {
-    requestRollingSummaryCatchUp({ userId, presetId });
+    requestMemoryTick({ userId, presetId });
   } catch (error) {
-    logger.error("chat_memory_summary_kick_failed", { error, userId, presetId });
+    logger.error("chat_memory_tick_kick_failed", { error, userId, presetId });
   }
 }
 
@@ -859,13 +859,7 @@ const chatController = {
           const coreCoveredUntilMessageId = Number(existing?.coreMemory?.meta?.coveredUntilMessageId) || 0;
 
           if (summarizedUntilMessageId >= messageId) {
-            await markPresetMemoryDirty({
-              userId,
-              presetId,
-              sinceMessageId: messageId,
-              rebuildRequired: false,
-              reason: "edit_truncate",
-            });
+            await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: messageId, reason: "edit_truncate" });
           } else if (coreCoveredUntilMessageId >= messageId) {
             await clearPresetCoreMemory({ userId, presetId, sinceMessageId: messageId, reason: "edit_truncate" });
           }
@@ -954,7 +948,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
-        kickRollingSummaryUpdate({ userId, presetId, needsMemory });
+        kickMemoryUpdate({ userId, presetId, needsMemory });
         requestAssistantGistGeneration({
           userId,
           presetId,
@@ -1043,7 +1037,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
-      kickRollingSummaryUpdate({ userId, presetId, needsMemory });
+      kickMemoryUpdate({ userId, presetId, needsMemory });
       requestAssistantGistGeneration({
         userId,
         presetId,
@@ -1186,7 +1180,7 @@ const chatController = {
 
         const assistantMessage = await chatModel.createMessage(userId, sessionId, "assistant", assistantContent);
         updatedSession = await chatModel.touchSession(userId, sessionId);
-        kickRollingSummaryUpdate({ userId, presetId, needsMemory });
+        kickMemoryUpdate({ userId, presetId, needsMemory });
         requestAssistantGistGeneration({
           userId,
           presetId,
@@ -1275,7 +1269,7 @@ const chatController = {
         normalizedAssistantContent
       );
       updatedSession = await chatModel.touchSession(userId, sessionId);
-      kickRollingSummaryUpdate({ userId, presetId, needsMemory });
+      kickMemoryUpdate({ userId, presetId, needsMemory });
       requestAssistantGistGeneration({
         userId,
         presetId,

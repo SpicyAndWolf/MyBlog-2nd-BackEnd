@@ -16,6 +16,12 @@ function readCoreMemoryText(rawMemory) {
   return coreMemory.text;
 }
 
+function readCoreMemoryMeta(rawMemory) {
+  const coreMemory = rawMemory?.coreMemory;
+  if (!isPlainObject(coreMemory)) return {};
+  return isPlainObject(coreMemory.meta) ? coreMemory.meta : {};
+}
+
 async function ensurePresetMemory(userId, presetId) {
   try {
     return await chatPresetMemoryModel.ensureMemory(userId, presetId);
@@ -47,12 +53,21 @@ async function buildMemorySnapshot({ userId, presetId, needsMemory, recentWindow
     Boolean(String(memory.rollingSummary || "").trim());
 
   const coreFeatureEnabled = Boolean(chatMemoryConfig.coreMemoryEnabled);
-  const coreMemoryText =
-    coreFeatureEnabled && needsMemory && memory
-      ? clipText(String(readCoreMemoryText(memory) || "").trim(), chatMemoryConfig.coreMemoryMaxChars).trim()
-      : "";
+  const coreMeta = coreFeatureEnabled && needsMemory && memory ? readCoreMemoryMeta(memory) : {};
+  const coreNeedsRebuild = Boolean(coreMeta?.needsRebuild);
+  const coreMemoryAllowed =
+    coreFeatureEnabled &&
+    needsMemory &&
+    Boolean(memory) &&
+    !memory.rebuildRequired &&
+    memory.dirtySinceMessageId === null &&
+    !coreNeedsRebuild;
+
+  const coreMemoryText = coreMemoryAllowed
+    ? clipText(String(readCoreMemoryText(memory) || "").trim(), chatMemoryConfig.coreMemoryMaxChars).trim()
+    : "";
   const coreMemoryChars = coreMemoryText.length;
-  const coreMemoryEnabled = coreFeatureEnabled && needsMemory && Boolean(memory) && coreMemoryChars > 0;
+  const coreMemoryEnabled = coreMemoryAllowed && coreMemoryChars > 0;
 
   return {
     memory,
