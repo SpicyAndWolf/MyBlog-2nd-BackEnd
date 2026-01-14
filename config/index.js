@@ -352,6 +352,10 @@ const chatMemoryConfig = (() => {
     { name: "CHAT_MEMORY_CORE_UPDATE_EVERY_N_TURNS" }
   );
 
+  const coreMemoryDeltaBatchMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_CORE_DELTA_BATCH_MESSAGES"), {
+    name: "CHAT_MEMORY_CORE_DELTA_BATCH_MESSAGES",
+  });
+
   const gapBridgeMaxMessages = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES"), {
     name: "CHAT_MEMORY_GAP_BRIDGE_MAX_MESSAGES",
   });
@@ -500,28 +504,33 @@ const chatMemoryConfig = (() => {
     return normalized;
   }
 
-  const rawWorkerSettings = {
-    temperature: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TEMPERATURE", {
-      key: "temperature",
-      providerId: workerProviderId,
-    }),
-    topP: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TOP_P", { key: "topP", providerId: workerProviderId }),
-    maxOutputTokens: readRequiredSettingNumber("CHAT_MEMORY_WORKER_MAX_OUTPUT_TOKENS", {
-      key: "maxOutputTokens",
-      providerId: workerProviderId,
-      integer: true,
-    }),
-    stream: readRequiredBoolEnv("CHAT_MEMORY_WORKER_STREAM"),
-    enableWebSearch: readRequiredBoolEnv("CHAT_MEMORY_WORKER_ENABLE_WEB_SEARCH"),
-    thinkingLevel: readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
-    thinkingBudget: readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
-    safetyHarassment: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HARASSMENT"),
-    safetyHateSpeech: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HATE_SPEECH"),
-    safetySexuallyExplicit: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
-    safetyDangerousContent: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_DANGEROUS_CONTENT"),
-  };
+  function buildWorkerSettingsForMemory(maxOutputTokensEnvName) {
+    const rawWorkerSettings = {
+      temperature: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TEMPERATURE", {
+        key: "temperature",
+        providerId: workerProviderId,
+      }),
+      topP: readRequiredSettingNumber("CHAT_MEMORY_WORKER_TOP_P", { key: "topP", providerId: workerProviderId }),
+      maxOutputTokens: readRequiredSettingNumber(maxOutputTokensEnvName, {
+        key: "maxOutputTokens",
+        providerId: workerProviderId,
+        integer: true,
+      }),
+      stream: readRequiredBoolEnv("CHAT_MEMORY_WORKER_STREAM"),
+      enableWebSearch: readRequiredBoolEnv("CHAT_MEMORY_WORKER_ENABLE_WEB_SEARCH"),
+      thinkingLevel: readOptionalStringEnv("CHAT_MEMORY_WORKER_THINKING_LEVEL"),
+      thinkingBudget: readOptionalIntEnvStrict("CHAT_MEMORY_WORKER_THINKING_BUDGET"),
+      safetyHarassment: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HARASSMENT"),
+      safetyHateSpeech: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_HATE_SPEECH"),
+      safetySexuallyExplicit: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_SEXUALLY_EXPLICIT"),
+      safetyDangerousContent: readOptionalStringEnv("CHAT_MEMORY_WORKER_SAFETY_DANGEROUS_CONTENT"),
+    };
 
-  const workerSettings = normalizeWorkerSettings(sanitizeWorkerSettings(rawWorkerSettings));
+    return normalizeWorkerSettings(sanitizeWorkerSettings(rawWorkerSettings));
+  }
+
+  const rollingSummaryWorkerSettings = buildWorkerSettingsForMemory("CHAT_MEMORY_ROLLING_SUMMARY_WORKER_MAX_OUTPUT_TOKENS");
+  const coreMemoryWorkerSettings = buildWorkerSettingsForMemory("CHAT_MEMORY_CORE_WORKER_MAX_OUTPUT_TOKENS");
 
   const openaiCompatibleBody = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_OPENAI_COMPATIBLE_BODY_JSON");
   const googleGenAiConfig = readRequiredJsonObjectEnv("CHAT_MEMORY_WORKER_GOOGLE_GENAI_CONFIG_JSON");
@@ -532,6 +541,7 @@ const chatMemoryConfig = (() => {
     coreMemoryEnabled,
     coreMemoryMaxChars,
     coreMemoryUpdateEveryNTurns,
+    coreMemoryDeltaBatchMessages,
     gapBridgeMaxMessages,
     gapBridgeMaxChars,
     recentWindowAssistantGistEnabled,
@@ -545,7 +555,8 @@ const chatMemoryConfig = (() => {
     writeRetryMax,
     syncRebuildTimeoutMs,
     syncRebuildTotalTimeoutMs,
-    workerSettings,
+    rollingSummaryWorkerSettings,
+    coreMemoryWorkerSettings,
     workerRaw: {
       openaiCompatibleBody,
       googleGenAiConfig,

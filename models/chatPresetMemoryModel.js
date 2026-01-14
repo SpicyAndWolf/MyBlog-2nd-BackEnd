@@ -102,7 +102,13 @@ const chatPresetMemoryModel = {
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
     const normalizedSinceId = normalizeMessageId(sinceMessageId);
-    const clearedCoreMemory = buildCoreMemoryPayload({ text: "" });
+    const clearedCoreMemory = buildCoreMemoryPayload({
+      text: "",
+      meta: {
+        needsRebuild: true,
+        dirtySinceMessageId: normalizedSinceId,
+      },
+    });
 
     const query = `
       INSERT INTO chat_preset_memory (
@@ -137,29 +143,36 @@ const chatPresetMemoryModel = {
     return mapRow(rows[0]) || null;
   },
 
-  async writeRollingSummary(userId, presetId, { rollingSummary, summarizedUntilMessageId } = {}) {
+  async writeRollingSummary(userId, presetId, { rollingSummary, summarizedUntilMessageId, rebuildRequired } = {}) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
     const normalizedSummary = String(rollingSummary || "").trim();
     const normalizedUntil = normalizeMessageId(summarizedUntilMessageId);
     if (normalizedUntil === null) throw new Error("summarizedUntilMessageId must be a non-negative integer");
+    const normalizedRebuildRequired = Boolean(rebuildRequired);
 
     const query = `
       INSERT INTO chat_preset_memory (user_id, preset_id, rolling_summary, rolling_summary_updated_at, summarized_until_message_id, dirty_since_message_id, rebuild_required)
-      VALUES ($1, $2, $3, NOW(), $4, NULL, false)
+      VALUES ($1, $2, $3, NOW(), $4, NULL, $5)
       ON CONFLICT (user_id, preset_id) DO UPDATE
       SET rolling_summary = EXCLUDED.rolling_summary,
           rolling_summary_updated_at = NOW(),
           summarized_until_message_id = EXCLUDED.summarized_until_message_id,
           dirty_since_message_id = NULL,
-          rebuild_required = false,
+          rebuild_required = EXCLUDED.rebuild_required,
           updated_at = NOW()
       RETURNING id, user_id, preset_id, rolling_summary, rolling_summary_updated_at,
                 summarized_until_message_id, dirty_since_message_id, rebuild_required,
                 core_memory, created_at, updated_at
     `;
-    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedSummary, normalizedUntil]);
+    const { rows } = await db.query(query, [
+      userId,
+      normalizedPresetId,
+      normalizedSummary,
+      normalizedUntil,
+      normalizedRebuildRequired,
+    ]);
     return mapRow(rows[0]) || null;
   },
 
@@ -207,11 +220,18 @@ const chatPresetMemoryModel = {
     return mapRow(rows[0]) || null;
   },
 
-  async clearCoreMemory(userId, presetId) {
+  async clearCoreMemory(userId, presetId, { sinceMessageId } = {}) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
-    const normalizedCoreMemory = buildCoreMemoryPayload({ text: "" });
+    const normalizedSinceId = normalizeMessageId(sinceMessageId);
+    const normalizedCoreMemory = buildCoreMemoryPayload({
+      text: "",
+      meta: {
+        needsRebuild: true,
+        dirtySinceMessageId: normalizedSinceId,
+      },
+    });
 
     const query = `
       INSERT INTO chat_preset_memory (user_id, preset_id, core_memory)

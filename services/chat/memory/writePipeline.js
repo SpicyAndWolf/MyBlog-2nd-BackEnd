@@ -89,11 +89,11 @@ async function computeRollingSummaryTarget({ userId, presetId } = {}) {
   };
 }
 
-async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = false } = {}) {
+async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = false, keepRebuildLock = false } = {}) {
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
   const maxChars = chatMemoryConfig.rollingSummaryMaxChars;
-  const workerSettings = chatMemoryConfig.workerSettings;
+  const workerSettings = chatMemoryConfig.rollingSummaryWorkerSettings;
   const workerRaw = chatMemoryConfig.workerRaw;
   const batchSize = chatMemoryConfig.backfillBatchMessages;
   const retryMax = chatMemoryConfig.writeRetryMax;
@@ -110,6 +110,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
       await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
         rollingSummary: "",
         summarizedUntilMessageId: 0,
+        rebuildRequired: false,
       });
       return { updated: true, reason: "recent_window_only", targetUntilMessageId, needsMemory };
     }
@@ -128,7 +129,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   if (!force && !isDirty && afterMessageId < targetUntilMessageId) {
     const updateEveryNTurns = chatMemoryConfig.rollingSummaryUpdateEveryNTurns;
     const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
-    const probeLimit = Math.min(500, thresholdMessages);
+    const probeLimit = thresholdMessages;
 
     const probeRows = await chatModel.listMessagesByPresetAfter(userId, presetId, {
       afterMessageId,
@@ -199,19 +200,12 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
 
     if (!withinTarget.length) {
       afterMessageId = targetUntilMessageId;
-      if (isDirty) {
-        await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
-          rollingSummary,
-          summarizedUntilMessageId: afterMessageId,
-        });
-        updated = true;
-      } else {
-        await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
-          rollingSummary,
-          summarizedUntilMessageId: afterMessageId,
-        });
-        updated = true;
-      }
+      await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
+        rollingSummary,
+        summarizedUntilMessageId: afterMessageId,
+        rebuildRequired: isDirty ? keepRebuildLock : false,
+      });
+      updated = true;
       break;
     }
 
@@ -243,6 +237,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
       await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
         rollingSummary,
         summarizedUntilMessageId: afterMessageId,
+        rebuildRequired: false,
       });
     }
 
@@ -258,6 +253,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
     await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
       rollingSummary,
       summarizedUntilMessageId: afterMessageId,
+      rebuildRequired: keepRebuildLock,
     });
     updated = true;
   }
@@ -265,7 +261,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   return { updated, processedBatches, processedMessages, targetUntilMessageId, needsMemory };
 }
 
-async function updateCoreMemoryOnce({ userId, presetId, needsMemory } = {}) {
+async function updateCoreMemoryOnce({ userId, presetId, needsMemory, targetUntilMessageId, deadline } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
   if (!normalizedUserId || !normalizedPresetId) return { updated: false, reason: "missing_identifier" };
@@ -274,7 +270,7 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory } = {}) {
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
   const maxChars = chatMemoryConfig.coreMemoryMaxChars;
-  const workerSettings = chatMemoryConfig.workerSettings;
+  const workerSettings = chatMemoryConfig.coreMemoryWorkerSettings;
   const workerRaw = chatMemoryConfig.workerRaw;
   const retryMax = chatMemoryConfig.writeRetryMax;
 
@@ -282,37 +278,263 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory } = {}) {
   if (!memory) return { updated: false, reason: "memory_missing" };
 
   const coreMemorySnapshot = readCoreMemorySnapshot(memory.coreMemory);
-  const previousCoreMemoryText = clipText(String(coreMemorySnapshot.text || "").trim(), maxChars).trim();
-  const previousMeta = coreMemorySnapshot.meta;
+  let coreMemoryText = clipText(String(coreMemorySnapshot.text || "").trim(), maxChars).trim();
+  let coreMeta = coreMemorySnapshot.meta;
 
   const rollingSummaryText = clipText(
     String(memory.rollingSummary || "").trim(),
     chatMemoryConfig.rollingSummaryMaxChars
   ).trim();
 
-  const coveredUntilMessageId = normalizeMessageId(previousMeta?.coveredUntilMessageId) || 0;
+  let coveredUntilMessageId = normalizeMessageId(coreMeta?.coveredUntilMessageId) || 0;
   const updateEveryNTurns = chatMemoryConfig.coreMemoryUpdateEveryNTurns;
   const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
-  const probeLimit = Math.min(500, thresholdMessages);
+  const probeLimit = thresholdMessages;
+  const deltaMessageLimit = chatMemoryConfig.coreMemoryDeltaBatchMessages;
+  const needsRebuild = Boolean(coreMeta?.needsRebuild);
+  let rebuildTargetMessageId = normalizeMessageId(targetUntilMessageId);
 
-  const probeRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
-    afterMessageId: coveredUntilMessageId,
-    limit: probeLimit,
-  });
+  function buildNextMeta(nextCoveredUntilMessageId, { nextNeedsRebuild } = {}) {
+    const nextMeta = {
+      ...(isPlainObject(coreMeta) ? coreMeta : {}),
+      templateId: CORE_MEMORY_TEMPLATE_ID,
+      coveredUntilMessageId: nextCoveredUntilMessageId,
+      needsRebuild: Boolean(nextNeedsRebuild),
+    };
 
-  if (!probeRows.length) {
-    return { updated: false, reason: "no_new_messages", thresholdMessages };
+    if (!nextMeta.needsRebuild && "dirtySinceMessageId" in nextMeta) {
+      delete nextMeta.dirtySinceMessageId;
+    }
+
+    return nextMeta;
   }
-  if (probeRows.length < thresholdMessages) {
+
+  async function writeProgress(nextCoreMemoryText, nextCoveredUntilMessageId, { nextNeedsRebuild } = {}) {
+    const nextMeta = buildNextMeta(nextCoveredUntilMessageId, { nextNeedsRebuild });
+
+    await chatPresetMemoryModel.writeCoreMemory(normalizedUserId, normalizedPresetId, {
+      coreMemory: {
+        text: nextCoreMemoryText,
+        meta: nextMeta,
+      },
+    });
+
+    coreMeta = nextMeta;
+  }
+
+  if (!needsRebuild) {
+    const probeRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
+      afterMessageId: coveredUntilMessageId,
+      limit: probeLimit,
+    });
+
+    if (!probeRows.length) {
+      return { updated: false, reason: "no_new_messages", thresholdMessages };
+    }
+    if (probeRows.length < thresholdMessages) {
+      return {
+        updated: false,
+        reason: "throttled",
+        pendingMessages: probeRows.length,
+        thresholdMessages,
+      };
+    }
+  }
+
+  async function generateWithRetry(args) {
+    let attempt = 0;
+    while (true) {
+      if (deadline && Date.now() > deadline) {
+        const error = new Error("Memory rebuild timeout");
+        error.code = "CHAT_MEMORY_REBUILD_TIMEOUT";
+        throw error;
+      }
+      try {
+        return await runWithWorkerSlot(() => generateCoreMemory(args));
+      } catch (error) {
+        if (!Number.isFinite(retryMax) || retryMax <= 0 || attempt >= retryMax) throw error;
+        attempt += 1;
+        const backoffMs = Math.min(8000, 400 * 2 ** attempt);
+        await sleep(backoffMs);
+      }
+    }
+  }
+
+  const startedAt = Date.now();
+  let updated = false;
+  let processedBatches = 0;
+  let processedMessages = 0;
+  let usedFallback = false;
+
+  if (needsRebuild) {
+    if (rebuildTargetMessageId === null) {
+      const latestRows = await chatModel.listRecentMessagesByPreset(normalizedUserId, normalizedPresetId, { limit: 1 });
+      const latestMessageId = normalizeMessageId(latestRows[0]?.id);
+      rebuildTargetMessageId = latestMessageId !== null ? latestMessageId : coveredUntilMessageId;
+    }
+    if (coveredUntilMessageId >= rebuildTargetMessageId) {
+      await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
+      return {
+        updated: true,
+        reason: "caught_up",
+        durationMs: Date.now() - startedAt,
+        coreMemoryChars: coreMemoryText.length,
+        coveredUntilMessageId,
+        usedFallback,
+        processedBatches,
+        processedMessages,
+      };
+    }
+
+    while (coveredUntilMessageId < rebuildTargetMessageId) {
+      if (deadline && Date.now() > deadline) {
+        return {
+          updated,
+          reason: "timeout",
+          thresholdMessages,
+          coveredUntilMessageId,
+          processedBatches,
+          processedMessages,
+        };
+      }
+      const rows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
+        afterMessageId: coveredUntilMessageId,
+        limit: deltaMessageLimit,
+      });
+
+      if (!rows.length) {
+        return {
+          updated,
+          reason: "no_new_messages",
+          thresholdMessages,
+          coveredUntilMessageId,
+          processedBatches,
+          processedMessages,
+        };
+      }
+
+      const withinTarget = rows.filter((row) => {
+        const id = normalizeMessageId(row?.id);
+        return id !== null && id <= rebuildTargetMessageId;
+      });
+
+      if (!withinTarget.length) {
+        coveredUntilMessageId = rebuildTargetMessageId;
+        await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
+        updated = true;
+        break;
+      }
+
+      const lastMessageId = normalizeMessageId(withinTarget[withinTarget.length - 1]?.id);
+      const nextCoveredUntilMessageId = lastMessageId !== null ? lastMessageId : coveredUntilMessageId;
+      if (nextCoveredUntilMessageId <= coveredUntilMessageId) {
+        return { updated, reason: "no_progress", thresholdMessages, processedBatches, processedMessages };
+      }
+
+      const deltaMessages = normalizeMessagesForSummary(withinTarget);
+
+      if (!deltaMessages.length) {
+        coveredUntilMessageId = nextCoveredUntilMessageId;
+        await writeProgress(coreMemoryText, coveredUntilMessageId, {
+          nextNeedsRebuild: coveredUntilMessageId < rebuildTargetMessageId,
+        });
+        updated = true;
+        continue;
+      }
+
+      let generation = null;
+      try {
+        generation = await generateWithRetry({
+          providerId,
+          modelId,
+          previousCoreMemoryText: coreMemoryText,
+          rollingSummaryText,
+          deltaMessages,
+          maxChars,
+          timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
+          settings: workerSettings,
+          raw: workerRaw,
+        });
+      } catch (error) {
+        if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
+          logger.warn("chat_memory_core_rebuild_timeout", {
+            userId: normalizedUserId,
+            presetId: normalizedPresetId,
+            providerId,
+            modelId,
+          });
+          return {
+            updated,
+            reason: "timeout",
+            thresholdMessages,
+            coveredUntilMessageId,
+            processedBatches,
+            processedMessages,
+          };
+        }
+        logger.error("chat_memory_core_generate_failed", {
+          error,
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          providerId,
+          modelId,
+        });
+        return { updated, reason: "generate_failed", processedBatches, processedMessages };
+      }
+
+      if (!generation?.valid) {
+        logger.warn("chat_memory_core_invalid_output", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          providerId,
+          modelId,
+          reason: generation?.reason,
+        });
+        return {
+          updated,
+          reason: "invalid_output",
+          invalidReason: generation?.reason,
+          thresholdMessages,
+          processedBatches,
+          processedMessages,
+        };
+      }
+
+      processedBatches += 1;
+      processedMessages += deltaMessages.length;
+
+      let nextText = String(generation.text || "").trim();
+      const batchUsedFallback = !nextText && Boolean(coreMemoryText);
+      if (batchUsedFallback) {
+        usedFallback = true;
+        nextText = coreMemoryText;
+      }
+
+      coreMemoryText = nextText;
+      coveredUntilMessageId = nextCoveredUntilMessageId;
+
+      await writeProgress(coreMemoryText, coveredUntilMessageId, {
+        nextNeedsRebuild: coveredUntilMessageId < rebuildTargetMessageId,
+      });
+      updated = true;
+
+      if (coveredUntilMessageId >= rebuildTargetMessageId) break;
+      if (withinTarget.length < rows.length) break;
+      if (rows.length < deltaMessageLimit) break;
+      await sleep(chatMemoryConfig.backfillCooldownMs);
+    }
+
     return {
-      updated: false,
-      reason: "throttled",
-      pendingMessages: probeRows.length,
-      thresholdMessages,
+      updated,
+      durationMs: Date.now() - startedAt,
+      coreMemoryChars: coreMemoryText.length,
+      coveredUntilMessageId,
+      usedFallback,
+      processedBatches,
+      processedMessages,
     };
   }
 
-  const deltaMessageLimit = Math.min(200, Math.max(thresholdMessages, chatConfig.recentWindowMaxMessages * 2));
   const deltaRows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
     afterMessageId: coveredUntilMessageId,
     limit: deltaMessageLimit,
@@ -327,28 +549,13 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory } = {}) {
     return { updated: false, reason: "no_progress" };
   }
 
-  async function generateWithRetry(args) {
-    let attempt = 0;
-    while (true) {
-      try {
-        return await runWithWorkerSlot(() => generateCoreMemory(args));
-      } catch (error) {
-        if (!Number.isFinite(retryMax) || retryMax <= 0 || attempt >= retryMax) throw error;
-        attempt += 1;
-        const backoffMs = Math.min(8000, 400 * 2 ** attempt);
-        await sleep(backoffMs);
-      }
-    }
-  }
-
-  const startedAt = Date.now();
   let generation = null;
 
   try {
     generation = await generateWithRetry({
       providerId,
       modelId,
-      previousCoreMemoryText,
+      previousCoreMemoryText: coreMemoryText,
       rollingSummaryText,
       deltaMessages,
       maxChars,
@@ -379,28 +586,17 @@ async function updateCoreMemoryOnce({ userId, presetId, needsMemory } = {}) {
   }
 
   let finalText = String(generation.text || "").trim();
-  const usedFallback = !finalText && Boolean(previousCoreMemoryText);
-  if (usedFallback) finalText = previousCoreMemoryText;
+  const singleUsedFallback = !finalText && Boolean(coreMemoryText);
+  if (singleUsedFallback) finalText = coreMemoryText;
 
-  const nextMeta = {
-    ...(isPlainObject(previousMeta) ? previousMeta : {}),
-    templateId: CORE_MEMORY_TEMPLATE_ID,
-    coveredUntilMessageId: nextCoveredUntilMessageId,
-  };
-
-  await chatPresetMemoryModel.writeCoreMemory(normalizedUserId, normalizedPresetId, {
-    coreMemory: {
-      text: finalText,
-      meta: nextMeta,
-    },
-  });
+  await writeProgress(finalText, nextCoveredUntilMessageId, { nextNeedsRebuild: false });
 
   return {
     updated: true,
     durationMs: Date.now() - startedAt,
     coreMemoryChars: finalText.length,
     coveredUntilMessageId: nextCoveredUntilMessageId,
-    usedFallback,
+    usedFallback: singleUsedFallback,
   };
 }
 
@@ -460,6 +656,9 @@ function requestRollingSummaryCatchUp({ userId, presetId } = {}) {
             durationMs: coreResult.durationMs,
             coveredUntilMessageId: coreResult.coveredUntilMessageId,
             usedFallback: coreResult.usedFallback,
+            processedBatches: coreResult.processedBatches,
+            processedMessages: coreResult.processedMessages,
+            reason: coreResult.reason,
           });
         } else if (coreResult) {
           logger.debug("chat_memory_core_skipped", {
@@ -510,6 +709,7 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
       presetId: normalizedPresetId,
       deadline,
       force: true,
+      keepRebuildLock: true,
     });
     if (result?.updated) {
       logger.info("chat_memory_rolling_summary_rebuilt_sync", {
@@ -519,7 +719,60 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
         processedMessages: result.processedMessages,
       });
     }
-    return result;
+
+    let coreResult = null;
+    if (result?.needsMemory) {
+      try {
+        coreResult = await updateCoreMemoryOnce({
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          needsMemory: true,
+          deadline,
+        });
+      } catch (error) {
+        logger.error("chat_memory_core_rebuild_sync_failed", {
+          error,
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          providerId: chatMemoryConfig.workerProviderId,
+          modelId: chatMemoryConfig.workerModelId,
+        });
+      }
+
+      if (coreResult?.updated) {
+        logger.info("chat_memory_core_rebuilt_sync", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          coreMemoryChars: coreResult.coreMemoryChars,
+          durationMs: coreResult.durationMs,
+          coveredUntilMessageId: coreResult.coveredUntilMessageId,
+          usedFallback: coreResult.usedFallback,
+          processedBatches: coreResult.processedBatches,
+          processedMessages: coreResult.processedMessages,
+          reason: coreResult.reason,
+        });
+      } else if (coreResult) {
+        logger.debug("chat_memory_core_rebuild_sync_skipped", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          reason: coreResult.reason,
+          invalidReason: coreResult.invalidReason,
+          pendingMessages: coreResult.pendingMessages,
+          thresholdMessages: coreResult.thresholdMessages,
+          processedBatches: coreResult.processedBatches,
+          processedMessages: coreResult.processedMessages,
+        });
+      }
+    }
+
+    try {
+      await chatPresetMemoryModel.setRebuildRequired(normalizedUserId, normalizedPresetId, false);
+    } catch (unlockError) {
+      logger.error("chat_memory_rebuild_unlock_failed", { error: unlockError, userId: normalizedUserId, presetId: normalizedPresetId });
+      throw unlockError;
+    }
+
+    return { ...result, coreResult };
   });
 }
 
@@ -564,7 +817,7 @@ async function clearPresetCoreMemory({ userId, presetId, sinceMessageId, reason 
 
   const key = buildKey(normalizedUserId, normalizedPresetId);
   return await enqueueKeyTask(key, async () => {
-    const updated = await chatPresetMemoryModel.clearCoreMemory(normalizedUserId, normalizedPresetId);
+    const updated = await chatPresetMemoryModel.clearCoreMemory(normalizedUserId, normalizedPresetId, { sinceMessageId });
     logger.info("chat_memory_core_cleared_for_consistency", {
       userId: normalizedUserId,
       presetId: normalizedPresetId,
