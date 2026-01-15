@@ -760,9 +760,11 @@ const logConfig = {
   debugFullFile: readStringEnv("LOG_DEBUG_FULL_FILE", "debug-full.log"),
   debugRollingFile: readStringEnv("LOG_DEBUG_ROLLING_FILE", "debug-rolling.log"),
   debugGistFile: readStringEnv("LOG_DEBUG_GIST_FILE", "debug-gist.log"),
+  debugCoreFile: readStringEnv("LOG_DEBUG_CORE_FILE", "debug-core.log"),
   debugFullEnabled: readBoolEnv("LOG_DEBUG_FULL_ENABLED", true),
   debugRollingEnabled: readBoolEnv("LOG_DEBUG_ROLLING_ENABLED", true),
   debugGistEnabled: readBoolEnv("LOG_DEBUG_GIST_ENABLED", true),
+  debugCoreEnabled: readBoolEnv("LOG_DEBUG_CORE_ENABLED", true),
 };
 
 const articleConfig = {
