@@ -154,6 +154,7 @@ ${CORE_MEMORY_HEADINGS.join("\n")}
 
   // —— few-shot：示例 user —— //
   const exampleUser = `
+  // —— few-shot：示例 user —— //
   【已有 core memory】
   [长期事实]
   - 世界观：现实世界
@@ -181,6 +182,7 @@ ${CORE_MEMORY_HEADINGS.join("\n")}
 
   // —— few-shot：示例 assistant —— //
   const exampleAssistant = `
+  // —— few-shot：示例 assistant —— //
   [长期事实]
   - 世界观：现实世界
   [User 核心档案]
@@ -253,16 +255,6 @@ async function generateCoreMemory({
 
   const rawText = String(response?.content || "");
   const normalized = normalizeCoreMemoryText(rawText, maxChars);
-
-  logger.debugCore("chat_memory_core_response", {
-    providerId,
-    modelId,
-    rawText,
-    normalized: normalized.text,
-    valid: normalized.valid,
-    reason: normalized.reason,
-    normalizedChars: normalized.text.length,
-  });
 
   return normalized;
 }
