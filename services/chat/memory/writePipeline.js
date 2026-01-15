@@ -274,6 +274,8 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   }
 
   const isDirty = memory.dirtySinceMessageId !== null;
+  let dirtySinceMessageId = isDirty ? normalizeMessageId(memory.dirtySinceMessageId) : null;
+  if (isDirty && dirtySinceMessageId === null) dirtySinceMessageId = 0;
   let afterMessageId = Number(memory.summarizedUntilMessageId) || 0;
   let rollingSummary = String(memory.rollingSummary || "").trim();
   if (afterMessageId <= 0) {
@@ -447,9 +449,13 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
     rollingSummary = nextSummary;
 
     if (isDirty) {
+      if (dirtySinceMessageId !== null && afterMessageId + 1 > dirtySinceMessageId) {
+        dirtySinceMessageId = afterMessageId + 1;
+      }
       await chatPresetMemoryModel.writeRollingSummaryProgress(userId, presetId, {
         rollingSummary,
         summarizedUntilMessageId: afterMessageId,
+        dirtySinceMessageId,
       });
     } else {
       await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
@@ -656,6 +662,13 @@ async function catchUpCoreMemoryOnce({
       coveredUntilMessageId: nextCoveredUntilMessageId,
       needsRebuild: Boolean(nextNeedsRebuild),
     };
+
+    if (nextMeta.needsRebuild) {
+      const dirtySince = normalizeMessageId(nextMeta.dirtySinceMessageId);
+      if (dirtySince !== null && nextCoveredUntilMessageId + 1 > dirtySince) {
+        nextMeta.dirtySinceMessageId = nextCoveredUntilMessageId + 1;
+      }
+    }
 
     if (!nextMeta.needsRebuild && "dirtySinceMessageId" in nextMeta) {
       delete nextMeta.dirtySinceMessageId;
@@ -1585,6 +1598,26 @@ async function markPresetMemoryDirty({ userId, presetId, sinceMessageId, rebuild
   });
 }
 
+async function releasePresetMemoryRebuildLock({ userId, presetId, reason } = {}) {
+  const normalizedUserId = userId;
+  const normalizedPresetId = String(presetId || "").trim();
+  if (!normalizedUserId) throw new Error("Missing userId");
+  if (!normalizedPresetId) throw new Error("Missing presetId");
+
+  const normalizedReason = typeof reason === "string" && reason.trim() ? reason.trim() : null;
+
+  const key = buildKey(normalizedUserId, normalizedPresetId);
+  return await enqueueKeyTask(key, async () => {
+    const updated = await chatPresetMemoryModel.setRebuildRequired(normalizedUserId, normalizedPresetId, false);
+    logger.info("chat_memory_rebuild_lock_released", {
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      reason: normalizedReason,
+    });
+    return updated;
+  });
+}
+
 async function clearPresetCoreMemory({ userId, presetId, sinceMessageId, reason } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -1618,5 +1651,6 @@ module.exports = {
   rebuildRollingSummarySync,
   getPresetMemoryStatus,
   markPresetMemoryDirty,
+  releasePresetMemoryRebuildLock,
   clearPresetCoreMemory,
 };

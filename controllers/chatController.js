@@ -9,6 +9,7 @@ const { buildRecentWindowContext } = require("../services/chat/context/buildRece
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,
+  releasePresetMemoryRebuildLock,
   clearPresetCoreMemory,
   rebuildRollingSummarySync,
   requestMemoryTick,
@@ -333,11 +334,9 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId,
     });
 
     // Avoid a permanent 423 lock if the sync rebuild fails; fall back to "recent_window only".
-    void markPresetMemoryDirty({
+    void releasePresetMemoryRebuildLock({
       userId,
       presetId,
-      sinceMessageId,
-      rebuildRequired: false,
       reason: "rebuild_unlock",
     }).catch((unlockError) => {
       if (unlockError?.code === "42P01") return;

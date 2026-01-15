@@ -176,27 +176,58 @@ const chatPresetMemoryModel = {
     return mapRow(rows[0]) || null;
   },
 
-  async writeRollingSummaryProgress(userId, presetId, { rollingSummary, summarizedUntilMessageId } = {}) {
+  async writeRollingSummaryProgress(userId, presetId, args = {}) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
-    const normalizedSummary = String(rollingSummary || "").trim();
-    const normalizedUntil = normalizeMessageId(summarizedUntilMessageId);
+    const payload = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+    const hasDirtySinceMessageId = Object.prototype.hasOwnProperty.call(payload, "dirtySinceMessageId");
+
+    const normalizedSummary = String(payload.rollingSummary || "").trim();
+    const normalizedUntil = normalizeMessageId(payload.summarizedUntilMessageId);
     if (normalizedUntil === null) throw new Error("summarizedUntilMessageId must be a non-negative integer");
 
+    if (!hasDirtySinceMessageId) {
+      const query = `
+        INSERT INTO chat_preset_memory (user_id, preset_id, rolling_summary, rolling_summary_updated_at, summarized_until_message_id)
+        VALUES ($1, $2, $3, NOW(), $4)
+        ON CONFLICT (user_id, preset_id) DO UPDATE
+        SET rolling_summary = EXCLUDED.rolling_summary,
+            rolling_summary_updated_at = NOW(),
+            summarized_until_message_id = EXCLUDED.summarized_until_message_id,
+            updated_at = NOW()
+        RETURNING id, user_id, preset_id, rolling_summary, rolling_summary_updated_at,
+                  summarized_until_message_id, dirty_since_message_id, rebuild_required,
+                  core_memory, created_at, updated_at
+      `;
+      const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedSummary, normalizedUntil]);
+      return mapRow(rows[0]) || null;
+    }
+
+    const normalizedDirtySince = normalizeMessageId(payload.dirtySinceMessageId);
+    if (normalizedDirtySince === null) throw new Error("dirtySinceMessageId must be a non-negative integer");
+
     const query = `
-      INSERT INTO chat_preset_memory (user_id, preset_id, rolling_summary, rolling_summary_updated_at, summarized_until_message_id)
-      VALUES ($1, $2, $3, NOW(), $4)
+      INSERT INTO chat_preset_memory (
+        user_id,
+        preset_id,
+        rolling_summary,
+        rolling_summary_updated_at,
+        summarized_until_message_id,
+        dirty_since_message_id
+      )
+      VALUES ($1, $2, $3, NOW(), $4, $5)
       ON CONFLICT (user_id, preset_id) DO UPDATE
       SET rolling_summary = EXCLUDED.rolling_summary,
           rolling_summary_updated_at = NOW(),
           summarized_until_message_id = EXCLUDED.summarized_until_message_id,
+          dirty_since_message_id = EXCLUDED.dirty_since_message_id,
           updated_at = NOW()
       RETURNING id, user_id, preset_id, rolling_summary, rolling_summary_updated_at,
                 summarized_until_message_id, dirty_since_message_id, rebuild_required,
                 core_memory, created_at, updated_at
     `;
-    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedSummary, normalizedUntil]);
+    const { rows } = await db.query(query, [userId, normalizedPresetId, normalizedSummary, normalizedUntil, normalizedDirtySince]);
     return mapRow(rows[0]) || null;
   },
 
