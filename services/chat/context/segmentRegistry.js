@@ -29,12 +29,12 @@ const { assertContextState, assertSegmentResult } = require("./validateContextSt
 
 const segmentOrder = [
   "systemPrompt",
+  "timeContext",
   "assistantGistNotice",
   "coreMemory",
   "rollingSummary",
   "gapBridge",
   "recentWindow",
-  "timeContext",
   "currentUser",
 ];
 

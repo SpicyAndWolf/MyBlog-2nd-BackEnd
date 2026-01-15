@@ -120,13 +120,18 @@ function buildTimeContextSegment({ timeContext, recent } = {}) {
   const currentUserContent = readCurrentUserMessageContent({ recent });
   const messages = [];
 
-  if (isTimeQuery(currentUserContent)) {
-    const userTemplate = normalizeTemplate(TIME_CONTEXT_USER_TEMPLATE);
-    const userContent = renderTemplate(userTemplate, vars).trim();
-    if (userContent) {
-      messages.push({ role: "user", content: userContent });
-    }
-  } else if (systemContent) {
+  // 现已调整顺序timecontext到rolling summary后，所以只传system即可，传user反而会导致时间错乱
+  // if (isTimeQuery(currentUserContent)) {
+  //   const userTemplate = normalizeTemplate(TIME_CONTEXT_USER_TEMPLATE);
+  //   const userContent = renderTemplate(userTemplate, vars).trim();
+  //   if (userContent) {
+  //     messages.push({ role: "user", content: userContent });
+  //   }
+  // } else if (systemContent) {
+  //   messages.push({ role: "system", content: systemContent });
+  // }
+
+  if (systemContent) {
     messages.push({ role: "system", content: systemContent });
   }
 
