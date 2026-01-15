@@ -1,5 +1,6 @@
 const { logger } = require("../../logger");
 const chatModel = require("../../models/chatModel");
+const { markPresetMemoryDirty, requestMemoryTick } = require("./memory/writePipeline");
 
 const REQUIRED_ENV_KEYS = ["CHAT_TRASH_RETENTION_DAYS", "CHAT_TRASH_CLEAN_INTERVAL_MS", "CHAT_TRASH_PURGE_BATCH_SIZE"];
 
@@ -28,7 +29,41 @@ async function purgeExpiredTrashedSessions({ now = new Date(), retentionDays, ba
   }
 
   const cutoff = computeCutoffDate({ now, retentionDays });
-  const purged = await chatModel.purgeTrashedSessionsBefore(cutoff, { limit: batchSize });
+  const purgeResult = await chatModel.purgeTrashedSessionsBefore(cutoff, { limit: batchSize });
+  const purged = Number(purgeResult?.purged) || 0;
+  const affectedPresets = Array.isArray(purgeResult?.affectedPresets) ? purgeResult.affectedPresets : [];
+
+  if (purged > 0 && affectedPresets.length) {
+    const deduped = new Map();
+    for (const item of affectedPresets) {
+      const userId = item?.userId;
+      const presetId = String(item?.presetId || "").trim();
+      if (!userId || !presetId) continue;
+      deduped.set(`${userId}:${presetId}`, { userId, presetId });
+    }
+
+    for (const { userId, presetId } of deduped.values()) {
+      try {
+        await markPresetMemoryDirty({
+          userId,
+          presetId,
+          sinceMessageId: 0,
+          rebuildRequired: false,
+          reason: "trash_purge",
+        });
+      } catch (error) {
+        if (error?.code !== "42P01") {
+          logger.error("chat_trash_cleanup_memory_dirty_failed", { error, userId, presetId });
+        }
+      }
+
+      try {
+        requestMemoryTick({ userId, presetId });
+      } catch (error) {
+        logger.error("chat_trash_cleanup_memory_tick_failed", { error, userId, presetId });
+      }
+    }
+  }
 
   return { purged, cutoff, retentionDays, batchSize };
 }

@@ -26,6 +26,8 @@ const memoryTickStateByKey = new Map();
 const CORE_MEMORY_TEMPLATE_ID = "core-memory-v1";
 const CHECKPOINT_KIND_ROLLING_SUMMARY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.rollingSummary;
 const CHECKPOINT_KIND_CORE_MEMORY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.coreMemory;
+let checkpointTableMissingLogged = false;
+let checkpointTableMissing = false;
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -37,12 +39,28 @@ function isCheckpointFeatureEnabled() {
   return Number.isFinite(everyNMessages) && everyNMessages > 0 && Number.isFinite(keepLastN) && keepLastN > 0;
 }
 
-async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, payload } = {}) {
+function warnCheckpointTableMissingOnce({ error, operation } = {}) {
+  if (checkpointTableMissingLogged) return;
+  checkpointTableMissingLogged = true;
+  checkpointTableMissing = true;
+
+  logger.warn("chat_memory_checkpoint_table_missing", {
+    operation,
+    error,
+    requiredSql: "BlogBackEnd/models/tableCreate/chat_preset_memory_checkpoints.sql",
+    table: "chat_preset_memory_checkpoints",
+  });
+}
+
+async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, payload, protectMessageId, reason } = {}) {
   if (!isCheckpointFeatureEnabled()) return false;
 
   const checkpointMessageId = normalizeMessageId(messageId);
   if (checkpointMessageId === null || checkpointMessageId <= 0) return false;
   if (!payload || typeof payload !== "object") return false;
+
+  const normalizedProtect = normalizeMessageId(protectMessageId);
+  if (protectMessageId !== undefined && protectMessageId !== null && normalizedProtect === null) return false;
 
   try {
     await chatPresetMemoryCheckpointModel.upsertCheckpoint(userId, presetId, {
@@ -51,7 +69,10 @@ async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, pa
       payload,
     });
   } catch (error) {
-    if (error?.code === "42P01") return false;
+    if (error?.code === "42P01") {
+      warnCheckpointTableMissingOnce({ error, operation: "write" });
+      return false;
+    }
     logger.error("chat_memory_checkpoint_write_failed", { error, userId, presetId, kind, messageId: checkpointMessageId });
     return false;
   }
@@ -60,16 +81,36 @@ async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, pa
     await chatPresetMemoryCheckpointModel.pruneKeepLastN(userId, presetId, {
       kind,
       keepLastN: chatMemoryConfig.checkpointKeepLastN,
+      protectMessageId: normalizedProtect,
     });
   } catch (error) {
-    if (error?.code === "42P01") return true;
+    if (error?.code === "42P01") {
+      warnCheckpointTableMissingOnce({ error, operation: "prune" });
+      return true;
+    }
     logger.error("chat_memory_checkpoint_prune_failed", {
       error,
       userId,
       presetId,
       kind,
       keepLastN: chatMemoryConfig.checkpointKeepLastN,
+      protectMessageId: normalizedProtect,
     });
+  }
+
+  if (reason) {
+    const base = {
+      userId,
+      presetId,
+      kind,
+      messageId: checkpointMessageId,
+      reason,
+      protectMessageId: normalizedProtect,
+    };
+    if (kind === CHECKPOINT_KIND_ROLLING_SUMMARY) {
+      base.summarizedUntilMessageId = checkpointMessageId;
+    }
+    logger.info("chat_memory_checkpoint_written", base);
   }
 
   return true;
@@ -87,7 +128,10 @@ async function loadCheckpointBestEffort({ userId, presetId, kind, maxMessageId }
       maxMessageId: normalizedMax,
     });
   } catch (error) {
-    if (error?.code === "42P01") return null;
+    if (error?.code === "42P01") {
+      warnCheckpointTableMissingOnce({ error, operation: "load" });
+      return null;
+    }
     logger.error("chat_memory_checkpoint_load_failed", { error, userId, presetId, kind, maxMessageId: normalizedMax });
     return null;
   }
@@ -99,7 +143,10 @@ async function loadLatestCheckpointBestEffort({ userId, presetId, kind } = {}) {
   try {
     return await chatPresetMemoryCheckpointModel.getLatestCheckpoint(userId, presetId, { kind });
   } catch (error) {
-    if (error?.code === "42P01") return null;
+    if (error?.code === "42P01") {
+      warnCheckpointTableMissingOnce({ error, operation: "load_latest" });
+      return null;
+    }
     logger.error("chat_memory_checkpoint_load_failed", { error, userId, presetId, kind });
     return null;
   }
@@ -115,7 +162,10 @@ async function deleteCheckpointsFromMessageIdBestEffort({ userId, presetId, from
       fromMessageId: normalizedFrom,
     });
   } catch (error) {
-    if (error?.code === "42P01") return 0;
+    if (error?.code === "42P01") {
+      warnCheckpointTableMissingOnce({ error, operation: "delete" });
+      return 0;
+    }
     logger.error("chat_memory_checkpoint_delete_failed", { error, userId, presetId, fromMessageId: normalizedFrom, reason });
     return 0;
   }
@@ -202,11 +252,14 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   const retryMax = chatMemoryConfig.writeRetryMax;
 
   const memory = await chatPresetMemoryModel.ensureMemory(userId, presetId);
-  if (!memory) return { updated: false, reason: "memory_missing", needsMemory: false };
+  if (!memory) return { updated: false, reason: "memory_missing", needsMemory: false, summarizedUntilMessageId: 0 };
 
   const target = await computeRollingSummaryTarget({ userId, presetId });
   const targetUntilMessageId = normalizeMessageId(target.targetUntilMessageId) || 0;
   const needsMemory = Boolean(target.hasOlderMessages);
+
+  const coreSnapshotForCheckpointProtect = readCoreMemorySnapshot(memory.coreMemory);
+  const protectMessageId = normalizeMessageId(coreSnapshotForCheckpointProtect.meta?.coveredUntilMessageId);
 
   if (!target.hasOlderMessages || targetUntilMessageId <= 0) {
     if (memory.rebuildRequired || memory.dirtySinceMessageId !== null) {
@@ -215,9 +268,9 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
         summarizedUntilMessageId: 0,
         rebuildRequired: false,
       });
-      return { updated: true, reason: "recent_window_only", targetUntilMessageId, needsMemory };
+      return { updated: true, reason: "recent_window_only", targetUntilMessageId, needsMemory, summarizedUntilMessageId: 0 };
     }
-    return { updated: false, reason: "recent_window_only", targetUntilMessageId, needsMemory };
+    return { updated: false, reason: "recent_window_only", targetUntilMessageId, needsMemory, summarizedUntilMessageId: 0 };
   }
 
   const isDirty = memory.dirtySinceMessageId !== null;
@@ -230,6 +283,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
 
   const checkpointEveryNMessages = Number(chatMemoryConfig.checkpointEveryNMessages);
   let lastRollingSummaryCheckpointId = null;
+  let wroteRollingSummaryCheckpointMessageId = null;
 
   if (isCheckpointFeatureEnabled() && afterMessageId > 0) {
     const latest = await loadLatestCheckpointBestEffort({ userId, presetId, kind: CHECKPOINT_KIND_ROLLING_SUMMARY });
@@ -314,6 +368,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
         pendingMessages: eligibleCount,
         thresholdMessages,
         needsMemory,
+        summarizedUntilMessageId: afterMessageId,
       };
     }
   }
@@ -416,8 +471,13 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
           kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
           messageId: afterMessageId,
           payload: { text: rollingSummary },
+          protectMessageId,
+          reason: "interval",
         });
-        if (wrote) lastRollingSummaryCheckpointId = afterMessageId;
+        if (wrote) {
+          lastRollingSummaryCheckpointId = afterMessageId;
+          wroteRollingSummaryCheckpointMessageId = afterMessageId;
+        }
       }
     }
 
@@ -448,13 +508,37 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
           kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
           messageId: afterMessageId,
           payload: { text: rollingSummary },
+          protectMessageId,
+          reason: "interval",
         });
-        if (wrote) lastRollingSummaryCheckpointId = afterMessageId;
+        if (wrote) {
+          lastRollingSummaryCheckpointId = afterMessageId;
+          wroteRollingSummaryCheckpointMessageId = afterMessageId;
+        }
       }
     }
   }
 
-  return { updated, processedBatches, processedMessages, targetUntilMessageId, needsMemory };
+  if (isCheckpointFeatureEnabled() && rollingSummary && afterMessageId > 0) {
+    const hasFinalAlignedCheckpoint = lastRollingSummaryCheckpointId !== null && lastRollingSummaryCheckpointId === afterMessageId;
+    if (wroteRollingSummaryCheckpointMessageId !== afterMessageId && (updated || !hasFinalAlignedCheckpoint)) {
+      const wrote = await writeCheckpointBestEffort({
+        userId,
+        presetId,
+        kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+        messageId: afterMessageId,
+        payload: { text: rollingSummary },
+        protectMessageId,
+        reason: "tick_end",
+      });
+      if (wrote) {
+        lastRollingSummaryCheckpointId = afterMessageId;
+        wroteRollingSummaryCheckpointMessageId = afterMessageId;
+      }
+    }
+  }
+
+  return { updated, processedBatches, processedMessages, targetUntilMessageId, needsMemory, summarizedUntilMessageId: afterMessageId };
 }
 
 async function catchUpCoreMemoryOnce({
@@ -462,6 +546,7 @@ async function catchUpCoreMemoryOnce({
   presetId,
   needsMemory,
   targetMessageId,
+  boundaryId,
   deadline,
   force = false,
 } = {}) {
@@ -486,6 +571,8 @@ async function catchUpCoreMemoryOnce({
   const memory = await chatPresetMemoryModel.ensureMemory(normalizedUserId, normalizedPresetId);
   if (!memory) return { updated: false, reason: "memory_missing" };
 
+  const strictSyncEnabled = Boolean(chatMemoryConfig.coreMemoryStrictSyncWithRsCheckpointEnabled);
+
   const coreMemorySnapshot = readCoreMemorySnapshot(memory.coreMemory);
   let coreMemoryText = clipText(String(coreMemorySnapshot.text || "").trim(), maxChars).trim();
   let coreMeta = coreMemorySnapshot.meta;
@@ -494,10 +581,23 @@ async function catchUpCoreMemoryOnce({
   let needsRebuild = Boolean(coreMeta?.needsRebuild);
   const coreDirtySinceMessageId = normalizeMessageId(coreMeta?.dirtySinceMessageId);
 
-  let resolvedTargetMessageId = normalizeMessageId(targetMessageId);
-  if (resolvedTargetMessageId === null) {
-    const target = await computeCoreMemoryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
-    resolvedTargetMessageId = normalizeMessageId(target.targetMessageId) || 0;
+  const summarizedUntilMessageId = normalizeMessageId(memory.summarizedUntilMessageId) || 0;
+
+  let resolvedBoundaryId = normalizeMessageId(boundaryId);
+  if (strictSyncEnabled && resolvedBoundaryId === null) {
+    const rollingTarget = await computeRollingSummaryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
+    resolvedBoundaryId = normalizeMessageId(rollingTarget.targetUntilMessageId) || 0;
+  }
+
+  let resolvedTargetMessageId = null;
+  if (strictSyncEnabled) {
+    resolvedTargetMessageId = Math.min(resolvedBoundaryId || 0, summarizedUntilMessageId);
+  } else {
+    resolvedTargetMessageId = normalizeMessageId(targetMessageId);
+    if (resolvedTargetMessageId === null) {
+      const target = await computeCoreMemoryTarget({ userId: normalizedUserId, presetId: normalizedPresetId });
+      resolvedTargetMessageId = normalizeMessageId(target.targetMessageId) || 0;
+    }
   }
 
   if (!needsRebuild && coveredUntilMessageId > resolvedTargetMessageId) {
@@ -506,7 +606,6 @@ async function catchUpCoreMemoryOnce({
     coreMemoryText = "";
   }
 
-  const summarizedUntilMessageId = normalizeMessageId(memory.summarizedUntilMessageId) || 0;
   const rollingSummaryRaw = clipText(
     String(memory.rollingSummary || "").trim(),
     chatMemoryConfig.rollingSummaryMaxChars
@@ -525,19 +624,27 @@ async function catchUpCoreMemoryOnce({
     rollingSummarySkipReason = "summary_beyond_target";
   }
 
+  if (!strictSyncEnabled && !rollingSummarySkipReason) {
+    rollingSummarySkipReason = "strict_sync_disabled";
+  }
+
   let rollingSummaryUsedBootstrap = false;
   let rollingSummaryUsedDelta = false;
+  let rollingSummaryCheckpointMessageIdUsed = null;
 
   function attachSummaryUsage(result) {
     const rollingSummaryUsed = rollingSummaryUsedBootstrap || rollingSummaryUsedDelta;
     return {
       ...result,
+      boundaryId: resolvedBoundaryId,
+      strictSyncEnabled,
       summarizedUntilMessageId,
       rollingSummaryUsable: summaryUsable,
       rollingSummarySafe: summarySafe,
       rollingSummaryUsed,
       rollingSummaryUsedBootstrap,
       rollingSummaryUsedDelta,
+      rollingSummaryCheckpointMessageIdUsed,
       rollingSummarySkipReason: rollingSummaryUsed ? null : rollingSummarySkipReason,
     };
   }
@@ -587,6 +694,82 @@ async function catchUpCoreMemoryOnce({
         await sleep(backoffMs);
       }
     }
+  }
+
+  function readNonNegativeInt(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || !Number.isInteger(number) || number < 0) return 0;
+    return number;
+  }
+
+  function recordStrictSyncAlignedCheckpoint(expectedMessageId) {
+    if (!strictSyncEnabled) return;
+    const baseMeta = isPlainObject(coreMeta) ? coreMeta : {};
+    const strictMeta = isPlainObject(baseMeta.strictSync) ? baseMeta.strictSync : {};
+    coreMeta = {
+      ...baseMeta,
+      strictSync: {
+        ...strictMeta,
+        missingAlignedCheckpointTotal: readNonNegativeInt(strictMeta.missingAlignedCheckpointTotal),
+        missingAlignedCheckpointConsecutive: 0,
+        lastAlignedCheckpointMessageId: expectedMessageId,
+      },
+    };
+  }
+
+  function recordStrictSyncMissingAlignedCheckpoint(expectedMessageId) {
+    if (!strictSyncEnabled) return;
+    const baseMeta = isPlainObject(coreMeta) ? coreMeta : {};
+    const strictMeta = isPlainObject(baseMeta.strictSync) ? baseMeta.strictSync : {};
+    coreMeta = {
+      ...baseMeta,
+      strictSync: {
+        ...strictMeta,
+        missingAlignedCheckpointTotal: readNonNegativeInt(strictMeta.missingAlignedCheckpointTotal) + 1,
+        missingAlignedCheckpointConsecutive: readNonNegativeInt(strictMeta.missingAlignedCheckpointConsecutive) + 1,
+        lastMissingAlignedCheckpointMessageId: expectedMessageId,
+      },
+    };
+  }
+
+  async function loadAlignedRollingSummaryCheckpointText(expectedMessageId) {
+    const expected = normalizeMessageId(expectedMessageId);
+    if (expected === null) return { ok: false, reason: "invalid_message_id" };
+    if (expected <= 0) return { ok: true, messageId: 0, text: "" };
+
+    if (!isCheckpointFeatureEnabled()) {
+      return {
+        ok: false,
+        reason: checkpointTableMissing ? "checkpoint_table_missing" : "checkpoint_feature_disabled",
+      };
+    }
+
+    const checkpoint = await loadCheckpointBestEffort({
+      userId: normalizedUserId,
+      presetId: normalizedPresetId,
+      kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
+      maxMessageId: expected,
+    });
+    const checkpointMessageId = normalizeMessageId(checkpoint?.messageId);
+    if (checkpointMessageId !== expected) {
+      return {
+        ok: false,
+        reason: checkpointTableMissing ? "checkpoint_table_missing" : "missing_aligned_checkpoint",
+        foundMessageId: checkpointMessageId,
+      };
+    }
+
+    const checkpointText = checkpoint && typeof checkpoint.payload?.text === "string" ? checkpoint.payload.text.trim() : "";
+    const clipped = clipText(checkpointText, chatMemoryConfig.rollingSummaryMaxChars).trim();
+    if (!clipped) {
+      return {
+        ok: false,
+        reason: "missing_aligned_checkpoint",
+        foundMessageId: checkpointMessageId,
+      };
+    }
+
+    return { ok: true, messageId: checkpointMessageId, text: clipped };
   }
 
   const startedAt = Date.now();
@@ -652,6 +835,42 @@ async function catchUpCoreMemoryOnce({
     }
   }
 
+  if (strictSyncEnabled) {
+    let strictSyncBlockReason = null;
+    if (memory.rebuildRequired) strictSyncBlockReason = "rolling_summary_rebuild_required";
+    else if (memory.dirtySinceMessageId !== null) strictSyncBlockReason = "rolling_summary_dirty";
+    else if (summarizedUntilMessageId <= 0) {
+      if ((resolvedBoundaryId || 0) <= 0) {
+        return attachSummaryUsage({
+          updated,
+          reason: "recent_window_only",
+          thresholdMessages,
+          targetMessageId: resolvedTargetMessageId,
+        });
+      }
+      strictSyncBlockReason = "rolling_summary_missing_progress";
+    }
+
+    if (strictSyncBlockReason) {
+      rollingSummarySkipReason = strictSyncBlockReason;
+      if (!needsRebuild) {
+        needsRebuild = true;
+        await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: true });
+        updated = true;
+      }
+
+      return attachSummaryUsage({
+        updated,
+        reason: strictSyncBlockReason,
+        thresholdMessages,
+        coveredUntilMessageId,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+  }
+
   if (
     needsRebuild &&
     !coreMemoryText &&
@@ -659,44 +878,60 @@ async function catchUpCoreMemoryOnce({
     summarySafe
   ) {
     let bootstrap = null;
-    try {
-      rollingSummaryUsedBootstrap = true;
-      bootstrap = await generateWithRetry({
-        providerId,
-        modelId,
-        previousCoreMemoryText: "",
-        rollingSummaryText: rollingSummaryRaw,
-        deltaMessages: [],
-        maxChars,
-        timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
-        settings: workerSettings,
-        raw: workerRaw,
-      });
-    } catch (error) {
-      if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
-        logger.warn("chat_memory_core_rebuild_timeout", {
+    let bootstrapRollingSummaryText = strictSyncEnabled ? rollingSummaryRaw : "";
+    let bootstrapCheckpointId = null;
+    if (strictSyncEnabled) {
+      const aligned = await loadAlignedRollingSummaryCheckpointText(summarizedUntilMessageId);
+      if (aligned.ok) {
+        bootstrapRollingSummaryText = aligned.text;
+        bootstrapCheckpointId = aligned.messageId;
+      } else {
+        bootstrapRollingSummaryText = "";
+      }
+    }
+
+    if (bootstrapRollingSummaryText) {
+      try {
+        rollingSummaryUsedBootstrap = true;
+        rollingSummaryCheckpointMessageIdUsed = bootstrapCheckpointId;
+        if (strictSyncEnabled && bootstrapCheckpointId !== null) recordStrictSyncAlignedCheckpoint(bootstrapCheckpointId);
+        bootstrap = await generateWithRetry({
+          providerId,
+          modelId,
+          previousCoreMemoryText: "",
+          rollingSummaryText: bootstrapRollingSummaryText,
+          deltaMessages: [],
+          maxChars,
+          timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
+          settings: workerSettings,
+          raw: workerRaw,
+        });
+      } catch (error) {
+        if (error?.code === "CHAT_MEMORY_REBUILD_TIMEOUT") {
+          logger.warn("chat_memory_core_rebuild_timeout", {
+            userId: normalizedUserId,
+            presetId: normalizedPresetId,
+            providerId,
+            modelId,
+          });
+          return attachSummaryUsage({
+            updated,
+            reason: "timeout",
+            thresholdMessages,
+            coveredUntilMessageId,
+            processedBatches,
+            processedMessages,
+            targetMessageId: resolvedTargetMessageId,
+          });
+        }
+        logger.error("chat_memory_core_generate_failed", {
+          error,
           userId: normalizedUserId,
           presetId: normalizedPresetId,
           providerId,
           modelId,
         });
-        return attachSummaryUsage({
-          updated,
-          reason: "timeout",
-          thresholdMessages,
-          coveredUntilMessageId,
-          processedBatches,
-          processedMessages,
-          targetMessageId: resolvedTargetMessageId,
-        });
       }
-      logger.error("chat_memory_core_generate_failed", {
-        error,
-        userId: normalizedUserId,
-        presetId: normalizedPresetId,
-        providerId,
-        modelId,
-      });
     }
 
     if (bootstrap && bootstrap.valid) {
@@ -805,6 +1040,53 @@ async function catchUpCoreMemoryOnce({
       });
     }
 
+    let rollingSummaryText = "";
+    let rollingSummaryCheckpointIdForBatch = null;
+    if (strictSyncEnabled) {
+      const aligned = await loadAlignedRollingSummaryCheckpointText(coveredUntilMessageId);
+      if (!aligned.ok) {
+        recordStrictSyncMissingAlignedCheckpoint(coveredUntilMessageId);
+        rollingSummarySkipReason = aligned.reason;
+        needsRebuild = true;
+        await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: true });
+        updated = true;
+
+        const strictMeta = isPlainObject(coreMeta?.strictSync) ? coreMeta.strictSync : {};
+        logger.warn("chat_memory_core_missing_aligned_checkpoint", {
+          userId: normalizedUserId,
+          presetId: normalizedPresetId,
+          reason: aligned.reason,
+          coveredUntilMessageId,
+          foundCheckpointMessageId: aligned.foundMessageId,
+          boundaryId: resolvedBoundaryId,
+          summarizedUntilMessageId,
+          targetMessageId: resolvedTargetMessageId,
+          missingAlignedCheckpointTotal: readNonNegativeInt(strictMeta.missingAlignedCheckpointTotal),
+          missingAlignedCheckpointConsecutive: readNonNegativeInt(strictMeta.missingAlignedCheckpointConsecutive),
+        });
+
+        return attachSummaryUsage({
+          updated,
+          reason: aligned.reason,
+          thresholdMessages,
+          coveredUntilMessageId,
+          processedBatches,
+          processedMessages,
+          targetMessageId: resolvedTargetMessageId,
+        });
+      }
+
+      rollingSummaryText = aligned.text;
+      rollingSummaryCheckpointIdForBatch = aligned.messageId;
+      rollingSummaryCheckpointMessageIdUsed = aligned.messageId;
+      rollingSummaryUsedDelta = true;
+      logger.debug("chat_memory_core_checkpoint_used", {
+        userId: normalizedUserId,
+        presetId: normalizedPresetId,
+        messageId: coveredUntilMessageId,
+      });
+    }
+
     const rows = await chatModel.listMessagesByPresetAfter(normalizedUserId, normalizedPresetId, {
       afterMessageId: coveredUntilMessageId,
       limit: deltaMessageLimit,
@@ -856,13 +1138,6 @@ async function catchUpCoreMemoryOnce({
       });
       updated = true;
       continue;
-    }
-
-    const rollingSummaryText = summarySafe && summarizedUntilMessageId <= coveredUntilMessageId ? rollingSummaryRaw : "";
-    if (rollingSummaryText) {
-      rollingSummaryUsedDelta = true;
-    } else if (summarySafe && summarizedUntilMessageId > coveredUntilMessageId && !rollingSummarySkipReason) {
-      rollingSummarySkipReason = "summary_ahead_of_core_covered";
     }
 
     let generation = null;
@@ -944,6 +1219,10 @@ async function catchUpCoreMemoryOnce({
     coreMemoryText = nextText;
     coveredUntilMessageId = nextCoveredUntilMessageId;
 
+    if (strictSyncEnabled) {
+      recordStrictSyncAlignedCheckpoint(rollingSummaryCheckpointIdForBatch);
+    }
+
     await writeProgress(coreMemoryText, coveredUntilMessageId, {
       nextNeedsRebuild: coveredUntilMessageId < resolvedTargetMessageId,
     });
@@ -989,6 +1268,7 @@ async function updateCoreMemoryOnce({
   presetId,
   needsMemory,
   targetMessageId,
+  boundaryId,
   deadline,
   force = false,
 } = {}) {
@@ -997,6 +1277,7 @@ async function updateCoreMemoryOnce({
     presetId,
     needsMemory,
     targetMessageId,
+    boundaryId,
     deadline,
     force,
   });
@@ -1069,6 +1350,7 @@ function requestMemoryTick({ userId, presetId } = {}) {
             presetId: normalizedPresetId,
             needsMemory,
             targetMessageId: coreTargetMessageId,
+            boundaryId: summaryResult?.targetUntilMessageId,
           });
         } catch (error) {
           logger.error("chat_memory_core_update_failed", {
@@ -1088,6 +1370,8 @@ function requestMemoryTick({ userId, presetId } = {}) {
             durationMs: coreResult.durationMs,
             coveredUntilMessageId: coreResult.coveredUntilMessageId,
             targetMessageId: coreResult.targetMessageId,
+            boundaryId: coreResult.boundaryId,
+            strictSyncEnabled: coreResult.strictSyncEnabled,
             usedFallback: coreResult.usedFallback,
             processedBatches: coreResult.processedBatches,
             processedMessages: coreResult.processedMessages,
@@ -1096,6 +1380,7 @@ function requestMemoryTick({ userId, presetId } = {}) {
             rollingSummaryUsed: coreResult.rollingSummaryUsed,
             rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
             rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+            rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
             rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
           });
         } else if (coreResult) {
@@ -1107,10 +1392,13 @@ function requestMemoryTick({ userId, presetId } = {}) {
             pendingMessages: coreResult.pendingMessages,
             thresholdMessages: coreResult.thresholdMessages,
             targetMessageId: coreResult.targetMessageId,
+            boundaryId: coreResult.boundaryId,
+            strictSyncEnabled: coreResult.strictSyncEnabled,
             summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
             rollingSummaryUsed: coreResult.rollingSummaryUsed,
             rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
             rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+            rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
             rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
           });
         }
@@ -1189,6 +1477,7 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           presetId: normalizedPresetId,
           needsMemory: true,
           targetMessageId: coreTargetMessageId,
+          boundaryId: result?.targetUntilMessageId,
           deadline,
         });
       } catch (error) {
@@ -1209,6 +1498,8 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           durationMs: coreResult.durationMs,
           coveredUntilMessageId: coreResult.coveredUntilMessageId,
           targetMessageId: coreResult.targetMessageId,
+          boundaryId: coreResult.boundaryId,
+          strictSyncEnabled: coreResult.strictSyncEnabled,
           usedFallback: coreResult.usedFallback,
           processedBatches: coreResult.processedBatches,
           processedMessages: coreResult.processedMessages,
@@ -1217,6 +1508,7 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           rollingSummaryUsed: coreResult.rollingSummaryUsed,
           rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
           rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+          rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
           rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
         });
       } else if (coreResult) {
@@ -1230,10 +1522,13 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           processedBatches: coreResult.processedBatches,
           processedMessages: coreResult.processedMessages,
           targetMessageId: coreResult.targetMessageId,
+          boundaryId: coreResult.boundaryId,
+          strictSyncEnabled: coreResult.strictSyncEnabled,
           summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
           rollingSummaryUsed: coreResult.rollingSummaryUsed,
           rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
           rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+          rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
           rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
         });
       }

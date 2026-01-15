@@ -136,7 +136,7 @@ const chatPresetMemoryCheckpointModel = {
     return rowCount || 0;
   },
 
-  async pruneKeepLastN(userId, presetId, { kind, keepLastN } = {}) {
+  async pruneKeepLastN(userId, presetId, { kind, keepLastN, protectMessageId } = {}) {
     const normalizedPresetId = normalizePresetId(presetId);
     if (!normalizedPresetId) throw new Error("Preset id is required");
 
@@ -147,30 +147,45 @@ const chatPresetMemoryCheckpointModel = {
     if (!Number.isFinite(normalizedKeep) || !Number.isInteger(normalizedKeep) || normalizedKeep < 0) {
       throw new Error("keepLastN must be a non-negative integer");
     }
+
+    const normalizedProtect = normalizeMessageId(protectMessageId);
+    if (protectMessageId !== undefined && protectMessageId !== null && normalizedProtect === null) {
+      throw new Error("protectMessageId must be a non-negative integer");
+    }
+
     if (normalizedKeep === 0) {
+      if (normalizedProtect === null) {
+        const query = `
+          DELETE FROM chat_preset_memory_checkpoints
+          WHERE user_id = $1 AND preset_id = $2 AND kind = $3
+        `;
+        const { rowCount } = await db.query(query, [userId, normalizedPresetId, normalizedKind]);
+        return rowCount || 0;
+      }
+
       const query = `
         DELETE FROM chat_preset_memory_checkpoints
-        WHERE user_id = $1 AND preset_id = $2 AND kind = $3
+        WHERE user_id = $1 AND preset_id = $2 AND kind = $3 AND message_id <> $4
       `;
-      const { rowCount } = await db.query(query, [userId, normalizedPresetId, normalizedKind]);
+      const { rowCount } = await db.query(query, [userId, normalizedPresetId, normalizedKind, normalizedProtect]);
       return rowCount || 0;
     }
 
     const query = `
       WITH ranked AS (
         SELECT id,
+               message_id,
                ROW_NUMBER() OVER (ORDER BY message_id DESC) AS rn
         FROM chat_preset_memory_checkpoints
         WHERE user_id = $1 AND preset_id = $2 AND kind = $3
       )
       DELETE FROM chat_preset_memory_checkpoints c
       USING ranked r
-      WHERE c.id = r.id AND r.rn > $4
+      WHERE c.id = r.id AND r.rn > $4 AND ($5::BIGINT IS NULL OR c.message_id <> $5)
     `;
-    const { rowCount } = await db.query(query, [userId, normalizedPresetId, normalizedKind, normalizedKeep]);
+    const { rowCount } = await db.query(query, [userId, normalizedPresetId, normalizedKind, normalizedKeep, normalizedProtect]);
     return rowCount || 0;
   },
 };
 
 module.exports = chatPresetMemoryCheckpointModel;
-

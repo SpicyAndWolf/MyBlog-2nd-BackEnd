@@ -728,7 +728,15 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0, reason: "session_trashed" });
+          let sinceMessageId = 0;
+          try {
+            const range = await chatModel.getSessionMessageIdRange(userId, sessionId);
+            if (range?.minMessageId) sinceMessageId = range.minMessageId;
+          } catch (rangeError) {
+            logger.error("chat_session_message_range_failed", withRequestContext(req, { error: rangeError, sessionId, presetId }));
+          }
+
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason: "session_trashed" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -753,7 +761,15 @@ const chatController = {
       const presetId = String(session?.preset_id || session?.presetId || "").trim();
       if (presetId) {
         try {
-          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId: 0, reason: "session_restored" });
+          let sinceMessageId = 0;
+          try {
+            const range = await chatModel.getSessionMessageIdRange(userId, sessionId);
+            if (range?.minMessageId) sinceMessageId = range.minMessageId;
+          } catch (rangeError) {
+            logger.error("chat_session_message_range_failed", withRequestContext(req, { error: rangeError, sessionId, presetId }));
+          }
+
+          await lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId, reason: "session_restored" });
         } catch (error) {
           logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
         }
@@ -772,8 +788,23 @@ const chatController = {
       const sessionId = parseSessionId(req.params.sessionId);
       if (!sessionId) return res.status(400).json({ error: "Invalid sessionId" });
 
-      const deleted = await chatModel.deleteSessionPermanently(userId, sessionId);
-      if (!deleted) return res.status(404).json({ error: "Session not found" });
+      const deletedSession = await chatModel.deleteSessionPermanently(userId, sessionId);
+      if (!deletedSession) return res.status(404).json({ error: "Session not found" });
+
+      const presetId = String(deletedSession?.preset_id || deletedSession?.presetId || "").trim();
+      if (presetId) {
+        try {
+          const sinceMessageId = Number(deletedSession?.firstMessageId) || 0;
+          await lockAndRebuildChatMemoryAsync({
+            userId,
+            presetId,
+            sinceMessageId,
+            reason: "session_deleted_permanent",
+          });
+        } catch (error) {
+          logger.error("chat_memory_rebuild_trigger_failed", withRequestContext(req, { error, presetId, sessionId }));
+        }
+      }
 
       res.status(204).send();
     } catch (error) {

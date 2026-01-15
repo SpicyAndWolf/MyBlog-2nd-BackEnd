@@ -343,6 +343,10 @@ const chatMemoryConfig = (() => {
 
   const coreMemoryEnabled = readRequiredBoolEnv("CHAT_MEMORY_CORE_ENABLED");
 
+  const coreMemoryStrictSyncWithRsCheckpointEnabled = readRequiredBoolEnv(
+    "CHAT_MEMORY_CORE_STRICT_SYNC_WITH_RS_CHECKPOINT_ENABLED"
+  );
+
   const coreMemoryMaxChars = ensurePositiveInt(readRequiredIntEnv("CHAT_MEMORY_CORE_MAX_CHARS"), {
     name: "CHAT_MEMORY_CORE_MAX_CHARS",
   });
@@ -401,6 +405,13 @@ const chatMemoryConfig = (() => {
   const checkpointKeepLastN = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N"), {
     name: "CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N",
   });
+
+  if (coreMemoryStrictSyncWithRsCheckpointEnabled && (checkpointEveryNMessages <= 0 || checkpointKeepLastN <= 0)) {
+    throw new Error(
+      "CHAT_MEMORY_CORE_STRICT_SYNC_WITH_RS_CHECKPOINT_ENABLED requires checkpoint feature enabled: " +
+        "set CHAT_MEMORY_CHECKPOINT_EVERY_N_MESSAGES > 0 and CHAT_MEMORY_CHECKPOINT_KEEP_LAST_N > 0"
+    );
+  }
 
   const writeRetryMax = ensureNonNegativeInt(readRequiredIntEnv("CHAT_MEMORY_WRITE_RETRY_MAX"), {
     name: "CHAT_MEMORY_WRITE_RETRY_MAX",
@@ -547,6 +558,7 @@ const chatMemoryConfig = (() => {
     rollingSummaryMaxChars,
     rollingSummaryUpdateEveryNTurns,
     coreMemoryEnabled,
+    coreMemoryStrictSyncWithRsCheckpointEnabled,
     coreMemoryMaxChars,
     coreMemoryUpdateEveryNTurns,
     coreMemoryDeltaBatchMessages,

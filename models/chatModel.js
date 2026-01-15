@@ -121,13 +121,80 @@ const chatModel = {
     return rows[0] || null;
   },
 
-  async deleteSessionPermanently(userId, sessionId) {
+  async getSessionMessageIdRange(userId, sessionId) {
     const query = `
-      DELETE FROM chat_sessions
-      WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+      SELECT MIN(id) AS min_id,
+             MAX(id) AS max_id
+      FROM chat_messages
+      WHERE session_id = $1 AND user_id = $2
     `;
-    const { rowCount } = await db.query(query, [sessionId, userId]);
-    return rowCount > 0;
+    const { rows } = await db.query(query, [sessionId, userId]);
+    const row = rows[0] || {};
+
+    const min = row.min_id === null || row.min_id === undefined ? null : Number(row.min_id);
+    const max = row.max_id === null || row.max_id === undefined ? null : Number(row.max_id);
+
+    const minId = Number.isFinite(min) ? min : null;
+    const maxId = Number.isFinite(max) ? max : null;
+
+    if (minId === null && maxId === null) return null;
+    return { minMessageId: minId, maxMessageId: maxId };
+  },
+
+  async deleteSessionPermanently(userId, sessionId) {
+    const client = await db.getClient();
+    try {
+      await client.query("BEGIN");
+
+      const sessionQuery = `
+        SELECT id, preset_id
+        FROM chat_sessions
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+        LIMIT 1
+      `;
+      const sessionResult = await client.query(sessionQuery, [sessionId, userId]);
+      const session = sessionResult.rows[0] || null;
+      if (!session) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const rangeQuery = `
+        SELECT MIN(id) AS min_id
+        FROM chat_messages
+        WHERE session_id = $1 AND user_id = $2
+      `;
+      const rangeResult = await client.query(rangeQuery, [sessionId, userId]);
+      const minIdRaw = rangeResult.rows[0]?.min_id;
+      const minId = minIdRaw === null || minIdRaw === undefined ? null : Number(minIdRaw);
+      const firstMessageId = Number.isFinite(minId) ? minId : null;
+
+      const deleteQuery = `
+        DELETE FROM chat_sessions
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+      `;
+      const deleteResult = await client.query(deleteQuery, [sessionId, userId]);
+      if (deleteResult.rowCount <= 0) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await client.query("COMMIT");
+      return {
+        id: session.id,
+        preset_id: session.preset_id,
+        firstMessageId,
+      };
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // ignore
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async purgeTrashedSessionsBefore(cutoff, { limit } = {}) {
@@ -140,18 +207,32 @@ const chatModel = {
     }
 
     const query = `
-      DELETE FROM chat_sessions
-      WHERE id IN (
-        SELECT id
+      WITH candidates AS (
+        SELECT id, user_id, preset_id
         FROM chat_sessions
         WHERE deleted_at IS NOT NULL AND deleted_at < $1
         ORDER BY deleted_at ASC, id ASC
         LIMIT $2
+      ),
+      deleted AS (
+        DELETE FROM chat_sessions s
+        USING candidates c
+        WHERE s.id = c.id
+        RETURNING s.user_id, s.preset_id
       )
+      SELECT user_id, preset_id
+      FROM deleted
     `;
 
-    const { rowCount } = await db.query(query, [cutoff, limit]);
-    return rowCount || 0;
+    const { rows } = await db.query(query, [cutoff, limit]);
+    const affectedPresets = rows
+      .map((row) => ({
+        userId: row.user_id,
+        presetId: row.preset_id,
+      }))
+      .filter((item) => item.userId && item.presetId);
+
+    return { purged: affectedPresets.length, affectedPresets };
   },
 
   async listMessages(userId, sessionId) {
