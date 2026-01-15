@@ -2,14 +2,7 @@ const { createChatCompletion } = require("../../llm/chatCompletions");
 const { logger } = require("../../../logger");
 const { stripCodeFences, clipText } = require("./textUtils");
 
-const CORE_MEMORY_HEADINGS = [
-  "[长期事实/设定]",
-  "[称呼/昵称]",
-  "[边界/雷点]",
-  "[偏好/禁忌]",
-  "[关系阶段]",
-  "[长期待办]",
-];
+const CORE_MEMORY_HEADINGS = ["[长期事实]", "[User 核心档案]", "[Assistant 核心档案]", "[关系当前状态]"];
 
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -26,9 +19,7 @@ const CORE_MEMORY_HEADING_DEFS = CORE_MEMORY_HEADINGS.map((canonical) => {
   const escapedLabel = escapeRegExp(label);
   return {
     canonical,
-    pattern: new RegExp(
-      `^(?:#{1,6}\\s*)?(?:[-*]\\s*)?(?:\\[|【)?\\s*${escapedLabel}\\s*(?:\\]|】)?\\s*(?::|：)?\\s*$`
-    ),
+    pattern: new RegExp(`^(?:#{1,6}\\s*)?(?:[-*]\\s*)?(?:\\[|【)?\\s*${escapedLabel}\\s*(?:\\]|】)?\\s*(?::|：)?\\s*$`),
   };
 });
 
@@ -127,15 +118,34 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
 输出必须严格遵循固定结构与顺序：
 ${CORE_MEMORY_HEADINGS.join("\n")}
 
-绝对约束：
+每个结构的具体内容如下：
+[长期事实](世界观/设定，若无变动保留原样，限3行以内)
+- ...
+[User 核心档案](格式：属性: 值 | 属性: 值)(内容：性格特质、癖好、雷点、说话习惯、心理弱点)
+- ...
+[Assistant 核心档案](格式：属性: 值 | 属性: 值)(内容：性格特质、癖好、雷点、说话习惯、心理弱点)
+- ...
+[关系当前状态](格式：定义 | 阶段 | 默契点)
+- ...
+
+绝对约束 (违反即任务失败)：
 0. 只输出正文，不要解释/前后缀/代码块。
 1. 只保留长期稳定、可复用的信息；短期剧情细节不要写入。
 2. 不确定或有冲突就标注“待澄清”，严禁编造。
-3. 在上一版基础上增量更新，但输出必须严格归一为上述固定结构与顺序；若上一版格式不规范，请纠正。
+3. 在上一版基础上更新，但输出必须严格归一为上述固定结构与顺序；若上一版格式不规范，请纠正。
 4. 一行一条，使用短语化表达，不写长句。
 5. 总长度不超过 ${maxChars} 字符。
 6. 若没有任何可写内容，输出空字符串。
 7. 标题独占一行；标题下每条以 "- " 开头。
+8. **句法压缩（关键）**：
+   - **❌ 错误 (太长)**：Assistant 在面对 User 的调侃时，通常会表现出一种表面冷淡但内心害羞的反应，具体表现为说话结巴。
+   - **✅ 正确 (高密度)**：[反应] 表冷内羞 | 遇调侃即结巴 | 防御机制失效。
+   - **规则**：[长期事实]、[User 核心档案]、[Assistant 核心档案]、[关系当前状态]四大板块，**严禁使用完整句子**，必须使用 **关键词 + 符号( | / >)** 的格式。
+9. **成人内容处理**：
+   - 概括事件本质、双方意愿及关系突破点。
+   - 即使是亲密互动，也请保持“临床记录”般的冷静客观，**切勿**摘录大段感官描写。
+10. 请检查【已有 core memory】中是否存在重复冗余内容，必要时压缩合并同类项。
+
 `.trim();
 
   const user = `
