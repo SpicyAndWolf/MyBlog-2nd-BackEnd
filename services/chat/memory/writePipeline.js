@@ -242,7 +242,14 @@ async function computeCoreMemoryTarget({ userId, presetId } = {}) {
   };
 }
 
-async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = false, keepRebuildLock = false } = {}) {
+async function catchUpRollingSummaryOnce({
+  userId,
+  presetId,
+  deadline,
+  force = false,
+  keepRebuildLock = false,
+  interleaveCoreMemory = false,
+} = {}) {
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
   const maxChars = chatMemoryConfig.rollingSummaryMaxChars;
@@ -259,7 +266,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   const needsMemory = Boolean(target.hasOlderMessages);
 
   const coreSnapshotForCheckpointProtect = readCoreMemorySnapshot(memory.coreMemory);
-  const protectMessageId = normalizeMessageId(coreSnapshotForCheckpointProtect.meta?.coveredUntilMessageId);
+  let protectMessageId = normalizeMessageId(coreSnapshotForCheckpointProtect.meta?.coveredUntilMessageId);
 
   if (!target.hasOlderMessages || targetUntilMessageId <= 0) {
     if (memory.rebuildRequired || memory.dirtySinceMessageId !== null) {
@@ -379,6 +386,84 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
   let processedBatches = 0;
   let processedMessages = 0;
 
+  const shouldInterleaveCoreMemory = Boolean(interleaveCoreMemory) && Boolean(chatMemoryConfig.coreMemoryEnabled);
+  async function maybeInterleaveCoreMemoryUpdate() {
+    if (!shouldInterleaveCoreMemory) return null;
+    if (!needsMemory) return null;
+    if (afterMessageId <= 0) return null;
+    if (!rollingSummary) return null;
+
+    let coreResult = null;
+    try {
+      coreResult = await updateCoreMemoryOnce({
+        userId,
+        presetId,
+        needsMemory,
+        boundaryId: targetUntilMessageId,
+        deadline,
+        force: true,
+        allowDuringRollingSummaryRebuild: true,
+      });
+    } catch (error) {
+      logger.error("chat_memory_core_interleave_failed", {
+        error,
+        userId,
+        presetId,
+        providerId,
+        modelId,
+      });
+      return null;
+    }
+
+    if (coreResult?.updated) {
+      logger.info("chat_memory_core_interleaved", {
+        userId,
+        presetId,
+        coveredUntilMessageId: coreResult.coveredUntilMessageId,
+        targetMessageId: coreResult.targetMessageId,
+        boundaryId: coreResult.boundaryId,
+        strictSyncEnabled: coreResult.strictSyncEnabled,
+        usedFallback: coreResult.usedFallback,
+        processedBatches: coreResult.processedBatches,
+        processedMessages: coreResult.processedMessages,
+        reason: coreResult.reason,
+        summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+        rollingSummaryUsed: coreResult.rollingSummaryUsed,
+        rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+        rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+        rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
+        rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
+      });
+    } else if (coreResult) {
+      logger.debug("chat_memory_core_interleave_skipped", {
+        userId,
+        presetId,
+        reason: coreResult.reason,
+        invalidReason: coreResult.invalidReason,
+        pendingMessages: coreResult.pendingMessages,
+        thresholdMessages: coreResult.thresholdMessages,
+        processedBatches: coreResult.processedBatches,
+        processedMessages: coreResult.processedMessages,
+        targetMessageId: coreResult.targetMessageId,
+        boundaryId: coreResult.boundaryId,
+        strictSyncEnabled: coreResult.strictSyncEnabled,
+        summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
+        rollingSummaryUsed: coreResult.rollingSummaryUsed,
+        rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
+        rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
+        rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
+        rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
+      });
+    }
+
+    const nextProtectMessageId = normalizeMessageId(coreResult?.coveredUntilMessageId);
+    if (nextProtectMessageId !== null && nextProtectMessageId > 0) {
+      protectMessageId = nextProtectMessageId;
+    }
+
+    return coreResult;
+  }
+
   async function generateWithRetry(args) {
     let attempt = 0;
     while (true) {
@@ -467,6 +552,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
 
     if (isCheckpointFeatureEnabled() && rollingSummary) {
       const shouldWriteCheckpoint =
+        shouldInterleaveCoreMemory ||
         lastRollingSummaryCheckpointId === null ||
         afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
 
@@ -487,6 +573,8 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
       }
     }
 
+    await maybeInterleaveCoreMemoryUpdate();
+
     updated = true;
 
     if (afterMessageId >= targetUntilMessageId) break;
@@ -505,6 +593,7 @@ async function catchUpRollingSummaryOnce({ userId, presetId, deadline, force = f
 
     if (isCheckpointFeatureEnabled() && rollingSummary) {
       const shouldWriteCheckpoint =
+        shouldInterleaveCoreMemory ||
         lastRollingSummaryCheckpointId === null ||
         afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
       if (shouldWriteCheckpoint) {
@@ -555,6 +644,7 @@ async function catchUpCoreMemoryOnce({
   boundaryId,
   deadline,
   force = false,
+  allowDuringRollingSummaryRebuild = false,
 } = {}) {
   const normalizedUserId = userId;
   const normalizedPresetId = String(presetId || "").trim();
@@ -588,6 +678,11 @@ async function catchUpCoreMemoryOnce({
   const coreDirtySinceMessageId = normalizeMessageId(coreMeta?.dirtySinceMessageId);
 
   const summarizedUntilMessageId = normalizeMessageId(memory.summarizedUntilMessageId) || 0;
+  const rollingSummaryDirtySinceMessageId = normalizeMessageId(memory.dirtySinceMessageId);
+  const rollingSummaryProgressClean =
+    rollingSummaryDirtySinceMessageId !== null &&
+    summarizedUntilMessageId > 0 &&
+    rollingSummaryDirtySinceMessageId > summarizedUntilMessageId;
 
   let resolvedBoundaryId = normalizeMessageId(boundaryId);
   if (strictSyncEnabled && resolvedBoundaryId === null) {
@@ -616,8 +711,11 @@ async function catchUpCoreMemoryOnce({
     String(memory.rollingSummary || "").trim(),
     chatMemoryConfig.rollingSummaryMaxChars
   ).trim();
+  const allowPartialRollingSummary = Boolean(allowDuringRollingSummaryRebuild) && rollingSummaryProgressClean;
   const summaryUsable =
-    memory.dirtySinceMessageId === null && summarizedUntilMessageId > 0 && Boolean(rollingSummaryRaw);
+    (memory.dirtySinceMessageId === null || allowPartialRollingSummary) &&
+    summarizedUntilMessageId > 0 &&
+    Boolean(rollingSummaryRaw);
   const summarySafe = summaryUsable && summarizedUntilMessageId <= resolvedTargetMessageId;
 
   let rollingSummarySkipReason = null;
@@ -850,8 +948,8 @@ async function catchUpCoreMemoryOnce({
 
   if (strictSyncEnabled) {
     let strictSyncBlockReason = null;
-    if (memory.rebuildRequired) strictSyncBlockReason = "rolling_summary_rebuild_required";
-    else if (memory.dirtySinceMessageId !== null) strictSyncBlockReason = "rolling_summary_dirty";
+    if (memory.rebuildRequired && !allowDuringRollingSummaryRebuild) strictSyncBlockReason = "rolling_summary_rebuild_required";
+    else if (memory.dirtySinceMessageId !== null && !allowPartialRollingSummary) strictSyncBlockReason = "rolling_summary_dirty";
     else if (summarizedUntilMessageId <= 0) {
       if ((resolvedBoundaryId || 0) <= 0) {
         return attachSummaryUsage({
@@ -1284,6 +1382,7 @@ async function updateCoreMemoryOnce({
   boundaryId,
   deadline,
   force = false,
+  allowDuringRollingSummaryRebuild = false,
 } = {}) {
   return await catchUpCoreMemoryOnce({
     userId,
@@ -1293,6 +1392,7 @@ async function updateCoreMemoryOnce({
     boundaryId,
     deadline,
     force,
+    allowDuringRollingSummaryRebuild,
   });
 }
 
@@ -1457,6 +1557,7 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
       deadline,
       force: true,
       keepRebuildLock: true,
+      interleaveCoreMemory: true,
     });
     if (result?.updated) {
       logger.info("chat_memory_rolling_summary_rebuilt_sync", {
@@ -1492,6 +1593,8 @@ async function rebuildRollingSummarySync({ userId, presetId } = {}) {
           targetMessageId: coreTargetMessageId,
           boundaryId: result?.targetUntilMessageId,
           deadline,
+          force: true,
+          allowDuringRollingSummaryRebuild: true,
         });
       } catch (error) {
         logger.error("chat_memory_core_rebuild_sync_failed", {
