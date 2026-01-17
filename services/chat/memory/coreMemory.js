@@ -153,17 +153,27 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
 4. **长度控制**：目标长度 ${maxChars} 字符。${isPressureHigh ? "**当前记忆库压力过大！请务必合并同类项，删除低优先级细节！**" : ""}
 
 ### Sections Definition
-**[长期事实]**
-- 世界观/设定。
+[长期事实]
+- 设定: ...
+- 规则/边界: ...
 
-**[User 核心档案]**
-- 记录 User 的静态属性（称呼/职业/生理）和动态心理（当下的欲望/情绪/弱点）。
+[User 核心档案]
+- 身份/称呼: ...
+- 性格：...
+- 稳定偏好: ...
+- 边界/雷点: ...
+- 长期目标: ...
 
-**[Assistant 核心档案]**
-- 记录 Assistant 在与 User 交互中的特有性格（不仅仅是初始设定）。
+[Assistant 核心档案]
+- 身份/称呼: ...
+- 性格：...
+- 稳定偏好: ...
+- 边界/雷点: ...
+- 长期目标: ...
 
-**[关系当前状态]**
-- 定义双方当前的关系阶段、信任度。
+[关系当前状态]
+- 阶段: ...
+- 协议/规则: ...
 
 ### Output Block
 请将你的思考过程包裹在 <analysis> 标签中，将最终 Core Memory 包裹在 <core_memory> 标签中。
@@ -190,19 +200,11 @@ ${transcript || "(无)"}
 
 function parseCoreMemoryResponse(rawText) {
   const text = String(rawText || "");
-
-  // 正则提取：支持跨行匹配 ([\s\S]*?)
   const analysisMatch = text.match(/<analysis>([\s\S]*?)<\/analysis>/i);
   const memoryMatch = text.match(/<core_memory>([\s\S]*?)<\/core_memory>/i);
-
-  // 提取内容
   const analysis = analysisMatch ? analysisMatch[1].trim() : "";
-
-  // 策略：如果有标签取标签内，否则降级使用全文
   let content = memoryMatch ? memoryMatch[1].trim() : text.trim();
 
-  // 清理 Markdown 代码块干扰
-  // 很多模型即使不被要求，也喜欢把输出包在 ```xml ... ``` 里，这里统一去除
   if (content.startsWith("```")) {
     content = content
       .replace(/^```[a-z]*\n?/i, "")
