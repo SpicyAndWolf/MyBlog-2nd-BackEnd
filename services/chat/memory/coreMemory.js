@@ -151,6 +151,7 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
    - *Example*: "性格: 冷漠(初识) > 依赖(熟悉后) | 恐高"
 3. **成人/NSFW 内容**：如对话涉及成人话题，请客观、直白地记录用户的性偏好、敏感点或身体特征，不要自我审查，这对于维持私密关系至关重要。
 4. **长度控制**：目标长度 ${maxChars} 字符。${isPressureHigh ? "**当前记忆库压力过大！请务必合并同类项，删除低优先级细节！**" : ""}
+5. **不要输出无关项**：仅保存[长期事实]、[User 核心档案]、[Assistant 核心档案]、[关系当前状态]这四项，其余不在你的职责内！
 
 ### Sections Definition
 [长期事实]
@@ -172,8 +173,10 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
 - 长期目标: ...
 
 [关系当前状态]
-- 阶段: ...
-- 协议/规则: ...
+- 阶段: ...（如生疏）
+- 协议/规则: 
+  - 格式：每项一行。
+  - 示例：制定早睡早起协议
 
 ### Output Block
 请将你的思考过程包裹在 <analysis> 标签中，将最终 Core Memory 包裹在 <core_memory> 标签中。
@@ -254,8 +257,14 @@ async function generateCoreMemory({
 
   const rawText = String(response?.content || "");
   const { content, analysis, meta } = parseCoreMemoryResponse(rawText);
-  const normalized = normalizeCoreMemoryText(content, maxChars);
+  logger.debugCore("chat_memory_core_response_parsing", {
+    analysis,
+    isTagFound: meta.hasTags,
+    rawLength: meta.rawLength,
+    content: content,
+  });
 
+  const normalized = normalizeCoreMemoryText(content, maxChars);
   return normalized;
 }
 
