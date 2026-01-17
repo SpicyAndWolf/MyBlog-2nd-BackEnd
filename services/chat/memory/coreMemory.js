@@ -152,11 +152,11 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
 3. **成人/NSFW 内容**：如对话涉及成人话题，请客观、直白地记录用户的性偏好、敏感点或身体特征，不要自我审查，这对于维持私密关系至关重要。
 4. **长度控制**：目标长度 ${maxChars} 字符。${isPressureHigh ? "**当前记忆库压力过大！请务必合并同类项，删除低优先级细节！**" : ""}
 5. **不要输出无关项**：仅保存[长期事实]、[User 核心档案]、[Assistant 核心档案]、[关系当前状态]这四项，其余不在你的职责内！
+6. **规则遵守**：确保[长期事实]、[关系当前状态]长度符合约定的30字和50字。
 
 ### Sections Definition
 [长期事实]（30字以内）
-- 设定: ...
-- 规则/边界: ...
+- 世界设定: ...
 
 [User 核心档案]
 - 身份/称呼: ...
@@ -170,8 +170,9 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
 - 稳定偏好: ...
 - 边界/雷点: ...
 
-[关系当前状态]
+[关系当前状态]（50字以内）
 - 阶段: ...（如生疏）
+- 互动模式：...
 
 
 ### Output Block
