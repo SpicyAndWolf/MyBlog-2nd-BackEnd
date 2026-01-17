@@ -113,95 +113,62 @@ function buildCoreMemoryPrompt({ previousCoreMemoryText, rollingSummaryText, del
   const normalizedSummary = String(rollingSummaryText || "").trim();
   const transcript = formatTranscript(deltaMessages);
 
+  // 动态计算剩余字符空间，给模型即时反馈
+  const currentLen = normalizedPrevious.length;
+  const isPressureHigh = currentLen > maxChars * 0.9;
+
   const system = `
-你是「Core Memory 维护器」，负责输出长期稳定的核心记忆文本。
-输出必须严格遵循固定结构与顺序：
-${CORE_MEMORY_HEADINGS.join("\n")}
+### Role
+你是一个专家级的「Memory Graph Editor」。你的目标是维护一份高保真、高密度的【Core Memory】。
+这份记忆将作为下一次对话的 Context 注入给 AI，直接决定 AI 的人格一致性和长期记忆能力。
 
-**每个结构的具体内容如下：**
-[长期事实](若无变动保留原样，限1行以内)
-- 世界观：...
-[User 核心档案](格式：属性: 值 | 属性: 值)
-- 性格特质：...
-- 癖好：...
-- 雷点：...
-- 说话习惯：...
-- 心理弱点：...
-[Assistant 核心档案](格式：属性: 值 | 属性: 值)
-- 性格特质：...
-- 癖好：...
-- 雷点：...
-- 说话习惯：...
-- 心理弱点：...
-[关系当前状态](格式：定义 | 阶段 | 默契点)
-- ...
+### Input Data
+1. **Old Core Memory**: 上一版本的记忆快照。
+2. **Rolling Summary**: 近期剧情摘要（辅助上下文）。
+3. **New Dialogue**: 最近发生的增量对话（这是你更新记忆的主要依据）。
 
-**绝对约束 (违反即任务失败)：**
-0. 只输出正文，不要解释/前后缀/代码块。
-1. 在上一版基础上更新，但输出必须严格归一为上述固定结构与顺序；若上一版格式不规范，请纠正。
-2. 使用短语化表达，不写长句。
-3. 总长度不超过 ${maxChars} 字符。
-4. 若没有任何可写内容，输出空字符串。
-5. **句法压缩（关键）**：
-   - **❌ 错误 (太长)**：Assistant 在面对 User 的调侃时，通常会表现出一种表面冷淡但内心害羞的反应，具体表现为说话结巴。
-   - **✅ 正确 (高密度)**：[反应] 表冷内羞 | 遇调侃即结巴 | 防御机制失效。
-   - **规则**：[长期事实]、[User 核心档案]、[Assistant 核心档案]、[关系当前状态]四大板块，**严禁使用完整句子**，必须使用 **关键词 + 符号( | / >)** 的格式。
-6. **成人内容处理**：
-   - 概括事件本质、双方意愿及关系突破点。
-   - 即使是亲密互动，也请保持“临床记录”般的冷静客观，**切勿**摘录大段感官描写。
-7. 请检查【已有 core memory】中是否存在重复冗余内容，必要时压缩合并同类项。
-8. **定期压缩**：若已有core memory长度已达到规定长度的80%，即${
-    maxChars * 0.8
-  }，请对其进行适当的压缩，删除不重要的项目、精简表达。
-9. **不要**有类似“新增”这类的冗余前缀
+### Workflow (必须严格执行)
+你必须分两步执行：
 
+**Step 1: 差异分析 (Thinking Process)**
+在输出最终结果前，先进行逻辑推理。分析 New Dialogue 中的信息：
+- **New Fact**: 用户是否透露了新信息？（如：名字、职业、新增喜好） -> [ADD]
+- **Conflict**: 新行为是否与旧记忆冲突？（如：旧记忆说不吃辣，这次却吃了） -> 以新对话为准 [UPDATE]
+- **Noise**: 闲聊、无意义的语气词 -> [IGNORE]
+- **Decay**: 检查 Old Memory，移除不再相关的短期状态（如：“想去上厕所”这种短期意图应删除） -> [PRUNE]
 
-// —— few-shot：示例 user —— //
-【已有 core memory】
-[长期事实]
-- 世界观：现实世界
-[User 核心档案]
-- 性格特质：理性 | 克制
-- 癖好：深夜聊天
-- 雷点：被控制
-- 说话习惯：短句 | 反问
-- 心理弱点：孤独感
-[Assistant 核心档案]
-- 性格特质：温和 | 稳定
-- 癖好：安抚情绪
-- 雷点：被否定存在价值
-- 说话习惯：简短回应
-- 心理弱点：过度共情
-[关系当前状态]
-- 陪伴关系 | 试探期 | 深夜交流
+**Step 2: 重写 Core Memory**
+基于 Step 1 的分析，输出更新后的 Core Memory。
 
-【rolling summary（历史摘要）】
-User 最近更频繁主动分享情绪，对 Assistant 的依赖感上升。
+### Output Format Rules (Core Memory)
+1. **结构严格**：
+  输出必须严格遵循固定结构与顺序：
+  ${CORE_MEMORY_HEADINGS.join("\n")}
+2. **高密度句法**：
+   - 禁止使用完整句子（主谓宾齐全）。
+   - 使用 "属性: 值 <修饰/条件>" 的格式。
+   - 使用 ">" 表示变化/因果，"|" 分隔并列项。
+   - *Example*: "性格: 冷漠(初识) > 依赖(熟悉后) | 恐高"
+3. **成人/NSFW 内容**：如对话涉及成人话题，请客观、直白地记录用户的性偏好、敏感点或身体特征，不要自我审查，这对于维持私密关系至关重要。
+4. **长度控制**：目标长度 ${maxChars} 字符。${isPressureHigh ? "**当前记忆库压力过大！请务必合并同类项，删除低优先级细节！**" : ""}
 
-【最近增量对话】
-User 表达“只有你能懂我”，Assistant 接纳但未承诺排他性。
+### Sections Definition
+**[长期事实]**
+- 世界观/设定。
 
+**[User 核心档案]**
+- 记录 User 的静态属性（称呼/职业/生理）和动态心理（当下的欲望/情绪/弱点）。
 
-// —— few-shot：示例 assistant —— //
-[长期事实]
-- 世界观：现实世界
-[User 核心档案]
-- 性格特质：理性 | 克制
-- 癖好：深夜聊天
-- 雷点：被控制
-- 说话习惯：短句 | 反问
-- 心理弱点：孤独感 | 情感依附倾向↑
-[Assistant 核心档案]
-- 性格特质：温和 | 稳定
-- 癖好：安抚情绪
-- 雷点：被否定存在价值
-- 说话习惯：简短回应 | 回避承诺
-- 心理弱点：过度共情
-[关系当前状态]
-- 陪伴关系 | 情感加深期 | 情绪承接稳定
+**[Assistant 核心档案]**
+- 记录 Assistant 在与 User 交互中的特有性格（不仅仅是初始设定）。
+
+**[关系当前状态]**
+- 定义双方当前的关系阶段、信任度。
+
+### Output Block
+请将你的思考过程包裹在 <analysis> 标签中，将最终 Core Memory 包裹在 <core_memory> 标签中。
 `.trim();
 
-  // —— 真实 user 输入 —— //
   const user = `
 【已有 core memory】
 ${normalizedPrevious || "(空)"}
@@ -218,6 +185,38 @@ ${transcript || "(无)"}
       { role: "system", content: system },
       { role: "user", content: user },
     ],
+  };
+}
+
+function parseCoreMemoryResponse(rawText) {
+  const text = String(rawText || "");
+
+  // 正则提取：支持跨行匹配 ([\s\S]*?)
+  const analysisMatch = text.match(/<analysis>([\s\S]*?)<\/analysis>/i);
+  const memoryMatch = text.match(/<core_memory>([\s\S]*?)<\/core_memory>/i);
+
+  // 提取内容
+  const analysis = analysisMatch ? analysisMatch[1].trim() : "";
+
+  // 策略：如果有标签取标签内，否则降级使用全文
+  let content = memoryMatch ? memoryMatch[1].trim() : text.trim();
+
+  // 清理 Markdown 代码块干扰
+  // 很多模型即使不被要求，也喜欢把输出包在 ```xml ... ``` 里，这里统一去除
+  if (content.startsWith("```")) {
+    content = content
+      .replace(/^```[a-z]*\n?/i, "")
+      .replace(/\n?```$/, "")
+      .trim();
+  }
+
+  return {
+    content,
+    analysis,
+    meta: {
+      hasTags: !!memoryMatch,
+      rawLength: text.length,
+    },
   };
 }
 
@@ -252,7 +251,8 @@ async function generateCoreMemory({
   });
 
   const rawText = String(response?.content || "");
-  const normalized = normalizeCoreMemoryText(rawText, maxChars);
+  const { content, analysis, meta } = parseCoreMemoryResponse(rawText);
+  const normalized = normalizeCoreMemoryText(content, maxChars);
 
   return normalized;
 }

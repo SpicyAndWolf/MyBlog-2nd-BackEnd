@@ -1,31 +1,4 @@
-const { createChatCompletion } = require("../../llm/chatCompletions");
-const { logger } = require("../../../logger");
-const { stripCodeFences, clipText } = require("./textUtils");
-
-function normalizeText(value) {
-  return String(value || "");
-}
-
-function isSafetyPolicyBlockedError(error) {
-  const message = String(error?.message || "");
-  return message.startsWith("Blocked by safety policy:");
-}
-
-function formatTranscript(messages) {
-  const list = Array.isArray(messages) ? messages : [];
-  const lines = [];
-
-  for (const message of list) {
-    const role = String(message?.role || "").trim();
-    if (!role) continue;
-    const content = normalizeText(message?.content).trim();
-    if (!content) continue;
-    lines.push(`${role}: ${content}`);
-  }
-
-  return lines.join("\n");
-}
-
+```javascript
 function buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars }) {
   const normalizedPrevious = String(previousSummary || "").trim();
   const transcript = formatTranscript(newMessages);
@@ -123,53 +96,4 @@ ${transcript || "(无)"}
     ],
   };
 }
-
-async function generateRollingSummary({
-  providerId,
-  modelId,
-  previousSummary,
-  newMessages,
-  maxChars,
-  timeoutMs,
-  settings,
-  raw,
-} = {}) {
-  const prompt = buildRollingSummaryPrompt({ previousSummary, newMessages, maxChars });
-  logger.debugRolling("chat_memory_rolling_summary_request", {
-    providerId,
-    modelId,
-    messages: prompt.messages,
-  });
-
-  let content = "";
-  try {
-    const response = await createChatCompletion({
-      providerId,
-      model: modelId,
-      messages: prompt.messages,
-      timeoutMs,
-      settings,
-      rawBody: raw?.openaiCompatibleBody,
-      rawConfig: raw?.googleGenAiConfig,
-    });
-    content = response?.content || "";
-  } catch (error) {
-    if (isSafetyPolicyBlockedError(error)) {
-      logger.warn("chat_memory_rolling_summary_blocked_by_safety_policy", {
-        providerId,
-        modelId,
-        message: String(error?.message || ""),
-      });
-      return clipText(String(previousSummary || "").trim(), maxChars).trim();
-    }
-    throw error;
-  }
-
-  const cleaned = stripCodeFences(content);
-  const clipped = clipText(cleaned, maxChars);
-  return clipped.trim();
-}
-
-module.exports = {
-  generateRollingSummary,
-};
+```
