@@ -9,7 +9,6 @@ const { buildRecentWindowContext } = require("../services/chat/context/buildRece
 const {
   getPresetMemoryStatus,
   markPresetMemoryDirty,
-  releasePresetMemoryRebuildLock,
   clearPresetCoreMemory,
   rebuildRollingSummarySync,
   requestMemoryTick,
@@ -332,15 +331,11 @@ async function lockAndRebuildChatMemoryAsync({ userId, presetId, sinceMessageId,
       providerId: chatMemoryConfig.workerProviderId,
       modelId: chatMemoryConfig.workerModelId,
     });
-
-    // Avoid a permanent 423 lock if the sync rebuild fails; fall back to "recent_window only".
-    void releasePresetMemoryRebuildLock({
+    logger.error("chat_memory_rebuild_hard_lock_retained", {
       userId,
       presetId,
-      reason: "rebuild_unlock",
-    }).catch((unlockError) => {
-      if (unlockError?.code === "42P01") return;
-      logger.error("chat_memory_rebuild_unlock_failed", { error: unlockError, userId, presetId });
+      reason: "hard_no_fallback_unlock_enabled",
+      note: "rebuildRequired lock is intentionally retained; chat remains blocked with 423 until rebuild succeeds or is manually released",
     });
   });
 }
