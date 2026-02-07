@@ -2,21 +2,33 @@ const chatModel = require("@models/chatModel");
 const chatPresetMemoryModel = require("@models/chatPresetMemoryModel");
 const { chatMemoryConfig } = require("../../../../../config");
 const { logger } = require("../../../../../logger");
-const { generateRollingSummary } = require("../../rollingSummary");
 const { computeRollingSummaryTarget } = require("../targets");
 const {
-  CHECKPOINT_KIND_ROLLING_SUMMARY,
-  isCheckpointFeatureEnabled,
-  writeCheckpointBestEffort,
-  loadCheckpointBestEffort,
-  loadLatestCheckpointBestEffort,
-} = require("../checkpoints");
-const {
   sleep,
-  normalizeMessagesForSummary,
   normalizeMessageId,
   readCoreMemorySnapshot,
+  normalizeMessagesForSummary,
 } = require("../utils");
+const {
+  computeThresholdMessages,
+  countEligibleMessages,
+  shouldInterleaveCoreMemory,
+} = require("./policy");
+const { generateRollingSummaryWithRetry } = require("./generation");
+const {
+  clearRollingSummaryForRecentWindowOnly,
+  writeRollingSummaryProgress,
+  writeRollingSummarySnapshotProgress,
+  writeRollingSummaryWithRebuildLock,
+} = require("./storage");
+const {
+  CHECKPOINT_KIND_ROLLING_SUMMARY,
+  resolveLastRollingSummaryCheckpointId,
+  restoreRollingSummaryFromCheckpoint,
+  writeRollingSummaryCheckpointIfNeeded,
+  writeFinalRollingSummaryCheckpointIfNeeded,
+} = require("./checkpointRestore");
+const { maybeInterleaveCoreMemoryUpdate } = require("./interleaveCore");
 
 async function catchUpRollingSummaryOnce({
   userId,
@@ -68,11 +80,7 @@ async function catchUpRollingSummaryOnce({
 
   if (!target.hasOlderMessages || targetUntilMessageId <= 0) {
     if (memory.rebuildRequired || memory.dirtySinceMessageId !== null) {
-      await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
-        rollingSummary: "",
-        summarizedUntilMessageId: 0,
-        rebuildRequired: false,
-      });
+      await clearRollingSummaryForRecentWindowOnly({ userId, presetId });
       return { updated: true, reason: "recent_window_only", targetUntilMessageId, needsMemory, summarizedUntilMessageId: 0 };
     }
     return { updated: false, reason: "recent_window_only", targetUntilMessageId, needsMemory, summarizedUntilMessageId: 0 };
@@ -89,60 +97,45 @@ async function catchUpRollingSummaryOnce({
   }
 
   const checkpointEveryNMessages = Number(chatMemoryConfig.checkpointEveryNMessages);
-  let lastRollingSummaryCheckpointId = null;
+  let lastRollingSummaryCheckpointId = await resolveLastRollingSummaryCheckpointId({
+    userId,
+    presetId,
+    afterMessageId,
+  });
   let wroteRollingSummaryCheckpointMessageId = null;
 
-  if (isCheckpointFeatureEnabled() && afterMessageId > 0) {
-    const latest = await loadLatestCheckpointBestEffort({ userId, presetId, kind: CHECKPOINT_KIND_ROLLING_SUMMARY });
-    const latestMessageId = normalizeMessageId(latest?.messageId);
-    if (latestMessageId !== null && latestMessageId <= afterMessageId) {
-      lastRollingSummaryCheckpointId = latestMessageId;
+  const restored = await restoreRollingSummaryFromCheckpoint({
+    userId,
+    presetId,
+    isDirty,
+    afterMessageId,
+    rollingSummary,
+    dirtySinceMessageId: memory.dirtySinceMessageId,
+    targetUntilMessageId,
+  });
+  if (restored.restored) {
+    afterMessageId = restored.afterMessageId;
+    rollingSummary = restored.rollingSummary;
+    lastRollingSummaryCheckpointId = restored.checkpointMessageId;
+
+    try {
+      await writeRollingSummarySnapshotProgress({
+        userId,
+        presetId,
+        rollingSummary,
+        summarizedUntilMessageId: afterMessageId,
+      });
+    } catch (error) {
+      if (error?.code !== "42P01") throw error;
     }
-  }
 
-  if (
-    isDirty &&
-    isCheckpointFeatureEnabled() &&
-    afterMessageId === 0 &&
-    !rollingSummary &&
-    normalizeMessageId(memory.dirtySinceMessageId) !== null
-  ) {
-    const rollbackMessageId = Math.max(0, Number(memory.dirtySinceMessageId) - 1);
-    const maxCheckpointMessageId = Math.min(targetUntilMessageId, rollbackMessageId);
-
-    const checkpoint = await loadCheckpointBestEffort({
+    logger.info("chat_memory_checkpoint_restored", {
       userId,
       presetId,
       kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
-      maxMessageId: maxCheckpointMessageId,
+      messageId: restored.checkpointMessageId,
+      dirtySinceMessageId: memory.dirtySinceMessageId,
     });
-
-    const checkpointText =
-      checkpoint && typeof checkpoint.payload?.text === "string" ? checkpoint.payload.text.trim() : "";
-    const checkpointMessageId = normalizeMessageId(checkpoint?.messageId);
-
-    if (checkpointMessageId !== null && checkpointMessageId > 0 && checkpointText) {
-      afterMessageId = checkpointMessageId;
-      rollingSummary = checkpointText;
-      lastRollingSummaryCheckpointId = checkpointMessageId;
-
-      try {
-        await chatPresetMemoryModel.writeRollingSummaryProgress(userId, presetId, {
-          rollingSummary,
-          summarizedUntilMessageId: afterMessageId,
-        });
-      } catch (error) {
-        if (error?.code !== "42P01") throw error;
-      }
-
-      logger.info("chat_memory_checkpoint_restored", {
-        userId,
-        presetId,
-        kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
-        messageId: checkpointMessageId,
-        dirtySinceMessageId: memory.dirtySinceMessageId,
-      });
-    }
   }
 
   if (!isDirty && afterMessageId > targetUntilMessageId) {
@@ -151,8 +144,7 @@ async function catchUpRollingSummaryOnce({
   }
 
   if (!force && !isDirty && afterMessageId < targetUntilMessageId) {
-    const updateEveryNTurns = chatMemoryConfig.rollingSummaryUpdateEveryNTurns;
-    const thresholdMessages = Math.max(1, Math.floor(updateEveryNTurns)) * 2;
+    const thresholdMessages = computeThresholdMessages(chatMemoryConfig.rollingSummaryUpdateEveryNTurns);
     const probeLimit = thresholdMessages;
 
     const probeRows = await chatModel.listMessagesByPresetAfter(userId, presetId, {
@@ -160,12 +152,7 @@ async function catchUpRollingSummaryOnce({
       limit: probeLimit,
     });
 
-    let eligibleCount = 0;
-    for (const row of probeRows) {
-      const id = normalizeMessageId(row?.id);
-      if (id === null) continue;
-      if (id <= targetUntilMessageId) eligibleCount += 1;
-    }
+    const eligibleCount = countEligibleMessages(probeRows, targetUntilMessageId, normalizeMessageId);
 
     if (eligibleCount < probeLimit) {
       return {
@@ -184,106 +171,29 @@ async function catchUpRollingSummaryOnce({
   let processedBatches = 0;
   let processedMessages = 0;
 
-  const shouldInterleaveCoreMemory =
-    Boolean(interleaveCoreMemory) &&
-    Boolean(chatMemoryConfig.coreMemoryEnabled) &&
-    typeof updateCoreMemoryOnce === "function";
+  const shouldInterleaveCoreMemoryEnabled = shouldInterleaveCoreMemory({
+    interleaveCoreMemory,
+    coreMemoryEnabled: chatMemoryConfig.coreMemoryEnabled,
+    updateCoreMemoryOnce,
+  });
 
-  async function maybeInterleaveCoreMemoryUpdate() {
-    if (!shouldInterleaveCoreMemory) return null;
-    if (!needsMemory) return null;
-    if (afterMessageId <= 0) return null;
-    if (!rollingSummary) return null;
-
-    let coreResult = null;
-    try {
-      coreResult = await updateCoreMemoryOnce({
-        userId,
-        presetId,
-        needsMemory,
-        boundaryId: targetUntilMessageId,
-        deadline,
-        force: true,
-        allowDuringRollingSummaryRebuild: true,
-      });
-    } catch (error) {
-      logger.error("chat_memory_core_interleave_failed", {
-        error,
-        userId,
-        presetId,
-        providerId,
-        modelId,
-      });
-      return null;
-    }
-
-    if (coreResult?.updated) {
-      logger.info("chat_memory_core_interleaved", {
-        userId,
-        presetId,
-        coveredUntilMessageId: coreResult.coveredUntilMessageId,
-        targetMessageId: coreResult.targetMessageId,
-        boundaryId: coreResult.boundaryId,
-        strictSyncEnabled: coreResult.strictSyncEnabled,
-        usedFallback: coreResult.usedFallback,
-        processedBatches: coreResult.processedBatches,
-        processedMessages: coreResult.processedMessages,
-        reason: coreResult.reason,
-        summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
-        rollingSummaryUsed: coreResult.rollingSummaryUsed,
-        rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
-        rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
-        rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
-        rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
-      });
-    } else if (coreResult) {
-      logger.debug("chat_memory_core_interleave_skipped", {
-        userId,
-        presetId,
-        reason: coreResult.reason,
-        invalidReason: coreResult.invalidReason,
-        pendingMessages: coreResult.pendingMessages,
-        thresholdMessages: coreResult.thresholdMessages,
-        processedBatches: coreResult.processedBatches,
-        processedMessages: coreResult.processedMessages,
-        targetMessageId: coreResult.targetMessageId,
-        boundaryId: coreResult.boundaryId,
-        strictSyncEnabled: coreResult.strictSyncEnabled,
-        summarizedUntilMessageId: coreResult.summarizedUntilMessageId,
-        rollingSummaryUsed: coreResult.rollingSummaryUsed,
-        rollingSummaryUsedBootstrap: coreResult.rollingSummaryUsedBootstrap,
-        rollingSummaryUsedDelta: coreResult.rollingSummaryUsedDelta,
-        rollingSummaryCheckpointMessageIdUsed: coreResult.rollingSummaryCheckpointMessageIdUsed,
-        rollingSummarySkipReason: coreResult.rollingSummarySkipReason,
-      });
-    }
-
-    const nextProtectMessageId = normalizeMessageId(coreResult?.coveredUntilMessageId);
-    if (nextProtectMessageId !== null && nextProtectMessageId > 0) {
-      protectMessageId = nextProtectMessageId;
-    }
-
-    return coreResult;
-  }
-
-  async function generateWithRetry(args) {
-    let attempt = 0;
-    while (true) {
-      if (deadline && Date.now() > deadline) {
-        const error = new Error("Memory rebuild timeout");
-        error.code = "CHAT_MEMORY_REBUILD_TIMEOUT";
-        throw error;
-      }
-
-      try {
-        return await runWithWorkerSlot(() => generateRollingSummary(args));
-      } catch (error) {
-        if (!Number.isFinite(retryMax) || retryMax <= 0 || attempt >= retryMax) throw error;
-        attempt += 1;
-        const backoffMs = Math.min(8000, 400 * 2 ** attempt);
-        await sleep(backoffMs);
-      }
-    }
+  async function runInterleaveCoreMemoryUpdate() {
+    const interleaveResult = await maybeInterleaveCoreMemoryUpdate({
+      shouldInterleaveCoreMemory: shouldInterleaveCoreMemoryEnabled,
+      needsMemory,
+      afterMessageId,
+      rollingSummary,
+      userId,
+      presetId,
+      targetUntilMessageId,
+      deadline,
+      providerId,
+      modelId,
+      updateCoreMemoryOnce,
+      protectMessageId,
+    });
+    protectMessageId = interleaveResult.protectMessageId;
+    return interleaveResult.coreResult;
   }
 
   while (afterMessageId < targetUntilMessageId) {
@@ -307,7 +217,9 @@ async function catchUpRollingSummaryOnce({
 
     if (!withinTarget.length) {
       afterMessageId = targetUntilMessageId;
-      await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
+      await writeRollingSummaryWithRebuildLock({
+        userId,
+        presetId,
         rollingSummary,
         summarizedUntilMessageId: afterMessageId,
         rebuildRequired: isDirty ? keepRebuildLock : false,
@@ -319,15 +231,20 @@ async function catchUpRollingSummaryOnce({
     const batchEndId = Number(withinTarget[withinTarget.length - 1].id) || afterMessageId;
     const normalizedMessages = normalizeMessagesForSummary(withinTarget);
 
-    const nextSummary = await generateWithRetry({
-      providerId,
-      modelId,
-      previousSummary: rollingSummary,
-      newMessages: normalizedMessages,
-      maxChars,
-      timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
-      settings: workerSettings,
-      raw: workerRaw,
+    const nextSummary = await generateRollingSummaryWithRetry({
+      runWithWorkerSlot,
+      deadline,
+      retryMax,
+      args: {
+        providerId,
+        modelId,
+        previousSummary: rollingSummary,
+        newMessages: normalizedMessages,
+        maxChars,
+        timeoutMs: chatMemoryConfig.syncRebuildTimeoutMs,
+        settings: workerSettings,
+        raw: workerRaw,
+      },
     });
 
     processedBatches += 1;
@@ -339,43 +256,40 @@ async function catchUpRollingSummaryOnce({
       if (dirtySinceMessageId !== null && afterMessageId + 1 > dirtySinceMessageId) {
         dirtySinceMessageId = afterMessageId + 1;
       }
-      await chatPresetMemoryModel.writeRollingSummaryProgress(userId, presetId, {
+      await writeRollingSummaryProgress({
+        userId,
+        presetId,
         rollingSummary,
         summarizedUntilMessageId: afterMessageId,
+        isDirty: true,
         dirtySinceMessageId,
       });
     } else {
-      await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
+      await writeRollingSummaryProgress({
+        userId,
+        presetId,
         rollingSummary,
         summarizedUntilMessageId: afterMessageId,
-        rebuildRequired: false,
       });
     }
 
-    if (isCheckpointFeatureEnabled() && rollingSummary) {
-      const shouldWriteCheckpoint =
-        shouldInterleaveCoreMemory ||
-        lastRollingSummaryCheckpointId === null ||
-        afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
-
-      if (shouldWriteCheckpoint) {
-        const wrote = await writeCheckpointBestEffort({
-          userId,
-          presetId,
-          kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
-          messageId: afterMessageId,
-          payload: { text: rollingSummary },
-          protectMessageId,
-          reason: "interval",
-        });
-        if (wrote) {
-          lastRollingSummaryCheckpointId = afterMessageId;
-          wroteRollingSummaryCheckpointMessageId = afterMessageId;
-        }
-      }
+    const checkpointWrite = await writeRollingSummaryCheckpointIfNeeded({
+      userId,
+      presetId,
+      afterMessageId,
+      rollingSummary,
+      protectMessageId,
+      shouldInterleaveCoreMemoryEnabled,
+      lastRollingSummaryCheckpointId,
+      checkpointEveryNMessages,
+      reason: "interval",
+    });
+    lastRollingSummaryCheckpointId = checkpointWrite.lastRollingSummaryCheckpointId;
+    if (checkpointWrite.wroteRollingSummaryCheckpointMessageId !== null) {
+      wroteRollingSummaryCheckpointMessageId = checkpointWrite.wroteRollingSummaryCheckpointMessageId;
     }
 
-    await maybeInterleaveCoreMemoryUpdate();
+    await runInterleaveCoreMemoryUpdate();
 
     updated = true;
 
@@ -386,54 +300,44 @@ async function catchUpRollingSummaryOnce({
   }
 
   if (isDirty) {
-    await chatPresetMemoryModel.writeRollingSummary(userId, presetId, {
+    await writeRollingSummaryWithRebuildLock({
+      userId,
+      presetId,
       rollingSummary,
       summarizedUntilMessageId: afterMessageId,
       rebuildRequired: keepRebuildLock,
     });
     updated = true;
 
-    if (isCheckpointFeatureEnabled() && rollingSummary) {
-      const shouldWriteCheckpoint =
-        shouldInterleaveCoreMemory ||
-        lastRollingSummaryCheckpointId === null ||
-        afterMessageId - lastRollingSummaryCheckpointId >= checkpointEveryNMessages;
-      if (shouldWriteCheckpoint) {
-        const wrote = await writeCheckpointBestEffort({
-          userId,
-          presetId,
-          kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
-          messageId: afterMessageId,
-          payload: { text: rollingSummary },
-          protectMessageId,
-          reason: "interval",
-        });
-        if (wrote) {
-          lastRollingSummaryCheckpointId = afterMessageId;
-          wroteRollingSummaryCheckpointMessageId = afterMessageId;
-        }
-      }
+    const checkpointWrite = await writeRollingSummaryCheckpointIfNeeded({
+      userId,
+      presetId,
+      afterMessageId,
+      rollingSummary,
+      protectMessageId,
+      shouldInterleaveCoreMemoryEnabled,
+      lastRollingSummaryCheckpointId,
+      checkpointEveryNMessages,
+      reason: "interval",
+    });
+    lastRollingSummaryCheckpointId = checkpointWrite.lastRollingSummaryCheckpointId;
+    if (checkpointWrite.wroteRollingSummaryCheckpointMessageId !== null) {
+      wroteRollingSummaryCheckpointMessageId = checkpointWrite.wroteRollingSummaryCheckpointMessageId;
     }
   }
 
-  if (isCheckpointFeatureEnabled() && rollingSummary && afterMessageId > 0) {
-    const hasFinalAlignedCheckpoint = lastRollingSummaryCheckpointId !== null && lastRollingSummaryCheckpointId === afterMessageId;
-    if (wroteRollingSummaryCheckpointMessageId !== afterMessageId && (updated || !hasFinalAlignedCheckpoint)) {
-      const wrote = await writeCheckpointBestEffort({
-        userId,
-        presetId,
-        kind: CHECKPOINT_KIND_ROLLING_SUMMARY,
-        messageId: afterMessageId,
-        payload: { text: rollingSummary },
-        protectMessageId,
-        reason: "tick_end",
-      });
-      if (wrote) {
-        lastRollingSummaryCheckpointId = afterMessageId;
-        wroteRollingSummaryCheckpointMessageId = afterMessageId;
-      }
-    }
-  }
+  const finalCheckpoint = await writeFinalRollingSummaryCheckpointIfNeeded({
+    userId,
+    presetId,
+    afterMessageId,
+    rollingSummary,
+    protectMessageId,
+    updated,
+    lastRollingSummaryCheckpointId,
+    wroteRollingSummaryCheckpointMessageId,
+  });
+  lastRollingSummaryCheckpointId = finalCheckpoint.lastRollingSummaryCheckpointId;
+  wroteRollingSummaryCheckpointMessageId = finalCheckpoint.wroteRollingSummaryCheckpointMessageId;
 
   return { updated, processedBatches, processedMessages, targetUntilMessageId, needsMemory, summarizedUntilMessageId: afterMessageId };
 }
