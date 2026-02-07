@@ -77,6 +77,7 @@ async function catchUpCoreMemoryOnce({
   let coveredUntilMessageId = normalizeMessageId(coreMeta?.coveredUntilMessageId) || 0;
   let needsRebuild = Boolean(coreMeta?.needsRebuild);
   const coreDirtySinceMessageId = normalizeMessageId(coreMeta?.dirtySinceMessageId);
+  let rebuildStateDirty = false;
 
   const summarizedUntilMessageId = normalizeMessageId(memory.summarizedUntilMessageId) || 0;
   const rollingSummaryDirtySinceMessageId = normalizeMessageId(memory.dirtySinceMessageId);
@@ -106,6 +107,7 @@ async function catchUpCoreMemoryOnce({
     needsRebuild = true;
     coveredUntilMessageId = 0;
     coreMemoryText = "";
+    rebuildStateDirty = true;
   }
 
   const rollingSummaryRaw = clipText(
@@ -216,10 +218,13 @@ async function catchUpCoreMemoryOnce({
 
     if (strictSyncBlockReason) {
       rollingSummarySkipReason = strictSyncBlockReason;
-      if (!needsRebuild) {
+      const shouldPersistRebuildState =
+        rebuildStateDirty || !needsRebuild || !Boolean(coreMeta?.needsRebuild);
+      if (shouldPersistRebuildState) {
         needsRebuild = true;
         await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: true });
         updated = true;
+        rebuildStateDirty = false;
       }
 
       return attachSummaryUsage({
@@ -342,8 +347,23 @@ async function catchUpCoreMemoryOnce({
   if (coveredUntilMessageId >= resolvedTargetMessageId) {
     if (Boolean(coreMeta?.needsRebuild)) {
       await writeProgress(coreMemoryText, coveredUntilMessageId, { nextNeedsRebuild: false });
+      updated = true;
       return attachSummaryUsage({
-        updated: true,
+        updated,
+        reason: "caught_up",
+        durationMs: Date.now() - startedAt,
+        coreMemoryChars: coreMemoryText.length,
+        coveredUntilMessageId,
+        usedFallback,
+        processedBatches,
+        processedMessages,
+        targetMessageId: resolvedTargetMessageId,
+      });
+    }
+
+    if (updated) {
+      return attachSummaryUsage({
+        updated,
         reason: "caught_up",
         durationMs: Date.now() - startedAt,
         coreMemoryChars: coreMemoryText.length,
@@ -356,7 +376,7 @@ async function catchUpCoreMemoryOnce({
     }
 
     return attachSummaryUsage({
-      updated: false,
+      updated,
       reason: "no_new_messages",
       thresholdMessages,
       targetMessageId: resolvedTargetMessageId,
