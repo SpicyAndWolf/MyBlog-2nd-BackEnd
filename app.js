@@ -23,7 +23,8 @@ const chatRouter = require("./routes/chat");
 const { startChatTrashCleanup } = require("./services/chat/trashCleanup");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = String(process.env.HOST || "127.0.0.1").trim();
 
 process.on("unhandledRejection", (reason) => {
   logger.error("unhandled_rejection", { error: reason });
@@ -58,6 +59,12 @@ startChatTrashCleanup({
   batchSize: chatConfig.trashPurgeBatchSize,
 });
 
-app.listen(PORT, () => {
-  logger.info("server_started", { port: PORT });
+const server = app.listen(PORT, HOST);
+
+server.on("listening", () => {
+  logger.info("server_started", { port: PORT, host: HOST });
+});
+
+server.on("error", (error) => {
+  logger.error("server_listen_failed", { port: PORT, host: HOST, error });
 });
