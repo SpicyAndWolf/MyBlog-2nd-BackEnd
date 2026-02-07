@@ -2,6 +2,7 @@ const chatPresetMemoryCheckpointModel = require("@models/chatPresetMemoryCheckpo
 const { chatMemoryConfig } = require("../../../../config");
 const { logger } = require("../../../../logger");
 const { normalizeMessageId } = require("./utils");
+const { CHECKPOINT_REASONS } = require("./reasons");
 
 const CHECKPOINT_KIND_ROLLING_SUMMARY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.rollingSummary;
 const CHECKPOINT_KIND_CORE_MEMORY = chatPresetMemoryCheckpointModel.CHECKPOINT_KINDS.coreMemory;
@@ -28,9 +29,14 @@ function warnCheckpointTableMissingOnce({ error, operation } = {}) {
   });
 }
 
+function markCheckpointTableAvailable() {
+  checkpointTableMissing = false;
+  checkpointTableMissingLogged = false;
+}
+
 function checkpointUnavailableReason() {
-  if (checkpointTableMissing) return "checkpoint_table_missing";
-  if (!isCheckpointFeatureEnabled()) return "checkpoint_feature_disabled";
+  if (checkpointTableMissing) return CHECKPOINT_REASONS.TABLE_MISSING;
+  if (!isCheckpointFeatureEnabled()) return CHECKPOINT_REASONS.FEATURE_DISABLED;
   return null;
 }
 
@@ -50,6 +56,7 @@ async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, pa
       messageId: checkpointMessageId,
       payload,
     });
+    markCheckpointTableAvailable();
   } catch (error) {
     if (error?.code === "42P01") {
       warnCheckpointTableMissingOnce({ error, operation: "write" });
@@ -65,6 +72,7 @@ async function writeCheckpointBestEffort({ userId, presetId, kind, messageId, pa
       keepLastN: chatMemoryConfig.checkpointKeepLastN,
       protectMessageId: normalizedProtect,
     });
+    markCheckpointTableAvailable();
   } catch (error) {
     if (error?.code === "42P01") {
       warnCheckpointTableMissingOnce({ error, operation: "prune" });
@@ -105,10 +113,12 @@ async function loadCheckpointBestEffort({ userId, presetId, kind, maxMessageId }
   if (normalizedMax === null) return null;
 
   try {
-    return await chatPresetMemoryCheckpointModel.getLatestCheckpointBeforeOrAt(userId, presetId, {
+    const checkpoint = await chatPresetMemoryCheckpointModel.getLatestCheckpointBeforeOrAt(userId, presetId, {
       kind,
       maxMessageId: normalizedMax,
     });
+    markCheckpointTableAvailable();
+    return checkpoint;
   } catch (error) {
     if (error?.code === "42P01") {
       warnCheckpointTableMissingOnce({ error, operation: "load" });
@@ -123,7 +133,9 @@ async function loadLatestCheckpointBestEffort({ userId, presetId, kind } = {}) {
   if (!isCheckpointFeatureEnabled()) return null;
 
   try {
-    return await chatPresetMemoryCheckpointModel.getLatestCheckpoint(userId, presetId, { kind });
+    const checkpoint = await chatPresetMemoryCheckpointModel.getLatestCheckpoint(userId, presetId, { kind });
+    markCheckpointTableAvailable();
+    return checkpoint;
   } catch (error) {
     if (error?.code === "42P01") {
       warnCheckpointTableMissingOnce({ error, operation: "load_latest" });
@@ -139,10 +151,12 @@ async function deleteCheckpointsFromMessageIdBestEffort({ userId, presetId, from
   if (normalizedFrom === null) return 0;
 
   try {
-    return await chatPresetMemoryCheckpointModel.deleteCheckpointsFromMessageId(userId, presetId, {
+    const deletedCount = await chatPresetMemoryCheckpointModel.deleteCheckpointsFromMessageId(userId, presetId, {
       kinds: [CHECKPOINT_KIND_ROLLING_SUMMARY, CHECKPOINT_KIND_CORE_MEMORY],
       fromMessageId: normalizedFrom,
     });
+    markCheckpointTableAvailable();
+    return deletedCount;
   } catch (error) {
     if (error?.code === "42P01") {
       warnCheckpointTableMissingOnce({ error, operation: "delete" });
@@ -155,13 +169,13 @@ async function deleteCheckpointsFromMessageIdBestEffort({ userId, presetId, from
 
 async function readAlignedCheckpoint({ userId, presetId, kind, expectedMessageId } = {}) {
   const expected = normalizeMessageId(expectedMessageId);
-  if (expected === null) return { ok: false, reason: "invalid_message_id" };
+  if (expected === null) return { ok: false, reason: CHECKPOINT_REASONS.INVALID_MESSAGE_ID };
   if (expected <= 0) return { ok: true, messageId: 0, payload: {} };
 
   if (!isCheckpointFeatureEnabled()) {
     return {
       ok: false,
-      reason: checkpointUnavailableReason() || "checkpoint_feature_disabled",
+      reason: checkpointUnavailableReason() || CHECKPOINT_REASONS.FEATURE_DISABLED,
     };
   }
 
@@ -175,7 +189,7 @@ async function readAlignedCheckpoint({ userId, presetId, kind, expectedMessageId
   if (checkpointMessageId !== expected) {
     return {
       ok: false,
-      reason: checkpointUnavailableReason() || "missing_aligned_checkpoint",
+      reason: checkpointUnavailableReason() || CHECKPOINT_REASONS.MISSING_ALIGNED_CHECKPOINT,
       foundMessageId: checkpointMessageId,
     };
   }
@@ -190,6 +204,7 @@ async function readAlignedCheckpoint({ userId, presetId, kind, expectedMessageId
 module.exports = {
   CHECKPOINT_KIND_ROLLING_SUMMARY,
   CHECKPOINT_KIND_CORE_MEMORY,
+  CHECKPOINT_REASONS,
   isCheckpointFeatureEnabled,
   writeCheckpointBestEffort,
   loadCheckpointBestEffort,

@@ -35,6 +35,26 @@ async function catchUpRollingSummaryOnce({
   const workerRaw = chatMemoryConfig.workerRaw;
   const batchSize = chatMemoryConfig.backfillBatchMessages;
   const retryMax = chatMemoryConfig.writeRetryMax;
+  if (typeof runWithWorkerSlot !== "function") {
+    const error = new Error("runWithWorkerSlot is required");
+    error.code = "CHAT_MEMORY_WORKER_SLOT_MISSING";
+    throw error;
+  }
+  if (
+    interleaveCoreMemory &&
+    chatMemoryConfig.coreMemoryEnabled &&
+    typeof updateCoreMemoryOnce !== "function"
+  ) {
+    logger.error("chat_memory_core_interleave_dependency_missing", {
+      userId,
+      presetId,
+      interleaveCoreMemory: true,
+      coreMemoryEnabled: true,
+    });
+    const error = new Error("updateCoreMemoryOnce is required when interleaveCoreMemory=true");
+    error.code = "CHAT_MEMORY_INTERLEAVE_CALLBACK_MISSING";
+    throw error;
+  }
 
   const memory = await chatPresetMemoryModel.ensureMemory(userId, presetId);
   if (!memory) return { updated: false, reason: "memory_missing", needsMemory: false, summarizedUntilMessageId: 0 };

@@ -8,6 +8,7 @@ const { computeRollingSummaryTarget, computeCoreMemoryTarget } = require("../tar
 const {
   CHECKPOINT_KIND_CORE_MEMORY,
   CHECKPOINT_KIND_ROLLING_SUMMARY,
+  CHECKPOINT_REASONS,
   isCheckpointFeatureEnabled,
   writeCheckpointBestEffort,
   loadCheckpointBestEffort,
@@ -40,6 +41,11 @@ async function catchUpCoreMemoryOnce({
   if (!normalizedUserId || !normalizedPresetId) return { updated: false, reason: "missing_identifier" };
   if (!needsMemory) return { updated: false, reason: "needs_memory_false" };
   if (!chatMemoryConfig.coreMemoryEnabled) return { updated: false, reason: "disabled" };
+  if (typeof runWithWorkerSlot !== "function") {
+    const error = new Error("runWithWorkerSlot is required");
+    error.code = "CHAT_MEMORY_WORKER_SLOT_MISSING";
+    throw error;
+  }
 
   const providerId = chatMemoryConfig.workerProviderId;
   const modelId = chatMemoryConfig.workerModelId;
@@ -246,7 +252,7 @@ async function catchUpCoreMemoryOnce({
     if (!clipped && aligned.messageId > 0) {
       return {
         ok: false,
-        reason: "missing_aligned_checkpoint",
+        reason: CHECKPOINT_REASONS.MISSING_ALIGNED_CHECKPOINT,
         foundMessageId: aligned.messageId,
       };
     }
