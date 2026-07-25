@@ -8,13 +8,15 @@ const { createMemorySourceRebuild } = require("./sourceRebuild");
 const { createMemoryStateRecovery } = require("./stateRecovery");
 const { createMemoryProviderAdapter } = require("../infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("../infrastructure/providers/structuredTransportFactory");
-const { runStructuredOutputPreflight } = require("../infrastructure/providers/providerPreflight");
 const { loadProposerPrompt } = require("../prompts");
 const { createMemoryMetrics } = require("./metrics");
 const { createDiagnosticProjection } = require("./diagnosticProjection");
 const { createPrivacyHardDelete } = require("./privacyHardDelete");
 const { createMemoryRetention } = require("./retention");
 const { createProviderAdmission, admissionControlledAdapter } = require("./providerAdmission");
+const { createProviderCircuitBreaker } = require("../../../shared/resilience/providerCircuitBreaker");
+const { circuitControlledAdapter } = require("./providerCircuitAdapter");
+const { createMemoryRuntimeHealth } = require("./runtimeHealth");
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -22,13 +24,22 @@ function createKeyedExecutor() {
     const previous = lanes.get(key) || Promise.resolve();
     const current = previous.catch(() => {}).then(work);
     lanes.set(key, current);
-    const release = () => { if (lanes.get(key) === current) lanes.delete(key); };
+    const release = () => {
+      if (lanes.get(key) === current) lanes.delete(key);
+    };
     void current.then(release, release);
     return current;
   };
 }
 
-function startupRecoveryIssues({ privacy = {}, rebuildBefore = {}, tasks = [], pendingTasks = [], rebuildAfter = {}, projections = {} } = {}) {
+function startupRecoveryIssues({
+  privacy = {},
+  rebuildBefore = {},
+  tasks = [],
+  pendingTasks = [],
+  rebuildAfter = {},
+  projections = {},
+} = {}) {
   const issues = [];
   const inspectMap = (kind, values, accepted) => {
     for (const [scope, result] of Object.entries(values || {})) {
@@ -39,7 +50,15 @@ function startupRecoveryIssues({ privacy = {}, rebuildBefore = {}, tasks = [], p
   inspectMap("privacy", privacy, new Set(["completed"]));
   inspectMap("rebuild_before", rebuildBefore, new Set(["completed", "skipped"]));
   inspectMap("rebuild_after", rebuildAfter, new Set(["completed", "skipped"]));
-  const failedTaskStatuses = new Set(["dispatch_failed", "failed", "queued", "retry_wait", "incomplete", "stale", "error"]);
+  const failedTaskStatuses = new Set([
+    "dispatch_failed",
+    "failed",
+    "queued",
+    "retry_wait",
+    "incomplete",
+    "stale",
+    "error",
+  ]);
   for (const result of tasks || []) {
     const status = String(result?.status || "unknown");
     if (failedTaskStatuses.has(status)) issues.push({ kind: "task", taskId: result?.taskId ?? null, status });
@@ -70,9 +89,9 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     return enqueueByKey(`${_userId}:${_presetId}`, async () => {
       const mutationResult = repositories?.withTransaction
         ? await repositories.withTransaction(async (client) => {
-          await repositories.sourceWriteGuard.lockScope(_userId, _presetId, { client });
-          return mutateSource(client);
-        })
+            await repositories.sourceWriteGuard.lockScope(_userId, _presetId, { client });
+            return mutateSource(client);
+          })
         : await mutateSource(null);
       return { status: "memory_disabled", mutationResult };
     });
@@ -89,16 +108,18 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
   }
   return Object.freeze({
     enabled: false,
-    initialize: async () => [],
     ensureScope: disabled,
     processScope: disabled,
     rebuildScope: disabled,
     mutateSourceAndRebuild,
     privacyHardDelete,
     lockSourceWriteGuard,
-    getPrivacyOperation: (userId, operationId) => repositories?.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null),
-    hasIncompletePrivacyOperation: (userId, presetId) => repositories?.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false),
-    markRecoveryNotificationsDelivered: (ids) => repositories?.sidecars?.markRecoveryNotificationsDelivered?.(ids) ?? Promise.resolve([]),
+    getPrivacyOperation: (userId, operationId) =>
+      repositories?.privacy?.getOperationById?.(userId, operationId) ?? Promise.resolve(null),
+    hasIncompletePrivacyOperation: (userId, presetId) =>
+      repositories?.privacy?.hasIncompleteOperation?.(userId, presetId) ?? Promise.resolve(false),
+    markRecoveryNotificationsDelivered: (ids) =>
+      repositories?.sidecars?.markRecoveryNotificationsDelivered?.(ids) ?? Promise.resolve([]),
     runRetentionScope: disabled,
     reconcileRebuilds: async () => ({}),
     reconcilePrivacyDeletes: () => privacyDelete?.reconcilePending() ?? Promise.resolve({}),
@@ -111,7 +132,41 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     scheduleHousekeeping: disabled,
     scheduleStateRecovery: disabled,
     resumeTarget: disabled,
-    recoverPending: async () => [],
+    getHealthSnapshot: async () => ({
+      provider: {
+        name: "memory",
+        status: "disabled",
+        available: false,
+        failureCount: 0,
+        reason: "memory_disabled",
+        lastFailureAt: null,
+        lastSuccessAt: null,
+        nextRetryAt: null,
+        retryMode: null,
+      },
+      scope: null,
+    }),
+    getProviderHealthSnapshot: () => Object.freeze({
+      name: "memory",
+      status: "disabled",
+      available: false,
+      failureCount: 0,
+      reason: "memory_disabled",
+      lastFailureAt: null,
+      lastSuccessAt: null,
+      nextRetryAt: null,
+      retryMode: null,
+    }),
+    retryProviderNow: disabled,
+    recoverPending: async () => ({
+      privacy: {},
+      rebuildBefore: {},
+      tasks: [],
+      pendingTasks: [],
+      rebuildAfter: {},
+      projections: {},
+      issues: [],
+    }),
     shutdown: async () => {
       stopProjectionPolling();
       stopTaskPolling();
@@ -121,34 +176,41 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
   });
 }
 
-function createMemoryRuntime({ config, repositories, providerAdapter, projectionDrains = {}, privacyStores = [], metrics = createMemoryMetrics(), onBackgroundError, enqueueByKey: sharedEnqueueByKey } = {}) {
+function createMemoryRuntime({
+  config,
+  repositories,
+  providerAdapter,
+  projectionDrains = {},
+  privacyStores = [],
+  metrics = createMemoryMetrics(),
+  onBackgroundError,
+  enqueueByKey: sharedEnqueueByKey,
+} = {}) {
   const enqueueByKey = sharedEnqueueByKey || createKeyedExecutor();
   if (!config?.enabled) return createDisabledRuntime(repositories, privacyStores, enqueueByKey);
   if (!repositories?.state || !repositories?.source || !repositories?.runtime) {
     throw new Error("Memory runtime repositories are required");
   }
   const unsupportedProjectionKeys = Object.keys(projectionDrains).filter((projectionKey) => projectionKey !== "rag");
-  if (unsupportedProjectionKeys.length) throw new Error(`Unsupported Memory projection drain: ${unsupportedProjectionKeys.join(",")}`);
+  if (unsupportedProjectionKeys.length)
+    throw new Error(`Unsupported Memory projection drain: ${unsupportedProjectionKeys.join(",")}`);
 
   const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
   const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
-  const rawAdapter = providerAdapter || createMemoryProviderAdapter({ invokeStructured: rawInvokeStructured, promptLoader: loadProposerPrompt });
-  const adapter = admissionControlledAdapter(rawAdapter, admission);
-  let providerInitialization = providerAdapter ? Promise.resolve([]) : null;
-  function initialize() {
-    if (!providerInitialization) {
-      providerInitialization = runStructuredOutputPreflight({
-        invokeStructured: (request) => admission.run(() => rawInvokeStructured(request)),
-        promptLoader: loadProposerPrompt,
-      });
-    }
-    return providerInitialization;
-  }
+  const rawAdapter =
+    providerAdapter ||
+    createMemoryProviderAdapter({ invokeStructured: rawInvokeStructured, promptLoader: loadProposerPrompt });
+  const providerCircuit = createProviderCircuitBreaker({ name: "memory" });
+  const circuitAdapter = providerAdapter
+    ? rawAdapter
+    : circuitControlledAdapter({ adapter: rawAdapter, circuit: providerCircuit });
+  const adapter = admissionControlledAdapter(circuitAdapter, admission);
   const observer = createObserver({
     sourceRepository: repositories.source,
     stateRepository: repositories.state,
     runtimeRepository: repositories.runtime,
-    config, metrics,
+    config,
+    metrics,
   });
   const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
   const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
@@ -156,11 +218,15 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey, onBackgroundError })
     : null;
   const stateRecovery = createMemoryStateRecovery({ repositories, sourceRebuild });
-  const recovery = createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError: onBackgroundError });
+  const recovery = createMemoryRecovery({
+    repositories,
+    pipeline,
+    enqueueByKey,
+    metrics,
+    onDispatchError: onBackgroundError,
+  });
   const housekeeping = createMemoryHousekeeping({ repositories, config, enqueueByKey });
-  const diagnosticProjection = repositories.diagnosticProjection
-    ? createDiagnosticProjection({ repositories })
-    : null;
+  const diagnosticProjection = repositories.diagnosticProjection ? createDiagnosticProjection({ repositories }) : null;
   const retention = config.retention ? createMemoryRetention({ repositories, config, diagnosticProjection }) : null;
   let projectionPollTimer = null;
   let projectionPollRunning = false;
@@ -172,19 +238,30 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   async function ensureState(userId, presetId) {
     try {
-      return (await repositories.state.getState(userId, presetId))
-        || repositories.state.initializeRevisionZero(userId, presetId);
-      } catch (error) {
-        if (error?.code !== "MEMORY_V201_STATE_INVALID" || !repositories.state.getRawState || !repositories.audit.getRecoveryHead || !repositories.audit.listSnapshotsForRecovery) throw error;
-        const rawState = await repositories.state.getRawState(userId, presetId);
-        if (rawState && rawState.version !== SCHEMA_VERSION) {
-          const cutoverError = new Error(`Memory state schema ${String(rawState.version)} cannot be opened by the 2.01-only runtime; run the Memory 2.01 data migration`);
-          cutoverError.code = "MEMORY_V201_CUTOVER_REQUIRED";
-          cutoverError.actualVersion = rawState.version;
-          throw cutoverError;
-        }
-        const recovered = await stateRecovery.recoverScope(userId, presetId);
-      if (!["healthy", "snapshot_restored", "events_replayed", "rebuilt"].includes(recovered.status)) throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
+      return (
+        (await repositories.state.getState(userId, presetId)) ||
+        repositories.state.initializeRevisionZero(userId, presetId)
+      );
+    } catch (error) {
+      if (
+        error?.code !== "MEMORY_V201_STATE_INVALID" ||
+        !repositories.state.getRawState ||
+        !repositories.audit.getRecoveryHead ||
+        !repositories.audit.listSnapshotsForRecovery
+      )
+        throw error;
+      const rawState = await repositories.state.getRawState(userId, presetId);
+      if (rawState && rawState.version !== SCHEMA_VERSION) {
+        const cutoverError = new Error(
+          `Memory state schema ${String(rawState.version)} cannot be opened by the 2.01-only runtime; run the Memory 2.01 data migration`,
+        );
+        cutoverError.code = "MEMORY_V201_CUTOVER_REQUIRED";
+        cutoverError.actualVersion = rawState.version;
+        throw cutoverError;
+      }
+      const recovered = await stateRecovery.recoverScope(userId, presetId);
+      if (!["healthy", "snapshot_restored", "events_replayed", "rebuilt"].includes(recovered.status))
+        throw new Error(`Memory state recovery did not complete: ${recovered.status}`);
       return recovered.state ?? repositories.state.getState(userId, presetId);
     }
   }
@@ -217,16 +294,16 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     shuttingDown = true;
     stopTaskPolling();
     stopProjectionPolling();
-    const initialization = providerInitialization;
-    if (initialization) await Promise.allSettled([initialization]);
     while (backgroundOperations.size) await Promise.allSettled([...backgroundOperations]);
     await privacyDelete?.waitForIdle?.();
     return { status: "stopped" };
   }
 
   async function drainProjectionsNow(userId, presetId) {
-    if (repositories.privacy?.hasIncompleteOperation
-      && await repositories.privacy.hasIncompleteOperation(userId, presetId)) {
+    if (
+      repositories.privacy?.hasIncompleteOperation &&
+      (await repositories.privacy.hasIncompleteOperation(userId, presetId))
+    ) {
       return { privacy: { status: "skipped", reason: "privacy_delete_pending" } };
     }
     const results = {};
@@ -234,11 +311,22 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const startedAt = performance.now();
       try {
         results.diagnostics = await diagnosticProjection.syncScope(userId, presetId);
-        metrics.observe("memory_projection_duration_ms", { projectionKey: "diagnostics", status: results.diagnostics.status }, performance.now() - startedAt);
+        metrics.observe(
+          "memory_projection_duration_ms",
+          { projectionKey: "diagnostics", status: results.diagnostics.status },
+          performance.now() - startedAt,
+        );
       } catch (error) {
-        results.diagnostics = { status: "failed", reason: String(error?.code || error?.name || "projection_failed").slice(0, 200) };
-        onBackgroundError?.(error);
-        metrics.observe("memory_projection_duration_ms", { projectionKey: "diagnostics", status: "failed" }, performance.now() - startedAt);
+        results.diagnostics = {
+          status: "failed",
+          reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
+        };
+        if (!error?.suppressed) onBackgroundError?.(error);
+        metrics.observe(
+          "memory_projection_duration_ms",
+          { projectionKey: "diagnostics", status: "failed" },
+          performance.now() - startedAt,
+        );
       }
     }
     for (const projectionKey of Object.keys(projectionDrains)) {
@@ -247,14 +335,22 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const startedAt = performance.now();
       try {
         results[projectionKey] = await drain.drain(userId, presetId);
-        metrics.observe("memory_projection_duration_ms", { projectionKey, status: results[projectionKey]?.status ?? "unknown" }, performance.now() - startedAt);
+        metrics.observe(
+          "memory_projection_duration_ms",
+          { projectionKey, status: results[projectionKey]?.status ?? "unknown" },
+          performance.now() - startedAt,
+        );
       } catch (error) {
         results[projectionKey] = {
           status: "failed",
           reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
         };
-        onBackgroundError?.(error);
-        metrics.observe("memory_projection_duration_ms", { projectionKey, status: "failed" }, performance.now() - startedAt);
+        if (!error?.suppressed) onBackgroundError?.(error);
+        metrics.observe(
+          "memory_projection_duration_ms",
+          { projectionKey, status: "failed" },
+          performance.now() - startedAt,
+        );
       }
     }
     return results;
@@ -272,15 +368,14 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const userId = Number(scope.userId ?? scope.user_id);
       const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
       if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
-      results[`${userId}:${presetId}`] = await enqueueByKey(
-        `${userId}:${presetId}`,
-        () => drainProjectionsNow(userId, presetId),
+      results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, () =>
+        drainProjectionsNow(userId, presetId),
       );
     }
     return results;
   }
 
-  async function reconcileRebuilds() {
+  async function reconcileRebuilds({ resumeHalted = false, selectedScope = null } = {}) {
     if (typeof repositories.state.listInitializedScopes !== "function") return {};
     const scopes = await repositories.state.listInitializedScopes();
     const results = {};
@@ -288,20 +383,43 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
       const userId = Number(scope.userId ?? scope.user_id);
       const presetId = String(scope.presetId ?? scope.preset_id ?? "").trim();
       if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) continue;
+      if (selectedScope
+        && (Number(selectedScope.userId) !== userId || String(selectedScope.presetId) !== presetId)) continue;
       results[`${userId}:${presetId}`] = await enqueueByKey(`${userId}:${presetId}`, async () => {
-        if (repositories.privacy?.hasIncompleteOperation && await repositories.privacy.hasIncompleteOperation(userId, presetId)) {
+        if (
+          repositories.privacy?.hasIncompleteOperation &&
+          (await repositories.privacy.hasIncompleteOperation(userId, presetId))
+        ) {
           return { status: "skipped", reason: "privacy_delete_pending" };
         }
         const state = await ensureState(userId, presetId);
         const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
         const rebuilding = statuses.filter((row) => {
           const boundary = row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId;
-          return Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration && boundary !== null && boundary !== undefined;
+          return (
+            Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration &&
+            boundary !== null &&
+            boundary !== undefined
+          );
         });
         if (!rebuilding.length) return { status: "skipped", reason: "not_rebuilding" };
-        const boundaries = [...new Set(rebuilding.map((row) => Number(row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId)))];
+        const halted = rebuilding.filter((row) => row.status === "halted");
+        if (halted.length && !resumeHalted) {
+          return {
+            status: "incomplete",
+            reason: "provider_halted",
+            targets: halted.map((row) => row.target_key ?? row.targetKey),
+          };
+        }
+        const boundaries = [
+          ...new Set(rebuilding.map((row) => Number(row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId))),
+        ];
         if (boundaries.length !== 1) throw new Error("Memory rebuilding targets have inconsistent boundaries");
-        return sourceRebuild.forceDrainTo(userId, presetId, { sourceGeneration: state.meta.sourceGeneration, boundaryMessageId: boundaries[0] });
+        return sourceRebuild.forceDrainTo(userId, presetId, {
+          sourceGeneration: state.meta.sourceGeneration,
+          boundaryMessageId: boundaries[0],
+          resumeHalted,
+        });
       });
     }
     return results;
@@ -322,7 +440,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     const tick = () => {
       if (projectionPollRunning) return;
       projectionPollRunning = true;
-      runInBackground(reconcileProjections).finally(() => { projectionPollRunning = false; });
+      runInBackground(reconcileProjections).finally(() => {
+        projectionPollRunning = false;
+      });
     };
     projectionPollTimer = setInterval(tick, intervalMs);
     projectionPollTimer.unref?.();
@@ -348,7 +468,9 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
         if (privacyDelete) await privacyDelete.reconcilePending();
         await recovery.recoverPending();
         await reconcileRebuilds();
-      }).finally(() => { taskPollRunning = false; });
+      }).finally(() => {
+        taskPollRunning = false;
+      });
     };
     taskPollTimer = setInterval(tick, intervalMs);
     taskPollTimer.unref?.();
@@ -356,45 +478,78 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   function processScope(userId, presetId) {
-    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
-      await initialize();
-      await ensureState(userId, presetId);
-      const memory = await pipeline.processScope(userId, presetId);
-      const projections = await drainProjectionsNow(userId, presetId);
-      return { memory, projections };
-    }));
+    return runInBackground(() =>
+      enqueueByKey(`${userId}:${presetId}`, async () => {
+        await ensureState(userId, presetId);
+        const memory = await pipeline.processScope(userId, presetId);
+        const projections = await drainProjectionsNow(userId, presetId);
+        return { memory, projections };
+      }),
+    );
   }
 
-  function rebuildScope(userId, presetId, { reason = "source_mutation" } = {}) {
+  function rebuildScope(userId, presetId, { reason = "manual_repair" } = {}) {
     const key = `${userId}:${presetId}`;
     const active = activeRebuilds.get(key);
     if (active) return Promise.resolve({ status: "queued", operationId: active.operationId, deduplicated: true });
     const operationId = crypto.randomUUID();
-    const promise = runInBackground(() => enqueueByKey(key, async () => {
-      await initialize();
-      const startedAt = performance.now();
-      await ensureState(userId, presetId);
-      const initialized = await sourceRebuild.initializeGeneration(userId, presetId, { reason });
-      const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
-      metrics.observe("memory_rebuild_duration_ms", { reason, status: drained.status }, performance.now() - startedAt);
-      const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
-      return { ...initialized, ...drained, projections };
-    }));
+    const promise = runInBackground(() =>
+      enqueueByKey(key, async () => {
+        const startedAt = performance.now();
+        const state = await ensureState(userId, presetId);
+        const statuses = await repositories.runtime.getTargetStatuses(userId, presetId);
+        const rebuilding = statuses.filter((row) => {
+          const boundary = row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId;
+          return Number(row.source_generation ?? row.sourceGeneration) === state.meta.sourceGeneration
+            && boundary !== null
+            && boundary !== undefined;
+        });
+        if (!rebuilding.length) {
+          return {
+            status: "not_required",
+            sourceGeneration: state.meta.sourceGeneration,
+            reason: "no_resumable_rebuild",
+          };
+        }
+        const boundaries = [...new Set(rebuilding.map((row) => (
+          Number(row.rebuild_boundary_message_id ?? row.rebuildBoundaryMessageId)
+        )))];
+        if (boundaries.length !== 1) throw new Error("Memory rebuilding targets have inconsistent boundaries");
+        const initialized = {
+          sourceGeneration: state.meta.sourceGeneration,
+          revision: state.meta.revision,
+          boundaryMessageId: boundaries[0],
+          resumed: true,
+        };
+        if (rebuilding.some((row) => row.status === "halted")) providerCircuit.retryNow();
+        const drained = await sourceRebuild.forceDrainTo(userId, presetId, {
+          ...initialized,
+          resumeHalted: true,
+        });
+        metrics.observe(
+          "memory_rebuild_duration_ms",
+          { reason, status: drained.status },
+          performance.now() - startedAt,
+        );
+        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+        return { ...initialized, ...drained, projections };
+      }),
+    );
     activeRebuilds.set(key, { operationId, promise });
-    void promise.finally(() => {
-      if (activeRebuilds.get(key)?.promise === promise) activeRebuilds.delete(key);
-    }).catch(() => {});
+    void promise
+      .finally(() => {
+        if (activeRebuilds.get(key)?.promise === promise) activeRebuilds.delete(key);
+      })
+      .catch(() => {});
     return Promise.resolve({ status: "queued", operationId, deduplicated: false });
   }
 
-  async function mutateSourceAndRebuild(userId, presetId, {
-    mutateSource,
-    purgeDerived = null,
-    reason = "source_mutation",
-    affectedFromMessageId = null,
-  } = {}) {
+  async function mutateSourceAndRebuild(
+    userId,
+    presetId,
+    { mutateSource, purgeDerived = null, reason = "source_mutation", affectedFromMessageId = null } = {},
+  ) {
     if (typeof mutateSource !== "function") throw new Error("mutateSource callback is required");
-    await initialize();
     const initialized = await enqueueByKey(`${userId}:${presetId}`, async () => {
       await ensureState(userId, presetId);
       return sourceRebuild.initializeGeneration(userId, presetId, {
@@ -404,34 +559,35 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
         affectedFromMessageId,
       });
     });
-    runInBackground(() => enqueueByKey(`${userId}:${presetId}`, async () => {
-      const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
-      const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
-      return { ...drained, projections };
-    }));
+    runInBackground(() =>
+      enqueueByKey(`${userId}:${presetId}`, async () => {
+        const drained = await sourceRebuild.forceDrainTo(userId, presetId, initialized);
+        const projections = drained.status === "completed" ? await drainProjectionsNow(userId, presetId) : {};
+        return { ...drained, projections };
+      }),
+    );
     return { status: "rebuilding", ...initialized };
   }
 
-  async function recoverPending({ requireComplete = false } = {}) {
-    await initialize();
+  async function recoverPending() {
     const privacy = privacyDelete ? await privacyDelete.reconcilePending() : {};
     const rebuildBefore = await reconcileRebuilds();
     const recovered = await recovery.recoverPending();
     const rebuildAfter = await reconcileRebuilds();
     const projections = await reconcileProjections();
-    if (requireComplete) {
-      const pendingTasks = typeof repositories.runtime.listPendingTasks === "function"
+    const pendingTasks =
+      typeof repositories.runtime.listPendingTasks === "function"
         ? await repositories.runtime.listPendingTasks()
         : [];
-      const issues = startupRecoveryIssues({ privacy, rebuildBefore, tasks: recovered, pendingTasks, rebuildAfter, projections });
-      if (issues.length) {
-        const error = new Error("Memory startup recovery did not complete");
-        error.code = "MEMORY_STARTUP_RECOVERY_INCOMPLETE";
-        error.detail = { issues };
-        throw error;
-      }
-    }
-    return recovered;
+    const report = {
+      privacy,
+      rebuildBefore,
+      tasks: recovered,
+      pendingTasks,
+      rebuildAfter,
+      projections,
+    };
+    return { ...report, issues: startupRecoveryIssues(report) };
   }
 
   function scheduleHousekeeping({ userId, presetId, requestNow } = {}) {
@@ -439,19 +595,28 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
   }
 
   function scheduleStateRecovery({ userId, presetId } = {}) {
-    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => stateRecovery.recoverScope(userId, presetId)));
+    return runInBackground(() =>
+      enqueueByKey(`${userId}:${presetId}`, () => stateRecovery.recoverScope(userId, presetId)),
+    );
   }
 
   async function resumeTarget(userId, presetId, targetKey) {
-    await initialize();
-    const result = await enqueueByKey(`${userId}:${presetId}`, () => (
-      recovery.resumeTarget(userId, presetId, targetKey, { run: false })
-    ));
+    const result = await enqueueByKey(`${userId}:${presetId}`, () =>
+      recovery.resumeTarget(userId, presetId, targetKey, { run: false }),
+    );
     // The resumed task must run after the preparation transaction releases the
     // scope lane. Dispatching it from inside that lane would self-deadlock.
     const recovered = await recovery.recoverPending();
     return { ...result, recovered };
   }
+
+  const runtimeHealth = createMemoryRuntimeHealth({
+    config,
+    repositories,
+    providerCircuit,
+    reconcileRebuilds,
+    recovery,
+  });
 
   function privacyHardDelete(userId, presetId, options) {
     if (!privacyDelete) throw new Error("Memory privacy hard delete is unavailable");
@@ -485,7 +650,6 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
 
   return Object.freeze({
     enabled: true,
-    initialize,
     ensureScope,
     processScope,
     rebuildScope,
@@ -507,8 +671,11 @@ function createMemoryRuntime({ config, repositories, providerAdapter, projection
     scheduleHousekeeping,
     scheduleStateRecovery,
     resumeTarget,
+    getHealthSnapshot: runtimeHealth.getHealthSnapshot,
     metrics,
     getProviderAdmissionSnapshot: () => admission.snapshot(),
+    getProviderHealthSnapshot: () => providerCircuit.snapshot(),
+    retryProviderNow: runtimeHealth.retryProviderNow,
     getMetricsSnapshot: () => metrics.snapshot(),
     recoverPending: (options) => runInBackground(() => recoverPending(options)),
     shutdown,

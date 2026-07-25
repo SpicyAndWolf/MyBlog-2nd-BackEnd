@@ -10,7 +10,7 @@ function privacyHttpPayload(privacy) {
   };
 }
 
-function createChatController({ chatModule, memory, config, logger, withRequestContext } = {}) {
+function createChatController({ chatModule, memory, rag, config, logger, withRequestContext } = {}) {
   if (!chatModule?.sendMessage || !chatModule?.editMessage || !chatModule?.presets || !chatModule?.sessions) {
     throw new Error("Chat module is required");
   }
@@ -61,6 +61,26 @@ function createChatController({ chatModule, memory, config, logger, withRequestC
     return next;
   }
 
+  function providerWarning(component, provider) {
+    if (!["degraded", "needs_attention"].includes(provider?.status)) return null;
+    const manual = provider.status === "needs_attention";
+    return {
+      component,
+      status: provider.status,
+      reason: provider.reason || "provider_unavailable",
+      message: component === "embedding"
+        ? manual
+          ? "历史对话检索已暂停，需要手动重试"
+          : "历史对话检索暂不可用，本次聊天将跳过旧对话召回"
+        : manual
+          ? "长期记忆更新已暂停，需要手动重试"
+          : "长期记忆更新暂不可用，将继续使用上次成功的记忆",
+      since: provider.lastFailureAt || null,
+      nextRetryAt: provider.nextRetryAt || null,
+      retryMode: provider.retryMode || null,
+    };
+  }
+
   return Object.freeze({
     async getPrivacyOperation(req, res) {
       try {
@@ -79,6 +99,70 @@ function createChatController({ chatModule, memory, config, logger, withRequestC
         return res.status(200).json(await chatModule.getMeta());
       } catch (error) {
         return sendFailure(req, res, "chat_meta_failed", error);
+      }
+    },
+
+    async getHealth(req, res) {
+      try {
+        const presetId = String(req.query?.presetId || "").trim();
+        const [memoryHealth, ragHealth] = await Promise.all([
+          typeof memory.getHealthSnapshot === "function"
+            ? memory.getHealthSnapshot({ userId: req.user?.id, presetId })
+            : Promise.resolve({ provider: null, scope: null }),
+          typeof rag?.getHealthSnapshot === "function"
+            ? Promise.resolve(rag.getHealthSnapshot())
+            : Promise.resolve({ embeddingProvider: null }),
+        ]);
+        const warnings = [
+          providerWarning("memory", memoryHealth?.provider),
+          providerWarning("embedding", ragHealth?.embeddingProvider),
+          ...(Array.isArray(memoryHealth?.scope?.alerts)
+            ? memoryHealth.scope.alerts.map((alert) => ({ component: "memory", ...alert }))
+            : []),
+        ].filter(Boolean);
+        const providerStatuses = [
+          memoryHealth?.provider?.status,
+          ragHealth?.embeddingProvider?.status,
+        ].filter(Boolean);
+        const status = warnings.length
+          ? "degraded"
+          : providerStatuses.includes("unknown")
+            ? "unknown"
+            : "healthy";
+        return res.status(200).json({
+          status,
+          memory: memoryHealth,
+          rag: ragHealth,
+          warnings,
+        });
+      } catch (error) {
+        return sendFailure(req, res, "chat_health_get_failed", error);
+      }
+    },
+
+    async retryHealth(req, res) {
+      try {
+        const component = String(req.body?.component || "").trim();
+        const presetId = String(req.body?.presetId || "").trim();
+        if (!["memory", "embedding"].includes(component)) {
+          return res.status(400).json({ error: "component must be memory or embedding" });
+        }
+        if (!presetId) return res.status(400).json({ error: "presetId is required" });
+        if (component === "memory") {
+          const result = typeof memory.retryProviderNow === "function"
+            ? await memory.retryProviderNow({ userId: req.user?.id, presetId })
+            : { attempted: false, reason: "retry_unavailable" };
+          return res.status(202).json({ component, result });
+        }
+        const provider = typeof rag?.retryEmbeddingProvider === "function"
+          ? rag.retryEmbeddingProvider()
+          : null;
+        const projection = typeof memory.drainProjections === "function"
+          ? await memory.drainProjections(req.user?.id, presetId)
+          : null;
+        return res.status(202).json({ component, result: { provider, projection } });
+      } catch (error) {
+        return sendFailure(req, res, "chat_health_retry_failed", error);
       }
     },
 

@@ -44,9 +44,13 @@ test("startup recovery reconciles projections for initialized scopes using the p
     projectionDrains,
   });
 
-  assert.deepEqual(await runtime.recoverPending(), []);
+  const firstReport = await runtime.recoverPending();
+  assert.deepEqual(firstReport.tasks, []);
+  assert.deepEqual(firstReport.issues, []);
   assert.deepEqual(projectionCalls, [["rag", 1, "default"]]);
-  assert.deepEqual(await runtime.recoverPending({ requireComplete: true }), []);
+  const secondReport = await runtime.recoverPending();
+  assert.deepEqual(secondReport.tasks, []);
+  assert.deepEqual(secondReport.issues, []);
   assert.deepEqual(projectionCalls, [["rag", 1, "default"], ["rag", 1, "default"]]);
   const stop = runtime.startProjectionPolling();
   assert.equal(typeof stop, "function");

@@ -20,10 +20,92 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
     const processedBoundary = Number(rowValue(checkpoint, "processed_boundary_message_id", "processedBoundaryMessageId") ?? 0);
     let mode = "noop";
     let staged = null;
+    let rebuildProcessedGeneration = processedGeneration;
+    let rebuildProcessedBoundary = processedBoundary;
     try {
-      if (processedGeneration !== capturedGeneration) {
+      if (processedGeneration !== capturedGeneration || checkpoint?.status === "rebuilding") {
         mode = "rebuild";
-        staged = await adapter.rebuild({ userId, presetId, sourceGeneration: capturedGeneration, boundaryMessageId: capturedBoundary });
+        if (adapter.rebuildBatch && adapter.stageRebuildBatch && adapter.finalizeRebuild) {
+          rebuildProcessedGeneration = capturedGeneration;
+          rebuildProcessedBoundary = checkpoint?.status === "rebuilding"
+            && processedGeneration === capturedGeneration
+            ? processedBoundary
+            : 0;
+          while (true) {
+            staged = await adapter.rebuildBatch({
+              userId,
+              presetId,
+              sourceGeneration: capturedGeneration,
+              boundaryMessageId: capturedBoundary,
+              afterMessageId: rebuildProcessedBoundary,
+            });
+            const nextBoundary = Number(staged?.processedBoundaryMessageId);
+            if (!Number.isSafeInteger(nextBoundary)
+              || nextBoundary < rebuildProcessedBoundary
+              || nextBoundary > capturedBoundary) {
+              throw new Error("RAG rebuild batch returned an invalid processed boundary");
+            }
+            const stagedResult = await repositories.withTransaction(async (client) => {
+              const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
+              const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
+              if (!current
+                || current.meta.sourceGeneration !== capturedGeneration
+                || currentBoundary !== capturedBoundary) return { status: "stale" };
+              await adapter.stageRebuildBatch({
+                staged,
+                userId,
+                presetId,
+                sourceGeneration: capturedGeneration,
+                boundaryMessageId: capturedBoundary,
+                client,
+              });
+              await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
+                projectionKey,
+                processedGeneration: capturedGeneration,
+                processedBoundaryMessageId: nextBoundary,
+                status: "rebuilding",
+                lastErrorReason: null,
+              }, { client });
+              return { status: "staged" };
+            });
+            if (stagedResult.status === "stale") return { status: "stale", projectionKey };
+            rebuildProcessedBoundary = nextBoundary;
+            if (!staged?.complete) continue;
+            return repositories.withTransaction(async (client) => {
+              const current = await repositories.state.getState(userId, presetId, { client, forUpdate: true });
+              const currentBoundary = await repositories.source.getBoundary(userId, presetId, { client });
+              if (!current
+                || current.meta.sourceGeneration !== capturedGeneration
+                || currentBoundary !== capturedBoundary) return { status: "stale", projectionKey };
+              await adapter.finalizeRebuild({
+                userId,
+                presetId,
+                sourceGeneration: capturedGeneration,
+                boundaryMessageId: capturedBoundary,
+                client,
+              });
+              await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
+                projectionKey,
+                processedGeneration: capturedGeneration,
+                processedBoundaryMessageId: capturedBoundary,
+                status: "healthy",
+                lastErrorReason: null,
+              }, { client });
+              return {
+                status: "healthy",
+                projectionKey,
+                processedGeneration: capturedGeneration,
+                processedBoundaryMessageId: capturedBoundary,
+              };
+            });
+          }
+        }
+        staged = await adapter.rebuild({
+          userId,
+          presetId,
+          sourceGeneration: capturedGeneration,
+          boundaryMessageId: capturedBoundary,
+        });
       } else if (processedBoundary < capturedBoundary) {
         mode = "append";
         staged = await adapter.append({ userId, presetId, sourceGeneration: capturedGeneration, afterMessageId: processedBoundary, boundaryMessageId: capturedBoundary });
@@ -46,8 +128,8 @@ function createProjectionDrain({ repositories, projectionKey, adapter } = {}) {
           if (!current || current.meta.sourceGeneration !== capturedGeneration) return;
           await repositories.sidecars.upsertProjectionCheckpoint(userId, presetId, {
             projectionKey,
-            processedGeneration: mode === "rebuild" ? processedGeneration : capturedGeneration,
-            processedBoundaryMessageId: processedBoundary,
+            processedGeneration: mode === "rebuild" ? rebuildProcessedGeneration : capturedGeneration,
+            processedBoundaryMessageId: mode === "rebuild" ? rebuildProcessedBoundary : processedBoundary,
             status: mode === "rebuild" ? "rebuilding" : "degraded",
             lastErrorReason: errorReason(error),
           }, { client });

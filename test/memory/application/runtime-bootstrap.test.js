@@ -68,19 +68,12 @@ test("disabled runtime privacy delete purges authority and derived state", async
   assert.equal(operation.status, "completed");
 });
 
-test("enabled runtime performs one complete Provider preflight before becoming ready", async () => {
+test("enabled runtime does not call the Provider until real Memory work exists", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
-  globalThis.fetch = async (_url, options) => {
+  globalThis.fetch = async () => {
     calls += 1;
-    const request = JSON.parse(options.body);
-    const userPayload = JSON.parse(request.messages[1].content);
-    return {
-      ok: true,
-      async json() {
-        return { model: "preflight-model", choices: [{ finish_reason: "stop", message: { parsed: userPayload.expectedOutput } }] };
-      },
-    };
+    throw new Error("unexpected Provider call");
   };
   const repositories = {
     state: {}, source: {}, runtime: {}, audit: {}, sidecars: {},
@@ -95,11 +88,8 @@ test("enabled runtime performs one complete Provider preflight before becoming r
       },
       repositories,
     });
-    const first = await runtime.initialize();
-    const second = await runtime.initialize();
-    assert.equal(first.length, 9);
-    assert.deepEqual(second, first);
-    assert.equal(calls, 9);
+    assert.equal(runtime.getProviderHealthSnapshot().status, "unknown");
+    assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

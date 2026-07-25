@@ -215,7 +215,17 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
         }
       } catch (error) {
         if (isSafetySignal(error?.code, error?.message)) return { status: "error", reason: "safety_policy_blocked", detail: { code: error?.code ?? null } };
-        return { status: "error", reason: "llm_call_failed", detail: { code: error?.code ?? null, message: error instanceof Error ? error.message : String(error), ...(error?.detail || {}) } };
+        return {
+          status: "error",
+          reason: "llm_call_failed",
+          detail: {
+            code: error?.code ?? null,
+            status: Number.isSafeInteger(Number(error?.status)) ? Number(error.status) : null,
+            retryable: error?.retryable ?? null,
+            message: error instanceof Error ? error.message : String(error),
+            ...(error?.detail || {}),
+          },
+        };
       }
       const { task } = envelope;
       if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) {

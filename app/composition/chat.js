@@ -60,6 +60,7 @@ function createChatComposition({ config, database, memoryRuntime, logger, authMi
   const controller = adapters.controller || createChatController({
     chatModule,
     memory: memoryRuntime,
+    rag,
     config: { rag: config.chatRagConfig },
     logger,
     withRequestContext,

@@ -205,7 +205,11 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     });
   }
 
-  async function forceDrainTo(userId, presetId, { sourceGeneration, boundaryMessageId }) {
+  async function forceDrainTo(userId, presetId, {
+    sourceGeneration,
+    boundaryMessageId,
+    resumeHalted = false,
+  }) {
     if (typeof normalWritePipeline.prepareEnvelope !== "function"
       || typeof normalWritePipeline.commitPreparedWave !== "function") {
       throw new Error("Source rebuild requires wave-aware prepare and commit pipeline operations");
@@ -222,8 +226,27 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         if (!targetStatus || Number(rowValue(targetStatus, "source_generation", "sourceGeneration")) !== sourceGeneration) {
           return { status: "stale", sourceGeneration, results };
         }
-        if (rowValue(targetStatus, "status", "status") !== "rebuilding"
-          || Number(rowValue(targetStatus, "rebuild_boundary_message_id", "rebuildBoundaryMessageId")) !== boundaryMessageId) {
+        const targetRuntimeStatus = rowValue(targetStatus, "status", "status");
+        const targetBoundary = Number(rowValue(
+          targetStatus,
+          "rebuild_boundary_message_id",
+          "rebuildBoundaryMessageId",
+        ));
+        if (targetRuntimeStatus === "halted" && !resumeHalted) {
+          return {
+            status: "incomplete",
+            sourceGeneration,
+            targetKey,
+            result: {
+              status: "halted",
+              reason: rowValue(targetStatus, "last_error_reason", "lastErrorReason") ?? "provider_halted",
+              taskId: rowValue(targetStatus, "last_task_id", "lastTaskId") ?? null,
+            },
+            results,
+          };
+        }
+        if (targetBoundary !== boundaryMessageId
+          || (resumeHalted && targetRuntimeStatus === "halted")) {
           await repositories.runtime.upsertTargetStatus(userId, presetId, {
             targetKey,
             sourceGeneration,

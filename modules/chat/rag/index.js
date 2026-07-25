@@ -5,6 +5,7 @@ const { createChatRagRetriever } = require("./retriever");
 const { createChatRagIndexer } = require("./indexer");
 const { createChatRagProjectionAdapter } = require("./projectionAdapters");
 const { createEmbeddingClient } = require("./infrastructure/embeddings");
+const { createCircuitProtectedEmbeddingClient } = require("./infrastructure/circuitProtectedEmbeddings");
 const { createRerankerClient } = require("./infrastructure/reranker");
 
 function createChatRagModule({ config, database, logger, llm, infrastructure = {} } = {}) {
@@ -13,10 +14,14 @@ function createChatRagModule({ config, database, logger, llm, infrastructure = {
   if (!logger || typeof logger !== "object") throw new Error("Chat RAG logger is required");
   if (typeof llm?.complete !== "function") throw new Error("Chat RAG completion port is required");
 
-  const embeddingClient = infrastructure.embeddingClient || createEmbeddingClient({
+  const rawEmbeddingClient = infrastructure.embeddingClient || createEmbeddingClient({
     config: config.rag,
     fetchImpl: infrastructure.fetchImpl,
     openRouterAttribution: infrastructure.openRouterAttribution,
+  });
+  const embeddingClient = createCircuitProtectedEmbeddingClient({
+    embeddingClient: rawEmbeddingClient,
+    circuit: infrastructure.embeddingCircuit,
   });
   const rerankerClient = infrastructure.rerankerClient || createRerankerClient({
     config: config.rag,
@@ -58,8 +63,14 @@ function createChatRagModule({ config, database, logger, llm, infrastructure = {
   });
   const privacyStore = Object.freeze({
     name: "rag",
-    purge: ({ userId, presetId, client }) => repository.deleteAllChunks(userId, presetId, { client }),
-    verifyPurged: async ({ userId, presetId }) => (await repository.countStaleChunks(userId, presetId)) === 0,
+    async purge({ userId, presetId, client }) {
+      await repository.deleteAllProjectionStages(userId, presetId, { client });
+      return repository.deleteAllChunks(userId, presetId, { client });
+    },
+    verifyPurged: async ({ userId, presetId }) => (
+      (await repository.countChunks(userId, presetId)) === 0
+      && (await repository.countProjectionStages(userId, presetId)) === 0
+    ),
   });
 
   return Object.freeze({
@@ -68,6 +79,10 @@ function createChatRagModule({ config, database, logger, llm, infrastructure = {
     requestDeleteFromMessage: indexer.requestDeleteChunksFromMessageId,
     projectionAdapter,
     privacyStore,
+    getHealthSnapshot: () => Object.freeze({
+      embeddingProvider: embeddingClient.getHealthSnapshot(),
+    }),
+    retryEmbeddingProvider: () => embeddingClient.retryNow(),
     admin: Object.freeze({
       indexChatTurn: indexer.indexChatTurn,
       deleteChunksFromMessageId: indexer.deleteChunksFromMessageId,

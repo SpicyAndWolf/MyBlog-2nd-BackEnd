@@ -194,18 +194,21 @@ function createServerLifecycle({
     try {
       validateProductionStartup({ env: startupEnvironment, memoryEnabled: memoryRuntime.enabled, ...productionModels });
       health.set("starting");
-      if (memoryRuntime.enabled) {
-        await memoryRuntime.initialize();
-        assertStartupActive();
-        health.set("recovering");
-        await memoryRuntime.recoverPending({ requireComplete: true });
-        assertStartupActive();
-        memoryRuntime.startTaskPolling();
-        memoryRuntime.startProjectionPolling();
-      }
       server = await listen(app, port, host);
       assertStartupActive();
       health.set("ready");
+      if (memoryRuntime.enabled) {
+        memoryRuntime.startTaskPolling();
+        memoryRuntime.startProjectionPolling();
+        void Promise.resolve(memoryRuntime.recoverPending())
+          .then((report) => {
+            const issues = Array.isArray(report?.issues) ? report.issues : [];
+            if (issues.length) logger.warn?.("memory_startup_recovery_degraded", { issues });
+          })
+          .catch((error) => {
+            logger.error("memory_startup_recovery_failed", { error });
+          });
+      }
       const stopBackground = await Promise.resolve(startBackground());
       stopBackgroundServices = typeof stopBackground === "function" ? stopBackground : async () => {};
       assertStartupActive();

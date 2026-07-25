@@ -122,7 +122,14 @@ function debtKey(importer, target) {
 function tableOwner(tableName) {
   const table = String(tableName || "").toLowerCase();
   if (table === "users") return "auth";
-  if (["chat_sessions", "chat_messages", "chat_prompt_presets", "chat_message_gists", "chat_rag_chunks"].includes(table)) {
+  if ([
+    "chat_sessions",
+    "chat_messages",
+    "chat_prompt_presets",
+    "chat_message_gists",
+    "chat_rag_chunks",
+    "chat_rag_projection_staging",
+  ].includes(table)) {
     return "chat";
   }
   if (table === "chat_preset_memory" || table.startsWith("chat_memory_") || [

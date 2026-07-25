@@ -55,6 +55,11 @@ function createChatRagProjectionAdapter({
   if (typeof chatRagRepo?.deleteAllChunks !== "function" || typeof chatRagRepo?.upsertChunk !== "function") {
     throw new Error("Chat RAG projection repository is required");
   }
+  if (typeof chatRagRepo.discardOtherProjectionStages !== "function"
+    || typeof chatRagRepo.upsertProjectionStage !== "function"
+    || typeof chatRagRepo.promoteProjectionStage !== "function") {
+    throw new Error("Chat RAG resumable projection repository is required");
+  }
 
 async function listSourceMessages({ userId, presetId, boundaryMessageId }) {
   const { rows } = await db.query(`
@@ -97,9 +102,93 @@ async function stageRagProjection(input, { afterMessageId = 0 } = {}) {
   return { chunks: staged.map((chunk, index) => ({ ...chunk, embedding: embeddings[index] })) };
 }
 
+  async function stageRagProjectionBatch(input) {
+    const { buildTurnChunks, buildDocumentEmbeddingText } = chunker;
+    const afterMessageId = Number(input.afterMessageId ?? 0);
+    if (!chatRagConfig.enabled) {
+      return {
+        chunks: [],
+        processedBoundaryMessageId: input.boundaryMessageId,
+        complete: true,
+      };
+    }
+    const messages = await listSourceMessages(input);
+    const turns = buildTurns(messages, { afterMessageId });
+    const selectedTurns = turns.slice(0, chatRagConfig.embeddingBatchSize);
+    const staged = [];
+    for (const { userMessage, assistantMessage } of selectedTurns) {
+      const sourceRefs = [userMessage, assistantMessage].map((message) => ({
+        messageId: Number(message.id),
+        contentHash: contentHash(message.content),
+      }));
+      const metadata = {
+        userMessageId: Number(userMessage.id),
+        assistantMessageId: Number(assistantMessage.id),
+        userCreatedAt: userMessage.created_at,
+        assistantCreatedAt: assistantMessage.created_at,
+        sourceRefs,
+      };
+      for (const chunk of buildTurnChunks({
+        userContent: userMessage.content,
+        assistantContent: assistantMessage.content,
+      })) {
+        staged.push({
+          userId: input.userId,
+          presetId: input.presetId,
+          sessionId: Number(userMessage.session_id),
+          firstMessageId: Number(userMessage.id),
+          lastMessageId: Number(assistantMessage.id),
+          chunkIndex: chunk.chunkIndex,
+          sourceKind: "chat_turn",
+          sourceHash: chunk.sourceHash,
+          content: chunk.content,
+          embeddingText: chunk.embeddingText,
+          metadata,
+        });
+      }
+    }
+    const embeddings = staged.length
+      ? await createEmbeddings({ texts: staged.map((chunk) => buildDocumentEmbeddingText(chunk.embeddingText)) })
+      : [];
+    const complete = selectedTurns.length === turns.length;
+    const processedBoundaryMessageId = complete
+      ? Number(input.boundaryMessageId)
+      : Number(selectedTurns.at(-1)?.assistantMessage?.id ?? afterMessageId);
+    return {
+      chunks: staged.map((chunk, index) => ({ ...chunk, embedding: embeddings[index] })),
+      processedBoundaryMessageId,
+      complete,
+    };
+  }
+
   return Object.freeze({
     rebuild: (input) => stageRagProjection(input),
     append: (input) => stageRagProjection(input, { afterMessageId: input.afterMessageId }),
+    rebuildBatch: stageRagProjectionBatch,
+    async stageRebuildBatch({ staged, userId, presetId, sourceGeneration, boundaryMessageId, client }) {
+      await chatRagRepo.discardOtherProjectionStages(
+        userId,
+        presetId,
+        { sourceGeneration, boundaryMessageId },
+        { client },
+      );
+      for (const chunk of staged?.chunks || []) {
+        await chatRagRepo.upsertProjectionStage(
+          chunk,
+          { sourceGeneration, boundaryMessageId },
+          { client },
+        );
+      }
+    },
+    finalizeRebuild: (input) => chatRagRepo.promoteProjectionStage(
+      input.userId,
+      input.presetId,
+      {
+        sourceGeneration: input.sourceGeneration,
+        boundaryMessageId: input.boundaryMessageId,
+      },
+      { client: input.client },
+    ),
     async commit({ mode, staged, userId, presetId, client }) {
       if (mode === "rebuild") await chatRagRepo.deleteAllChunks(userId, presetId, { client });
       for (const chunk of staged?.chunks || []) await chatRagRepo.upsertChunk(chunk, { client });

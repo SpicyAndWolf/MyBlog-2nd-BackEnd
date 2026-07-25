@@ -16,6 +16,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   chat_memory_diagnostic_projection_checkpoints: ["user_id", "preset_id", "projection_key", "processed_event_id", "last_error_reason", "updated_at"],
   chat_memory_recovery_notifications: ["id", "user_id", "preset_id", "subject_kind", "subject_key", "notification_type", "boundary_message_id", "source_generation", "delivered", "delivered_at", "created_at"],
   chat_memory_privacy_operations: ["user_id", "preset_id", "operation_id", "operation_mode", "source_generation", "boundary_message_id", "operation_payload", "status", "last_error_reason", "created_at", "updated_at"],
+  chat_rag_projection_staging: ["user_id", "preset_id", "source_generation", "boundary_message_id", "session_id", "first_message_id", "last_message_id", "chunk_index", "source_kind", "source_hash", "content", "embedding_text", "metadata", "embedding", "embedding_provider", "embedding_model", "embedding_dimensions", "created_at", "updated_at"],
 });
 const REQUIRED_TABLES = Object.freeze(Object.keys(REQUIRED_COLUMNS));
 const REQUIRED_INDEXES = Object.freeze([
@@ -25,6 +26,7 @@ const REQUIRED_INDEXES = Object.freeze([
   "idx_context_diagnostics_active", "idx_context_diagnostics_one_active", "idx_recovery_notifications_pending",
   "idx_memory_privacy_operations_pending",
   "idx_memory_privacy_operations_active_scope",
+  "idx_chat_rag_projection_staging_build",
   "idx_chat_messages_scope_idempotency", "idx_chat_messages_one_assistant_per_parent", "idx_chat_messages_turn_id",
 ]);
 const REQUIRED_CONSTRAINTS = Object.freeze(["chk_context_projection_key"]);
@@ -163,20 +165,20 @@ async function inspect(url) {
       SELECT table_name
       FROM information_schema.tables
       WHERE table_schema = current_schema()
-        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints'))
+        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints','chat_rag_projection_staging'))
       ORDER BY table_name
     `);
     const columns = await pool.query(`
       SELECT table_name, column_name, data_type, is_nullable, column_default
       FROM information_schema.columns
       WHERE table_schema = current_schema()
-        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory'))
+        AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_rag_projection_staging'))
       ORDER BY table_name, ordinal_position
     `);
     const indexes = await pool.query(`
       SELECT indexname FROM pg_indexes
       WHERE schemaname = current_schema()
-        AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory'))
+        AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory','chat_rag_projection_staging'))
       ORDER BY indexname
     `);
     const constraints = await pool.query(`
@@ -245,9 +247,9 @@ function inspectThroughWindowsPsql(url) {
   const port = url.port || "5432";
   const sql = `
     SELECT json_build_object(
-      'tables', COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints'))), '[]'::json),
-      'columns', COALESCE((SELECT json_agg(json_build_object('table_name',table_name,'column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory'))), '[]'::json),
-      'indexes', COALESCE((SELECT json_agg(indexname ORDER BY indexname) FROM pg_indexes WHERE schemaname=current_schema() AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory'))), '[]'::json),
+      'tables', COALESCE((SELECT json_agg(table_name ORDER BY table_name) FROM information_schema.tables WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_preset_memory_checkpoints','chat_rag_projection_staging'))), '[]'::json),
+      'columns', COALESCE((SELECT json_agg(json_build_object('table_name',table_name,'column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema=current_schema() AND (table_name LIKE 'chat_memory_%' OR table_name LIKE 'chat_context_%' OR table_name IN ('chat_messages','chat_preset_memory','chat_rag_projection_staging'))), '[]'::json),
+      'indexes', COALESCE((SELECT json_agg(indexname ORDER BY indexname) FROM pg_indexes WHERE schemaname=current_schema() AND (tablename LIKE 'chat_memory_%' OR tablename LIKE 'chat_context_%' OR tablename IN ('chat_messages','chat_preset_memory','chat_rag_projection_staging'))), '[]'::json),
       'constraints', COALESCE((SELECT json_agg(c.conname ORDER BY c.conname) FROM pg_constraint c JOIN pg_class r ON r.oid=c.conrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname=current_schema() AND r.relname='chat_context_projection_checkpoints'), '[]'::json),
       'userTimeZoneColumn', (SELECT json_build_object('column_name',column_name,'data_type',data_type,'is_nullable',is_nullable,'column_default',column_default) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='time_zone'),
       'legacyCheckpointTable', EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='chat_preset_memory_checkpoints'),

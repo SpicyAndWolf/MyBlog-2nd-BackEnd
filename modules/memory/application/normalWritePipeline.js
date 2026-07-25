@@ -205,6 +205,61 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     });
   }
 
+  async function recordProviderCircuitDeferral(envelope, adapterResult) {
+    const providerHealth = adapterResult.providerHealth || {};
+    const needsAttention = providerHealth.status === "needs_attention";
+    const nextRetryAt = needsAttention ? null : providerHealth.nextRetryAt || null;
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task disappeared before provider deferral persistence");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) {
+        return {
+          status: rowValue(task, "status", "status"),
+          taskId: envelope.task.taskId,
+          duplicate: true,
+        };
+      }
+      const target = await repositories.runtime.getTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        envelope.task.targetKey,
+        { client, forUpdate: true },
+      );
+      const taskStatus = needsAttention ? "failed" : "retry_wait";
+      const targetStatus = needsAttention ? "halted" : "retry_wait";
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: taskStatus,
+        stage: "provider_circuit_open",
+        not_before: nextRetryAt,
+        last_error_reason: "provider_circuit_open",
+      }, { client });
+      await repositories.runtime.upsertTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        {
+          targetKey: envelope.task.targetKey,
+          sourceGeneration: envelope.task.sourceGeneration,
+          status: targetStatus,
+          consecutiveErrors: numberValue(target, "consecutive_errors", "consecutiveErrors"),
+          lastErrorReason: "provider_circuit_open",
+          lastTaskId: envelope.task.taskId,
+          nextRetryAt,
+        },
+        { client },
+      );
+      await appendOps(envelope, "provider_circuit_open", numberValue(task, "attempt", "attempt"), {
+        providerStatus: providerHealth.status || "degraded",
+        nextRetryAt,
+      }, client);
+      return {
+        status: needsAttention ? "halted" : "retry_wait",
+        outcome: "provider_circuit_open",
+        taskId: envelope.task.taskId,
+        notBefore: nextRetryAt,
+      };
+    });
+  }
+
   async function reserveSchemaInvalidRetry(envelope, adapterResult) {
     return repositories.withTransaction(async (client) => {
       const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
@@ -1032,6 +1087,9 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
     if (!output && !semanticResult) {
       const adapterResult = await proposeWithSchemaRetry(attemptEnvelope);
       if (adapterResult.status === "deferred") {
+        if (adapterResult.reason === "provider_circuit_open") {
+          return recordProviderCircuitDeferral(envelope, adapterResult);
+        }
         return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
       }
       if (adapterResult.status === "error") {

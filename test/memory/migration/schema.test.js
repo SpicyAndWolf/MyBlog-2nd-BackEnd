@@ -86,3 +86,13 @@ test("2.01 cleanup migration removes evidence classification and suppression sto
   assert.match(migration, /chat_context_projection_checkpoints DROP COLUMN IF EXISTS processed_tombstone_id/i);
   assert.match(migration, /DROP TABLE IF EXISTS chat_context_suppression_tombstones/i);
 });
+
+test("RAG projection migration stores resumable batches separately from the active index", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/012-resumable-rag-projection.sql"), "utf8");
+  assert.match(migration, /CREATE EXTENSION IF NOT EXISTS vector/i);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_rag_projection_staging/i);
+  assert.match(migration, /source_generation BIGINT NOT NULL/i);
+  assert.match(migration, /boundary_message_id BIGINT NOT NULL/i);
+  assert.match(migration, /PRIMARY KEY\s*\([\s\S]*source_generation[\s\S]*chunk_index[\s\S]*\)/i);
+  assert.match(migration, /idx_chat_rag_projection_staging_build/i);
+});

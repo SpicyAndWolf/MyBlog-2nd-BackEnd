@@ -84,3 +84,65 @@ test("projection drain uses only generation and source boundary when already cur
   assert.deepEqual(calls, []);
   assert.deepEqual(checkpointWrite, { projectionKey: "rag", processedGeneration: 0, processedBoundaryMessageId: 20, status: "healthy", lastErrorReason: null });
 });
+
+test("resumable RAG rebuild persists every staged batch and resumes after a failed batch", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 2;
+  let checkpoint = {
+    processed_generation: 1,
+    processed_boundary_message_id: 0,
+    status: "rebuilding",
+  };
+  let failSecondBatch = true;
+  let finalized = 0;
+  const requestedAfter = [];
+  const stagedBoundaries = [];
+  const repositories = {
+    state: { async getState() { return structuredClone(state); } },
+    source: { async getBoundary() { return 6; } },
+    sidecars: {
+      async getProjectionCheckpoint() { return checkpoint; },
+      async upsertProjectionCheckpoint(_u, _p, value) {
+        checkpoint = {
+          processed_generation: value.processedGeneration,
+          processed_boundary_message_id: value.processedBoundaryMessageId,
+          status: value.status,
+          last_error_reason: value.lastErrorReason,
+        };
+      },
+    },
+    async withTransaction(work) { return work({ transaction: true }); },
+  };
+  const adapter = {
+    async rebuildBatch({ afterMessageId }) {
+      requestedAfter.push(afterMessageId);
+      if (afterMessageId === 0) {
+        return { chunks: [{ id: "first" }], processedBoundaryMessageId: 2, complete: false };
+      }
+      if (failSecondBatch) {
+        failSecondBatch = false;
+        throw Object.assign(new Error("embedding offline"), { code: "EMBEDDING_UNAVAILABLE" });
+      }
+      return { chunks: [{ id: "second" }], processedBoundaryMessageId: 6, complete: true };
+    },
+    async stageRebuildBatch({ staged }) {
+      stagedBoundaries.push(staged.processedBoundaryMessageId);
+    },
+    async finalizeRebuild() { finalized += 1; },
+    async rebuild() { throw new Error("legacy rebuild should not run"); },
+    async append() { throw new Error("append should not run"); },
+    async commit() { throw new Error("legacy commit should not run"); },
+  };
+  const drain = createProjectionDrain({ repositories, projectionKey: "rag", adapter });
+
+  await assert.rejects(() => drain.drain(1, "default"), /embedding offline/);
+  assert.equal(checkpoint.processed_generation, 2);
+  assert.equal(checkpoint.processed_boundary_message_id, 2);
+  assert.equal(checkpoint.status, "rebuilding");
+
+  const result = await drain.drain(1, "default");
+  assert.equal(result.status, "healthy");
+  assert.deepEqual(requestedAfter, [0, 2, 2]);
+  assert.deepEqual(stagedBoundaries, [2, 6]);
+  assert.equal(finalized, 1);
+});

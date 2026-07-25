@@ -111,6 +111,8 @@ test("HTTP methods, paths, auth placement, uploads, and controller bindings rema
     { method: "GET", path: "/api/auth/me", handlers: ["auth", "authController_me"], globalAuth: false },
     { method: "PATCH", path: "/api/auth/me/time-zone", handlers: ["auth", "authController_updateTimeZone"], globalAuth: false },
     { method: "GET", path: "/api/chat/meta", handlers: ["chat_getMeta"], globalAuth: true },
+    { method: "GET", path: "/api/chat/health", handlers: ["chat_getHealth"], globalAuth: true },
+    { method: "POST", path: "/api/chat/health/retry", handlers: ["chat_retryHealth"], globalAuth: true },
     { method: "GET", path: "/api/chat/privacy-operations/:operationId", handlers: ["chat_getPrivacyOperation"], globalAuth: true },
     { method: "GET", path: "/api/chat/presets", handlers: ["chat_listPresets"], globalAuth: true },
     { method: "GET", path: "/api/chat/presets/trash", handlers: ["chat_listTrashedPresets"], globalAuth: true },

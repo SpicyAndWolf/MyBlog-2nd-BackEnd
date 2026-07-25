@@ -152,6 +152,129 @@ async function deleteAllChunks(userId, presetId, { client } = {}) {
   return rowCount || 0;
 }
 
+async function discardOtherProjectionStages(
+  userId,
+  presetId,
+  { sourceGeneration, boundaryMessageId },
+  { client } = {},
+) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const generation = normalizeNonNegativeInteger(sourceGeneration, { name: "sourceGeneration" });
+  const boundary = normalizeNonNegativeInteger(boundaryMessageId, { name: "boundaryMessageId" });
+  const { rowCount } = await (client || db).query(`
+    DELETE FROM chat_rag_projection_staging
+    WHERE user_id=$1 AND preset_id=$2
+      AND (source_generation<>$3 OR boundary_message_id<>$4)
+  `, [normalizedUserId, normalizedPresetId, generation, boundary]);
+  return rowCount || 0;
+}
+
+async function deleteAllProjectionStages(userId, presetId, { client } = {}) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const { rowCount } = await (client || db).query(
+    "DELETE FROM chat_rag_projection_staging WHERE user_id=$1 AND preset_id=$2",
+    [normalizedUserId, normalizedPresetId],
+  );
+  return rowCount || 0;
+}
+
+async function countProjectionStages(userId, presetId, { client } = {}) {
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const { rows } = await (client || db).query(
+    "SELECT COUNT(*)::BIGINT AS count FROM chat_rag_projection_staging WHERE user_id=$1 AND preset_id=$2",
+    [normalizedUserId, normalizedPresetId],
+  );
+  return Number(rows[0]?.count || 0);
+}
+
+async function upsertProjectionStage(chunk, { sourceGeneration, boundaryMessageId }, { client } = {}) {
+  const normalizedUserId = normalizePositiveInteger(chunk.userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(chunk.presetId);
+  const generation = normalizeNonNegativeInteger(sourceGeneration, { name: "sourceGeneration" });
+  const boundary = normalizeNonNegativeInteger(boundaryMessageId, { name: "boundaryMessageId" });
+  const params = [
+    normalizedUserId,
+    normalizedPresetId,
+    generation,
+    boundary,
+    normalizePositiveInteger(chunk.sessionId, { name: "sessionId" }),
+    normalizePositiveInteger(chunk.firstMessageId, { name: "firstMessageId" }),
+    normalizePositiveInteger(chunk.lastMessageId, { name: "lastMessageId" }),
+    normalizeNonNegativeInteger(chunk.chunkIndex, { name: "chunkIndex" }),
+    String(chunk.sourceKind || "").trim(),
+    String(chunk.sourceHash || "").trim(),
+    String(chunk.content || "").trim(),
+    String(chunk.embeddingText || "").trim(),
+    normalizeMetadata(chunk.metadata),
+    toVectorLiteral(chunk.embedding),
+    chatRagConfig.embeddingProvider,
+    chatRagConfig.embeddingModel,
+    chatRagConfig.embeddingDimensions,
+  ];
+  const { rows } = await (client || db).query(`
+    INSERT INTO chat_rag_projection_staging (
+      user_id,preset_id,source_generation,boundary_message_id,
+      session_id,first_message_id,last_message_id,chunk_index,
+      source_kind,source_hash,content,embedding_text,metadata,embedding,
+      embedding_provider,embedding_model,embedding_dimensions
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::vector,$15,$16,$17)
+    ON CONFLICT (
+      user_id,preset_id,source_generation,session_id,first_message_id,last_message_id,chunk_index
+    )
+    DO UPDATE SET
+      boundary_message_id=EXCLUDED.boundary_message_id,
+      source_kind=EXCLUDED.source_kind,
+      source_hash=EXCLUDED.source_hash,
+      content=EXCLUDED.content,
+      embedding_text=EXCLUDED.embedding_text,
+      metadata=EXCLUDED.metadata,
+      embedding=EXCLUDED.embedding,
+      embedding_provider=EXCLUDED.embedding_provider,
+      embedding_model=EXCLUDED.embedding_model,
+      embedding_dimensions=EXCLUDED.embedding_dimensions,
+      updated_at=NOW()
+    RETURNING first_message_id,last_message_id,chunk_index
+  `, params);
+  return rows[0] || null;
+}
+
+async function promoteProjectionStage(
+  userId,
+  presetId,
+  { sourceGeneration, boundaryMessageId },
+  { client } = {},
+) {
+  if (!client) throw new Error("Projection stage promotion requires a transaction client");
+  const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
+  const normalizedPresetId = normalizePresetId(presetId);
+  const generation = normalizeNonNegativeInteger(sourceGeneration, { name: "sourceGeneration" });
+  const boundary = normalizeNonNegativeInteger(boundaryMessageId, { name: "boundaryMessageId" });
+  await deleteAllChunks(normalizedUserId, normalizedPresetId, { client });
+  const { rowCount } = await client.query(`
+    INSERT INTO chat_rag_chunks (
+      user_id,preset_id,session_id,first_message_id,last_message_id,chunk_index,
+      source_kind,source_hash,content,embedding_text,metadata,embedding,
+      embedding_provider,embedding_model,embedding_dimensions
+    )
+    SELECT
+      user_id,preset_id,session_id,first_message_id,last_message_id,chunk_index,
+      source_kind,source_hash,content,embedding_text,metadata,embedding,
+      embedding_provider,embedding_model,embedding_dimensions
+    FROM chat_rag_projection_staging
+    WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3 AND boundary_message_id=$4
+    ORDER BY last_message_id,chunk_index
+  `, [normalizedUserId, normalizedPresetId, generation, boundary]);
+  await client.query(
+    "DELETE FROM chat_rag_projection_staging WHERE user_id=$1 AND preset_id=$2",
+    [normalizedUserId, normalizedPresetId],
+  );
+  return rowCount || 0;
+}
+
 async function countChunks(userId, presetId, { client } = {}) {
   const normalizedUserId = normalizePositiveInteger(userId, { name: "userId" });
   const normalizedPresetId = normalizePresetId(presetId);
@@ -384,6 +507,11 @@ async function listMessagesAroundChunk({
 return Object.freeze({
   upsertChunk,
   deleteAllChunks,
+  deleteAllProjectionStages,
+  countProjectionStages,
+  discardOtherProjectionStages,
+  upsertProjectionStage,
+  promoteProjectionStage,
   countChunks,
   countStaleChunks,
   deleteChunksFromMessageId,

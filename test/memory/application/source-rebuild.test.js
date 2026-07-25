@@ -177,7 +177,7 @@ test("snapshot restore rejects stale provenance and safely falls back to an empt
   assert.deepEqual(current.longTerm.worldFacts, []);
 });
 
-test("force drain ignores lag eligibility and keeps each target rebuilding until boundary validation", async () => {
+test("explicit force-drain resume ignores lag eligibility and keeps each target rebuilding until boundary validation", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;
   state.meta.revision = 6;
@@ -253,7 +253,11 @@ test("force drain ignores lag eligibility and keeps each target rebuilding until
   };
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
   const rebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config: { targets } });
-  const result = await rebuild.forceDrainTo(7, "companion", { sourceGeneration: 1, boundaryMessageId: 20 });
+  const result = await rebuild.forceDrainTo(7, "companion", {
+    sourceGeneration: 1,
+    boundaryMessageId: 20,
+    resumeHalted: true,
+  });
   assert.equal(result.status, "completed");
   assert.deepEqual(processed, [...TARGET_KEYS, "scene"]);
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
@@ -451,4 +455,54 @@ test("rebuild reconciliation honors a durable retry_wait boundary before invokin
   assert.equal(result.result.status, "retry_wait");
   assert.equal(result.result.notBefore, future);
   assert.equal(providerCalls, 0);
+});
+
+test("background rebuild reconciliation leaves a halted boundary for explicit manual retry", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((key) => [key, 0]));
+  let providerCalls = 0;
+  let statusWrites = 0;
+  const repositories = {
+    state: { async getState() { return structuredClone(state); } },
+    source: { async getForceDrainWindow() { throw new Error("halted rebuild must not read another batch"); } },
+    runtime: {
+      async getTargetStatus(_u, _p, targetKey) {
+        return {
+          target_key: targetKey,
+          source_generation: 1,
+          status: targetKey === "scene" ? "halted" : "rebuilding",
+          rebuild_boundary_message_id: 20,
+          last_error_reason: targetKey === "scene" ? "llm_call_failed" : null,
+        };
+      },
+      async upsertTargetStatus() { statusWrites += 1; },
+      async listTasksForTarget() { return []; },
+    },
+    audit: {},
+    sidecars: {},
+    async withTransaction(work) { return work({}); },
+  };
+  const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 50, contextWindow: 50 }]));
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline: {
+      async createTask() { providerCalls += 1; },
+      async processEnvelope() { providerCalls += 1; },
+      async prepareEnvelope() { providerCalls += 1; },
+      async commitPreparedWave() { providerCalls += 1; },
+    },
+    config: { targets },
+  });
+
+  const result = await rebuild.forceDrainTo(7, "companion", {
+    sourceGeneration: 1,
+    boundaryMessageId: 20,
+  });
+
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.result.status, "halted");
+  assert.equal(result.result.reason, "llm_call_failed");
+  assert.equal(providerCalls, 0);
+  assert.equal(statusWrites, 0);
 });

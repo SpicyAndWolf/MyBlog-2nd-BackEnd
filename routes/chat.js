@@ -9,6 +9,8 @@ function createChatRouter({ authMiddleware, chatController, uploadPresetAvatar }
   router.use(authMiddleware);
 
   router.get("/meta", chatController.getMeta);
+  router.get("/health", chatController.getHealth);
+  router.post("/health/retry", chatController.retryHealth);
   router.get("/privacy-operations/:operationId", chatController.getPrivacyOperation);
 
   router.get("/presets", chatController.listPresets);

@@ -64,7 +64,7 @@ test("health endpoints keep business traffic closed until readiness is establish
   }
 });
 
-test("server listens only after strict Memory recovery and drains all workers before closing the database", async () => {
+test("server becomes ready before optional Memory recovery and drains workers before closing the database", async () => {
   const events = [];
   let releaseRecovery;
   const recoveryGate = new Promise((resolve) => { releaseRecovery = resolve; });
@@ -73,10 +73,10 @@ test("server listens only after strict Memory recovery and drains all workers be
   installHealthEndpoints(app, health);
   const memoryRuntime = {
     enabled: true,
-    async initialize() { events.push("memory:initialize"); },
-    async recoverPending(options) {
-      events.push(["memory:recover", options]);
+    async recoverPending() {
+      events.push("memory:recover");
       await recoveryGate;
+      return { issues: [] };
     },
     startTaskPolling() { events.push("tasks:start"); },
     startProjectionPolling() { events.push("projections:start"); },
@@ -101,20 +101,17 @@ test("server listens only after strict Memory recovery and drains all workers be
   });
 
   const starting = lifecycle.start();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(lifecycle.server, null);
-  assert.equal(health.status, "recovering");
-  releaseRecovery();
   const server = await starting;
   assert.equal(health.status, "ready");
-  assert.deepEqual(events.slice(0, 5), [
-    "memory:initialize",
-    ["memory:recover", { requireComplete: true }],
+  assert.deepEqual(events.slice(0, 4), [
     "tasks:start",
     "projections:start",
+    "memory:recover",
     "cleanup:start",
   ]);
   assert.ok(server.listening);
+  releaseRecovery();
+  await recoveryGate;
 
   const result = await lifecycle.shutdown("test");
   assert.deepEqual(result, { status: "stopped", graceful: true, cancelledRequests: 2 });
