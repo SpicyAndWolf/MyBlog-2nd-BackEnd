@@ -8,12 +8,11 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
   const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens };
   return async function invokeStructured(request) {
-    const { systemPrompt, userPayload } = request;
-    assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
     const { endpoint, body } = buildOpenAiHttpRequest(providerConfig, request, {
       compileSchema,
       extraBody,
     });
+    assertStructuredRequestLimits({ messages: body.messages, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
@@ -38,6 +37,7 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
       const finishReason = choice?.finish_reason ?? choice?.stop_reason;
       if (message?.refusal || isSafetySignal(finishReason)) return { refusal: true, finishReason, model: data?.model ?? requestedModel, usage: data?.usage };
       const content = message?.parsed ?? message?.content;
+      const rawOutput = message?.content ?? message?.parsed;
       let output = content;
       let transportError = null;
       if (content == null) {
@@ -47,7 +47,7 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
         try { output = JSON.parse(content); }
         catch { output = null; transportError = "content_invalid_json"; }
       }
-      return { output, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null, transportError, transportRecovery: null };
+      return { output, rawOutput, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null, transportError, transportRecovery: null };
     } finally {
       clearTimeout(timeout);
     }

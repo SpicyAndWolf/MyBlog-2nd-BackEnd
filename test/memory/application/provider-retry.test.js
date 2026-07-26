@@ -30,16 +30,19 @@ test("provider retryMax halts even before the broader consecutive-error circuit 
   assert.equal(data.inspect.statuses.get("todos").status, "halted");
 });
 
-test("output schema invalid retries once durably and commits a valid second result", async () => {
+test("output schema invalid durably persists the rejected output and commits a valid repair", async () => {
   const data = store();
   let calls = 0;
   const repairFeedbacks = [];
+  const rejectedOutputs = [];
+  const rejectedOutput = { sectionStatuses: { todos: "changes" }, changes: [] };
   const pipeline = createNormalWritePipeline({
     observer: {}, repositories: data.repositories, config, now: () => fixedNow,
     providerAdapter: { propose: async (envelope, options) => {
       calls += 1;
       repairFeedbacks.push(options?.repairFeedback ?? null);
-      if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$.sectionResults", message: "is invalid" }], rawOutput: "must-not-persist" } };
+      rejectedOutputs.push(options?.rejectedOutput);
+      if (calls === 1) return { status: "error", reason: "output_schema_invalid", rejectedOutput, detail: { boundary: "output", errors: [{ path: "$.sectionResults", message: "is invalid" }] } };
       return { status: "ok", output: { tickId: envelope.task.tickId, proposer: envelope.task.proposer, sectionResults: { todos: { status: "noop" } } } };
     } },
   });
@@ -48,7 +51,9 @@ test("output schema invalid retries once durably and commits a valid second resu
   assert.equal(result.status, "committed");
   assert.equal(calls, 2);
   assert.equal(repairFeedbacks[0], null);
-  assert.equal(repairFeedbacks[1].policyVersion, 1);
+  assert.equal(repairFeedbacks[1].policyVersion, 4);
+  assert.equal(rejectedOutputs[0], undefined);
+  assert.deepEqual(rejectedOutputs[1], rejectedOutput);
   assert.deepEqual(repairFeedbacks[1].errors, [{
     code: "CONTRACT_INVALID",
     path: "$.sectionResults",
@@ -56,10 +61,15 @@ test("output schema invalid retries once durably and commits a valid second resu
   }]);
   assert.equal(task.attempt, 1);
   assert.deepEqual(task.stage_payload.schemaRepairFeedback, repairFeedbacks[1]);
+  assert.deepEqual(task.stage_payload.schemaRejectedOutputs, [{
+    attempt: 0,
+    available: true,
+    utf8Bytes: Buffer.byteLength(JSON.stringify(rejectedOutput), "utf8"),
+    output: rejectedOutput,
+  }]);
   assert.equal(data.inspect.ops[0].outcome, "output_schema_invalid_retry");
   assert.deepEqual(data.inspect.ops[0].detail.repairFeedback, repairFeedbacks[1]);
-  assert.doesNotMatch(JSON.stringify(task.stage_payload), /must-not-persist/);
-  assert.doesNotMatch(JSON.stringify(data.inspect.ops[0]), /must-not-persist/);
+  assert.equal(JSON.stringify(data.inspect.ops[0]).includes(JSON.stringify(rejectedOutput)), false);
   assert.equal(data.inspect.statuses.get("todos").status, "healthy");
 });
 
@@ -70,14 +80,115 @@ test("a second output schema invalid halts without a third provider call", async
     observer: {}, repositories: data.repositories, config, now: () => fixedNow,
     providerAdapter: { propose: async () => {
       calls += 1;
-      return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$" }] } };
+      return {
+        status: "error",
+        reason: "output_schema_invalid",
+        rejectedOutput: { invalidAttempt: calls },
+        detail: { boundary: "output", errors: [{ path: "$" }] },
+      };
     } },
   });
   const result = await pipeline.processIntent(1, "default", intent);
   assert.equal(result.halted, true);
   assert.equal(calls, 2);
   assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), ["output_schema_invalid_retry", "semantic_schema_invalid"]);
+  const task = [...data.inspect.tasks.values()][0];
+  assert.deepEqual(task.stage_payload.schemaRejectedOutputs.map((entry) => entry.output), [
+    { invalidAttempt: 1 },
+    { invalidAttempt: 2 },
+  ]);
+  assert.doesNotMatch(JSON.stringify(data.inspect.ops), /invalidAttempt/);
   assert.equal(data.inspect.statuses.get("todos").status, "halted");
+});
+
+test("transport and semantic schema repairs have separate bounded allowances", async () => {
+  const data = store();
+  let calls = 0;
+  const feedbacks = [];
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config, now: () => fixedNow,
+    providerAdapter: { propose: async (envelope, options) => {
+      calls += 1;
+      feedbacks.push(options?.repairFeedback ?? null);
+      if (calls === 1) {
+        return {
+          status: "error",
+          reason: "output_schema_invalid",
+          rejectedOutput: '{"sectionStatuses":',
+          detail: {
+            boundary: "output",
+            transportError: "content_invalid_json",
+            errors: [{ path: "$", message: "must be an object" }],
+          },
+        };
+      }
+      if (calls === 2) {
+        return {
+          status: "error",
+          reason: "output_schema_invalid",
+          rejectedOutput: { sectionStatuses: { todos: "changes" }, changes: [{ target: "not-an-enum" }] },
+          detail: {
+            boundary: "output",
+            errors: [{ code: "WRITABLE_REF_INVALID", path: "$.changes[0].target", message: "invalid target" }],
+          },
+        };
+      }
+      return {
+        status: "ok",
+        output: {
+          tickId: envelope.task.tickId,
+          proposer: envelope.task.proposer,
+          sectionResults: { todos: { status: "noop" } },
+        },
+      };
+    } },
+  });
+
+  const result = await pipeline.processIntent(1, "default", intent);
+  const task = [...data.inspect.tasks.values()][0];
+  assert.equal(result.status, "committed");
+  assert.equal(calls, 3);
+  assert.equal(task.stage_payload.transportInvalidAttempts, 1);
+  assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.deepEqual(task.stage_payload.schemaRejectedOutputs.map((entry) => entry.attempt), [0, 1]);
+  assert.equal(feedbacks[1].errors[0].code, "TOOL_ARGUMENTS_INVALID_JSON");
+  assert.equal(feedbacks[2].errors[0].code, "WRITABLE_REF_INVALID");
+});
+
+test("transport repair can be disabled without disabling semantic repair", async () => {
+  const data = store();
+  let calls = 0;
+  const strictConfig = {
+    ...config,
+    providerRecovery: {
+      ...config.providerRecovery,
+      transportInvalidRetryMax: 0,
+    },
+  };
+  const pipeline = createNormalWritePipeline({
+    observer: {}, repositories: data.repositories, config: strictConfig, now: () => fixedNow,
+    providerAdapter: { propose: async () => {
+      calls += 1;
+      return {
+        status: "error",
+        reason: "output_schema_invalid",
+        rejectedOutput: '{"broken":',
+        detail: {
+          boundary: "output",
+          transportError: "content_invalid_json",
+          errors: [{ path: "$", message: "must be an object" }],
+        },
+      };
+    } },
+  });
+
+  const result = await pipeline.processIntent(1, "default", intent);
+  const task = [...data.inspect.tasks.values()][0];
+  assert.equal(result.halted, true);
+  assert.equal(calls, 1);
+  assert.equal(task.stage_payload.transportInvalidAttempts, undefined);
+  assert.equal(task.stage_payload.schemaInvalidAttempts, undefined);
+  assert.equal(task.stage_payload.schemaRejectedOutputs.length, 1);
 });
 
 test("input schema invalid never retries", async () => {
@@ -101,10 +212,13 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   let calls = 0;
   let interrupted = true;
   const repairFeedbacks = [];
+  const rejectedOutputs = [];
+  const rejectedOutput = { malformed: "durable" };
   const providerAdapter = { propose: async (_envelope, options) => {
     calls += 1;
     repairFeedbacks.push(options?.repairFeedback ?? null);
-    if (calls === 1) return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$", message: "broken output" }] } };
+    rejectedOutputs.push(options?.rejectedOutput);
+    if (calls === 1) return { status: "error", reason: "output_schema_invalid", rejectedOutput, detail: { boundary: "output", errors: [{ path: "$", message: "broken output" }] } };
     if (interrupted) throw new Error("simulated process interruption");
     return { status: "error", reason: "output_schema_invalid", detail: { boundary: "output", errors: [{ path: "$" }] } };
   } };
@@ -118,6 +232,8 @@ test("schema retry allowance remains consumed after an interrupted process", asy
   assert.equal(calls, 3, "recovery may call once but must not grant another schema retry");
   assert.equal(repairFeedbacks[0], null);
   assert.deepEqual(repairFeedbacks[1], repairFeedbacks[2], "recovery must reuse the durable repair feedback");
+  assert.deepEqual(rejectedOutputs[1], rejectedOutput);
+  assert.deepEqual(rejectedOutputs[2], rejectedOutput, "recovery must replay the durable rejected output");
   assert.deepEqual(repairFeedbacks[2].errors, [{
     code: "CONTRACT_INVALID",
     path: "$",

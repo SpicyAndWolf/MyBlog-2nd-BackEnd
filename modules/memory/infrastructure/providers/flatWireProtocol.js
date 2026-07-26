@@ -293,6 +293,44 @@ function flatWireToSemanticOutput(value, task) {
   return output;
 }
 
+function flatWireChangeIndex(output, section, localIndex) {
+  if (!Array.isArray(output?.changes)) return localIndex;
+  const indexes = [];
+  output.changes.forEach((change, index) => {
+    if (isPlainObject(change) && String(change.section) === section) indexes.push(index);
+  });
+  return indexes[localIndex] ?? localIndex;
+}
+
+function flatWireIssuePath(path, output) {
+  const value = String(path || "$");
+  const match = value.match(/^\$\.sectionResults\.([A-Za-z0-9_]+)(?:\.changes\[(\d+)\])?(.*)$/);
+  if (!match) {
+    if (/^\$\.(tickId|proposer|sectionResults)(?:\.|\[|$)/.test(value)) return "$";
+    return value;
+  }
+  const [, section, localIndex, rawSuffix] = match;
+  if (localIndex === undefined) {
+    if (rawSuffix.startsWith(".changes")) return "$.changes";
+    return `$.sectionStatuses.${section}`;
+  }
+  const index = flatWireChangeIndex(output, section, Number(localIndex));
+  const suffix = rawSuffix
+    .replace(/^\.ref(?=\.|\[|$)/, ".target")
+    .replace(/^\.(evidenceMessageIds|supportRefs)(?=\.|\[|$)/, ".sources")
+    .replace(/^\.anchorMessageId(?=\.|\[|$)/, ".anchorSource")
+    .replace(/^\.(dueAt|dueChange)(?=\.|\[|$).*/, ".dueMode");
+  return `$.changes[${index}]${suffix}`;
+}
+
+function flatWireRepairErrors(errors, output, task) {
+  if (!isFlatWireProposer(task?.proposer)) return Array.isArray(errors) ? errors : [];
+  return (Array.isArray(errors) ? errors : []).map((issue) => ({
+    ...issue,
+    path: flatWireIssuePath(issue?.path, output),
+  }));
+}
+
 function dueExpressionToWire(expression) {
   if (!expression) return {};
   if (expression.mode === "absolute") return { dueMode: "absolute", dueValue: expression.date };
@@ -349,6 +387,8 @@ module.exports = {
   SECTION_ACTIONS,
   bindFlatWireOutputSchema,
   buildFlatWireOutputSchema,
+  flatWireIssuePath,
+  flatWireRepairErrors,
   flatWireToSemanticOutput,
   isFlatWireProposer,
   isFlatWireSchema,

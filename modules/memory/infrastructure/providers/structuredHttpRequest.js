@@ -17,11 +17,29 @@ function chatCompletionsEndpoint(baseUrl) {
   return new URL("chat/completions", normalizeBaseUrl(baseUrl)).toString();
 }
 
+function messageContent(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function buildStructuredMessages({ systemPrompt, userPayload, repairContext = null } = {}) {
+  const messages = [
+    { role: "system", content: String(systemPrompt ?? "") },
+    { role: "user", content: JSON.stringify(userPayload) },
+  ];
+  if (repairContext?.assistantOutput !== undefined && repairContext?.userMessage) {
+    messages.push(
+      { role: "assistant", content: messageContent(repairContext.assistantOutput) },
+      { role: "user", content: String(repairContext.userMessage) },
+    );
+  }
+  return messages;
+}
+
 function buildOpenAiHttpRequest(config, request, {
   compileSchema = (schema) => schema,
   extraBody = {},
 } = {}) {
-  const { proposer, systemPrompt, userPayload, responseSchema } = request;
+  const { proposer, responseSchema } = request;
   const model = resolveMemoryProviderModel(config, proposer);
   const extension = typeof extraBody === "function"
     ? extraBody({ proposer, model })
@@ -33,10 +51,7 @@ function buildOpenAiHttpRequest(config, request, {
       model,
       stream: false,
       max_tokens: config.maxOutputTokens ?? 8192,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
+      messages: buildStructuredMessages(request),
       response_format: {
         type: "json_schema",
         json_schema: (typeof compileSchema === "function"
@@ -49,7 +64,7 @@ function buildOpenAiHttpRequest(config, request, {
 }
 
 function buildDeepSeekHttpRequest(config, request) {
-  const { proposer, systemPrompt, userPayload, responseSchema } = request;
+  const { proposer, responseSchema } = request;
   const normalizedBaseUrl = normalizeBaseUrl(config.baseUrl);
   if (normalizedBaseUrl.hostname === "api.deepseek.com" && !normalizedBaseUrl.pathname.endsWith("/beta/")) {
     throw new Error("DeepSeek strict tools require CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.deepseek.com/beta");
@@ -66,10 +81,7 @@ function buildDeepSeekHttpRequest(config, request) {
       stream: false,
       max_tokens: config.maxOutputTokens ?? 8192,
       thinking: { type: config.thinkingMode ?? "disabled" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
+      messages: buildStructuredMessages(request),
       tools: [{
         type: "function",
         function: {
@@ -114,6 +126,7 @@ function buildStructuredHttpRequest(config, request) {
 module.exports = {
   buildDeepSeekHttpRequest,
   buildOpenAiHttpRequest,
+  buildStructuredMessages,
   buildStructuredHttpRequest,
   chatCompletionsEndpoint,
   normalizeBaseUrl,

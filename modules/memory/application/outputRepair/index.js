@@ -1,11 +1,43 @@
 const { buildRepairPlan, expectedShape } = require("./buildRepairPlan");
 const { classifyIssues, inferIssueCode, summarizeOutputShape, valueType } = require("./classifyIssues");
 const { normalizeSemanticOutput } = require("./normalizeOutput");
-const { ISSUE_CODES, OUTPUT_REPAIR_POLICY_VERSION, SAFE_NORMALIZATIONS } = require("./policy");
-const { renderRepairInstruction } = require("./renderRepairInstruction");
+const {
+  ISSUE_CODES,
+  OUTPUT_REPAIR_POLICY_VERSION,
+  REJECTED_OUTPUT_MAX_BYTES,
+  SAFE_NORMALIZATIONS,
+} = require("./policy");
+const { isFlatWireProposer } = require("../../contracts/flatWire");
+const { renderRepairInstruction, renderRepairMessage } = require("./renderRepairInstruction");
 
 function createRepairFeedback(detail = {}, attempt = 0, task = null) {
-  const errors = classifyIssues(detail.errors);
+  const safeDetail = detail && typeof detail === "object" ? detail : {};
+  const transportIssue = {
+    content_invalid_json: {
+      code: ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON,
+      path: "$",
+      message: "previous tool arguments are not valid JSON",
+    },
+    tool_arguments_invalid_json: {
+      code: ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON,
+      path: "$",
+      message: "previous tool arguments are not valid JSON",
+    },
+    content_missing: {
+      code: ISSUE_CODES.STRUCTURED_OUTPUT_MISSING,
+      path: "$",
+      message: "structured tool arguments are missing",
+    },
+    tool_call_missing: {
+      code: ISSUE_CODES.STRUCTURED_OUTPUT_MISSING,
+      path: "$",
+      message: "structured tool arguments are missing",
+    },
+  }[safeDetail.transportError];
+  const errors = classifyIssues([
+    ...(transportIssue ? [transportIssue] : []),
+    ...(Array.isArray(safeDetail.errors) ? safeDetail.errors : []),
+  ], { usesFlatWire: isFlatWireProposer(task?.proposer) });
   if (!errors.length) {
     errors.push({
       code: ISSUE_CODES.CONTRACT_INVALID,
@@ -13,7 +45,7 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
       message: "does not satisfy the local output contract",
     });
   }
-  const specialist = typeof detail.specialist === "string" && detail.specialist ? detail.specialist : null;
+  const specialist = typeof safeDetail.specialist === "string" && safeDetail.specialist ? safeDetail.specialist : null;
   return {
     policyVersion: OUTPUT_REPAIR_POLICY_VERSION,
     attempt,
@@ -23,17 +55,94 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
   };
 }
 
+const TRANSPORT_REPAIR_ERRORS = new Set([
+  "content_invalid_json",
+  "tool_arguments_invalid_json",
+  "content_missing",
+  "tool_call_missing",
+]);
+
+function isTransportRepairFailure(detail) {
+  return TRANSPORT_REPAIR_ERRORS.has(detail?.transportError);
+}
+
+function repairAttemptCount(stagePayload) {
+  return Number(stagePayload?.schemaInvalidAttempts || 0)
+    + Number(stagePayload?.transportInvalidAttempts || 0);
+}
+
+function captureRejectedOutput(value) {
+  if (value === undefined) return null;
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return { available: false, reason: "not_json_serializable" };
+  }
+  if (serialized === undefined) return null;
+  const utf8Bytes = Buffer.byteLength(serialized, "utf8");
+  if (utf8Bytes > REJECTED_OUTPUT_MAX_BYTES) {
+    return { available: false, reason: "size_limit", utf8Bytes };
+  }
+  return {
+    available: true,
+    utf8Bytes,
+    output: JSON.parse(serialized),
+  };
+}
+
+function appendRejectedOutputAttempt(stagePayload, adapterResult, attempt, maxEntries) {
+  const next = structuredClone(stagePayload || {});
+  const captured = captureRejectedOutput(adapterResult?.rejectedOutput);
+  if (!captured) return next;
+  const entry = {
+    attempt,
+    ...(adapterResult?.detail?.specialist ? { specialist: adapterResult.detail.specialist } : {}),
+    ...captured,
+  };
+  const entries = Array.isArray(next.schemaRejectedOutputs)
+    ? next.schemaRejectedOutputs.slice()
+    : [];
+  const existing = entries.findIndex((value) => (
+    Number(value?.attempt) === attempt
+    && String(value?.specialist || "") === String(entry.specialist || "")
+  ));
+  if (existing >= 0) entries[existing] = entry;
+  else entries.push(entry);
+  next.schemaRejectedOutputs = entries.slice(-Math.max(1, Number(maxEntries) || 1));
+  return next;
+}
+
+function latestRejectedOutput(stagePayload, feedback = null) {
+  const entries = Array.isArray(stagePayload?.schemaRejectedOutputs)
+    ? stagePayload.schemaRejectedOutputs
+    : [];
+  const specialist = feedback?.specialist || null;
+  const selected = [...entries].reverse().find((entry) => (
+    entry?.available === true
+    && (!specialist || entry.specialist === specialist)
+  ));
+  return selected?.output;
+}
+
 module.exports = {
   ISSUE_CODES,
   OUTPUT_REPAIR_POLICY_VERSION,
+  REJECTED_OUTPUT_MAX_BYTES,
   SAFE_NORMALIZATIONS,
+  appendRejectedOutputAttempt,
   buildRepairPlan,
+  captureRejectedOutput,
   classifyIssues,
   createRepairFeedback,
   expectedShape,
   inferIssueCode,
+  isTransportRepairFailure,
+  latestRejectedOutput,
   normalizeSemanticOutput,
   renderRepairInstruction,
+  renderRepairMessage,
+  repairAttemptCount,
   summarizeOutputShape,
   valueType,
 };

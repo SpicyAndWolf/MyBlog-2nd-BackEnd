@@ -41,7 +41,7 @@ Privacy hard delete 与普通 forget 完全不同，必须物理清除指定内�
 - raw messages；
 - Memory state/events/snapshots；
 - durable task `task_payload` 中的 public input/private ref map/message metadata；
-- `stage_payload` 中的 unable/Semantic result、compiled proposal、expanded artifact及其 message metadata；
+- `stage_payload` 中的 unable/Semantic result、compiled proposal、expanded artifact及其 message metadata、有界 schema rejected tool arguments；
 - context-quality diagnostics、diagnostic checkpoints、recovery notifications；
 - RAG/Recall 派生数据；
 - 受控 debug store。

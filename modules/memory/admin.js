@@ -13,6 +13,7 @@ const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay
 const { createProviderAdmission, admissionControlledAdapter } = require("./application/providerAdmission");
 const { createMigrationProviderTelemetry } = require("./application/migrationTelemetry");
 const { buildMigrationEvidence } = require("./application/migrationEvidence");
+const { latestRejectedOutput } = require("./application/outputRepair");
 const { buildNormalEnvelope } = require("./application/envelope");
 const {
   buildProposerTaskArtifact,
@@ -24,6 +25,7 @@ const {
   createMockMemoryProviderAdapter,
   buildProposerUserPayload,
   schemaRepairPrompt,
+  schemaRepairRequest,
 } = require("./infrastructure/providers/memoryProviderAdapter");
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
 const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
@@ -133,6 +135,8 @@ module.exports = Object.freeze({
   resolveMemoryProviderModel,
   loadMemoryV2Config,
   loadProposerPrompt,
+  latestRejectedOutput,
   runStructuredOutputPreflight,
   schemaRepairPrompt,
+  schemaRepairRequest,
 });

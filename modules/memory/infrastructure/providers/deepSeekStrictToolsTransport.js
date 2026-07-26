@@ -31,10 +31,10 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
   }
   const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens, thinkingMode };
   return async function invokeStructured(request) {
-    const { systemPrompt, userPayload, responseSchema } = request;
+    const { responseSchema } = request;
     const functionName = responseSchema?.name;
-    assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
     const { endpoint, body } = buildDeepSeekHttpRequest(providerConfig, request);
+    assertStructuredRequestLimits({ messages: body.messages, maxInputTokens, maxOutputTokens });
     const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
@@ -60,11 +60,13 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
         return { safetyBlocked: true, finishReason, model: data?.model ?? requestedModel, usage: data?.usage };
       }
       const toolCall = choice?.message?.tool_calls?.find((entry) => entry?.function?.name === functionName);
+      const rawOutput = toolCall?.function?.arguments;
       const parsed = toolCall
         ? parseToolArguments(toolCall?.function?.arguments)
         : { output: null, recovery: null, error: "tool_call_missing" };
       return {
         output: parsed.output,
+        rawOutput,
         finishReason,
         model: data?.model ?? requestedModel,
         usage: data?.usage ?? null,

@@ -129,6 +129,38 @@ test("Memory task GUI reconstructs current provider request and persisted output
   assert.equal(JSON.stringify(request).includes("must-not-be-exposed"), false);
 });
 
+test("Memory task GUI reconstructs persisted rejected output as a multi-turn repair request", async () => {
+  const row = taskRow({
+    status: "running",
+    stage: "schema_invalid_retry",
+    last_error_reason: "output_schema_invalid",
+    stage_payload: {
+      schemaInvalidAttempts: 1,
+      schemaRepairFeedback: {
+        policyVersion: 4,
+        attempt: 1,
+        errors: [{ code: "CONTRACT_INVALID", path: "$.changes", message: "must be an array" }],
+      },
+      schemaRejectedOutputs: [{
+        attempt: 0,
+        available: true,
+        utf8Bytes: 21,
+        output: { changes: "invalid" },
+      }],
+    },
+  });
+  const task = await hydrateTask(row, {
+    promptLoader: async () => "prompt",
+    providerConfig: providerConfig(),
+  });
+  assert.equal(task.output.availability, "rejected_output_persisted");
+  assert.deepEqual(task.output.rejectedOutputs[0].output, { changes: "invalid" });
+  const messages = task.input.providerRequests[0].body.messages;
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
+  assert.equal(messages[2].content, '{"changes":"invalid"}');
+  assert.match(messages[3].content, /\[SCHEMA_REPAIR_V4\]/);
+});
+
 test("Memory task GUI exposes each Profile specialist API request", async () => {
   const row = taskRow();
   row.task_payload.task.proposer = "profileRelationshipProposer";

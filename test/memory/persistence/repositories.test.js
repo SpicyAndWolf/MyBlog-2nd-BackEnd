@@ -153,6 +153,11 @@ test("2.01 privacy purge has no suppression tombstone store dependency", async (
   const client = { async query(sql) { statements.push(sql); return { rows: [], rowCount: 0 }; } };
   await privacyRepository.purgeDerivedHistory(1, "default", { client });
   assert.equal(statements.some((sql) => sql.includes("chat_context_suppression_tombstones")), false);
+  assert.equal(
+    statements.some((sql) => /DELETE FROM chat_memory_tasks\b/.test(sql)),
+    true,
+    "purging task rows also purges schemaRejectedOutputs held inside stage_payload",
+  );
 });
 
 test("target recovery status and notification commit in one transaction", async () => {

@@ -9,6 +9,7 @@ const {
   schemaRepairPrompt,
   loadMemoryProviderConfig,
   buildProviderRequestPreviews,
+  latestRejectedOutput,
 } = require("../../modules/memory/admin");
 
 const HOST = "127.0.0.1";
@@ -134,6 +135,10 @@ async function hydrateTask(row, dependencies = {}) {
   const proposer = effectiveEnvelope?.task?.proposer || taskPayload?.task?.proposer || null;
   const targetSections = effectiveEnvelope?.task?.targetSections || taskPayload?.task?.targetSections || [];
   const repairFeedback = stagePayload?.schemaRepairFeedback || null;
+  const rejectedOutputs = Array.isArray(stagePayload?.schemaRejectedOutputs)
+    ? stagePayload.schemaRejectedOutputs
+    : [];
+  const rejectedOutput = latestRejectedOutput(stagePayload, repairFeedback);
   let currentPrompt = null;
   let currentRepairPrompt = null;
   let providerUserPayload = null;
@@ -149,12 +154,15 @@ async function hydrateTask(row, dependencies = {}) {
       responseSchema = schemaBuilder(proposer, targetSections);
       if (proposer !== "profileRelationshipProposer") {
         currentPrompt = await promptLoader(proposer);
-        currentRepairPrompt = repairFeedback ? repairPromptBuilder(currentPrompt, repairFeedback) : null;
+        currentRepairPrompt = repairFeedback
+          ? repairPromptBuilder(currentPrompt, repairFeedback, providerUserPayload?.task)
+          : null;
       }
       if (effectiveEnvelope && dependencies.providerConfig) {
         providerRequests = await providerRequestBuilder({
           envelope: effectiveEnvelope,
           repairFeedback,
+          rejectedOutput,
           providerConfig: dependencies.providerConfig,
           promptLoader,
         });
@@ -169,6 +177,8 @@ async function hydrateTask(row, dependencies = {}) {
   const compiledProposal = stagePayload?.compiledProposal || null;
   const outputAvailability = semanticResult || unableResult
     ? "persisted"
+    : rejectedOutputs.length
+      ? "rejected_output_persisted"
     : ["output_schema_invalid", "semantic_schema_invalid"].includes(row.last_error_reason)
       ? "invalid_output_not_persisted"
       : "not_persisted";
@@ -212,6 +222,7 @@ async function hydrateTask(row, dependencies = {}) {
       semanticResult,
       unableResult,
       compiledProposal,
+      rejectedOutputs,
     },
     stagePayload,
     ops: Array.isArray(row.ops) ? row.ops : [],

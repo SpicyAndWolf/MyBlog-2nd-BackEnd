@@ -16,11 +16,13 @@ function isTruncationSignal(value) {
     || reason.includes("output_length");
 }
 
-function assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens }) {
+function assertStructuredRequestLimits({ systemPrompt, userPayload, messages, maxInputTokens, maxOutputTokens }) {
   if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens <= 0) throw new Error("Memory Provider maxInputTokens must be a positive safe integer");
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0) throw new Error("Memory Provider maxOutputTokens must be a positive safe integer");
-  const bytes = Buffer.byteLength(String(systemPrompt ?? ""), "utf8")
-    + Buffer.byteLength(JSON.stringify(userPayload), "utf8");
+  const bytes = Array.isArray(messages)
+    ? messages.reduce((total, message) => total + Buffer.byteLength(String(message?.content ?? ""), "utf8"), 0)
+    : Buffer.byteLength(String(systemPrompt ?? ""), "utf8")
+      + Buffer.byteLength(JSON.stringify(userPayload), "utf8");
   // A tokenizer-independent upper bound: a token cannot encode less than one
   // input byte. This is deliberately conservative and prevents dispatching a
   // request that can exceed the configured physical context window.

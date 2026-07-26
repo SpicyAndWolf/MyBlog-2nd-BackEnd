@@ -150,4 +150,4 @@ Compaction 只看一个 section 的可写短 refs，不读取 raw messages、rea
 
 调用保持 `system prompt + Renderer artifact.publicInput`。不拼入存储 state JSON，不发送 private ref map。
 
-Schema repair 只附加有界 validation feedback；不回传非法输出原文。Context expansion 扩大早期 messages，但继续使用首次 artifact 的 Memory 文本和 ref map。
+Schema repair 使用多轮对话：保持原始 system prompt 和 Renderer `publicInput` 不变，把有界持久化的 rejected tool arguments 作为 assistant 消息回放，再以 user 消息发送有界 validation feedback 并要求完整替换输出。Context expansion 扩大早期 messages，但继续使用首次 artifact 的 Memory 文本和 ref map。

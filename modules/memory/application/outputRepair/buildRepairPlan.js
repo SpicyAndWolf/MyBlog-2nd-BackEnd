@@ -30,9 +30,15 @@ function expectedShape(task) {
 }
 
 function buildRepairPlan({ errors, specialist = null, task = null } = {}) {
-  const issues = classifyIssues(errors);
+  const issues = classifyIssues(errors, { usesFlatWire: isFlatWireProposer(task?.proposer) });
   const codes = [...new Set(issues.map((issue) => issue.code))];
   const directives = ["RETURN_COMPLETE_REPLACEMENT"];
+  if (codes.includes(ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON)) {
+    directives.push("RETURN_VALID_JSON_TOOL_ARGUMENTS");
+  }
+  if (codes.includes(ISSUE_CODES.STRUCTURED_OUTPUT_MISSING)) {
+    directives.push("RETURN_REQUIRED_STRUCTURED_OUTPUT");
+  }
   if (codes.some((code) => [ISSUE_CODES.OBJECT_REQUIRED, ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT].includes(code))) {
     directives.push("MATCH_EXACT_ROOT_SHAPE");
   }

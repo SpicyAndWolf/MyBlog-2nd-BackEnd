@@ -36,7 +36,7 @@ function inferIssueCode(issue) {
   return ISSUE_CODES.CONTRACT_INVALID;
 }
 
-function canonicalMessage(code, issue) {
+function canonicalMessage(code, issue, { usesFlatWire = false } = {}) {
   const messages = {
     [ISSUE_CODES.OBJECT_REQUIRED]: "must be an object",
     [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: "sectionResults must be an object",
@@ -46,19 +46,29 @@ function canonicalMessage(code, issue) {
     [ISSUE_CODES.SUPPORT_REF_INVALID]: "supportRefs must be selected from the bound read-only enum",
     [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "evidenceMessageIds must be selected from the bound message enum",
     [ISSUE_CODES.TEXT_LENGTH_EXCEEDED]: "text must satisfy the section character limit",
+    [ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON]: "previous tool arguments are not valid JSON",
+    [ISSUE_CODES.STRUCTURED_OUTPUT_MISSING]: "structured tool arguments are missing",
   };
+  if (usesFlatWire) {
+    Object.assign(messages, {
+      [ISSUE_CODES.SECTION_RESULTS_NOT_OBJECT]: "root output must match sectionStatuses and changes",
+      [ISSUE_CODES.WRITABLE_REF_INVALID]: "target must be selected from the bound writable enum",
+      [ISSUE_CODES.SUPPORT_REF_INVALID]: "sources must be selected from the bound source enum",
+      [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "sources must be selected from the bound source enum",
+    });
+  }
   return messages[code]
     || boundedString(issue?.message, "does not satisfy the local output contract");
 }
 
-function classifyIssues(errors) {
+function classifyIssues(errors, options = {}) {
   return (Array.isArray(errors) ? errors : []).slice(0, 8).map((issue) => {
     const code = inferIssueCode(issue);
     const meta = safeIssueMeta(issue?.meta);
     return {
       code,
       path: boundedString(issue?.path, "$").replace(/[^A-Za-z0-9_$.[\]-]/g, "?"),
-      message: canonicalMessage(code, issue),
+      message: canonicalMessage(code, issue, options),
       ...(meta ? { meta } : {}),
     };
   });

@@ -8,10 +8,14 @@ const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
 const {
   normalizeSemanticOutput,
   renderRepairInstruction,
+  renderRepairMessage,
   summarizeOutputShape,
 } = require("../../application/outputRepair");
 const { bindOutputSchema, bindSpecialistSchema } = require("./bindOutputSchema");
-const { flatWireToSemanticOutput } = require("./flatWireProtocol");
+const {
+  flatWireRepairErrors,
+  flatWireToSemanticOutput,
+} = require("./flatWireProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const PROFILE_SPECIALISTS = Object.freeze([
@@ -32,6 +36,24 @@ function mergeUsage(responses) {
 
 function schemaRepairPrompt(systemPrompt, feedback, task = null) {
   return renderRepairInstruction(systemPrompt, feedback, task);
+}
+
+function schemaRepairRequest(systemPrompt, feedback, task = null, rejectedOutput) {
+  if (!feedback) return { systemPrompt, repairContext: null };
+  if (rejectedOutput === undefined) {
+    return { systemPrompt: schemaRepairPrompt(systemPrompt, feedback, task), repairContext: null };
+  }
+  return {
+    systemPrompt,
+    repairContext: {
+      assistantOutput: rejectedOutput,
+      userMessage: renderRepairMessage(feedback, task),
+    },
+  };
+}
+
+function rejectedProviderOutput(response) {
+  return response?.rawOutput ?? response?.output;
 }
 
 function validateSemanticEnvelope(envelope) {
@@ -125,7 +147,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
   }
 
   return Object.freeze({
-    async propose(envelope, { repairFeedback = null } = {}) {
+    async propose(envelope, { repairFeedback = null, rejectedOutput } = {}) {
       let response;
       try {
         const envelopeResult = validateSemanticEnvelope(envelope);
@@ -147,14 +169,17 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               : !retrySpecialist || retrySpecialist.proposer === specialist.proposer
                 ? repairFeedback
                 : null;
+            const repair = schemaRepairRequest(
+              await promptLoader(specialist.proposer),
+              specialistFeedback,
+              specialistPayload.task,
+              specialistFeedback ? rejectedOutput : undefined,
+            );
             const specialistResponse = await invokeStructured({
               proposer: specialist.proposer,
-              systemPrompt: schemaRepairPrompt(
-                await promptLoader(specialist.proposer),
-                specialistFeedback,
-                specialistPayload.task,
-              ),
+              systemPrompt: repair.systemPrompt,
               userPayload: specialistPayload,
+              repairContext: repair.repairContext,
               responseSchema: bindSpecialistSchema(
                 buildOutputSchema(specialist.proposer, [specialist.section]),
                 specialistArtifact,
@@ -187,6 +212,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             if (!specialistValidation.ok) {
               invalidRun ??= {
                 specialist,
+                specialistArtifact,
                 specialistResponse,
                 specialistValidation,
                 normalizedOutput: normalized.output,
@@ -204,12 +230,17 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               detail: {
                 boundary: "output",
                 specialist: invalidRun.specialist.proposer,
-                errors: invalidRun.specialistValidation.errors,
+                errors: flatWireRepairErrors(
+                  invalidRun.specialistValidation.errors,
+                  invalidRun.specialistResponse?.output,
+                  invalidRun.specialistArtifact?.publicInput?.task,
+                ),
                 shape: summarizeOutputShape(invalidRun.normalizedOutput),
                 ...(invalidRun.specialistResponse?.transportError ? { transportError: invalidRun.specialistResponse.transportError } : {}),
                 ...(invalidRun.specialistResponse?.transportRecovery ? { transportRecovery: invalidRun.specialistResponse.transportRecovery } : {}),
                 ...(invalidRun.specialistResponse?.finishReason ? { finishReason: invalidRun.specialistResponse.finishReason } : {}),
               },
+              rejectedOutput: rejectedProviderOutput(invalidRun.specialistResponse),
               usage: mergeUsage(responses),
               model: invalidRun.specialistResponse?.model ?? null,
               callCount: responses.length,
@@ -228,12 +259,17 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
             envelope.artifact,
             task.targetSections,
           );
-          const loadedPrompt = await promptLoader(task.proposer);
-          const basePrompt = schemaRepairPrompt(loadedPrompt, repairFeedback, userPayload.task);
+          const repair = schemaRepairRequest(
+            await promptLoader(task.proposer),
+            repairFeedback,
+            userPayload.task,
+            rejectedOutput,
+          );
           response = await invokeStructured({
             proposer: task.proposer,
-            systemPrompt: basePrompt,
+            systemPrompt: repair.systemPrompt,
             userPayload,
+            repairContext: repair.repairContext,
             responseSchema: schema,
           });
         }
@@ -268,12 +304,13 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           reason: "output_schema_invalid",
           detail: {
             boundary: "output",
-            errors: validated.errors,
+            errors: flatWireRepairErrors(validated.errors, response?.output, task),
             shape: summarizeOutputShape(output),
             ...(response?.transportError ? { transportError: response.transportError } : {}),
             ...(response?.transportRecovery ? { transportRecovery: response.transportRecovery } : {}),
             ...(response?.finishReason ? { finishReason: response.finishReason } : {}),
           },
+          rejectedOutput: rejectedProviderOutput(response),
           usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1,
         };
       }
@@ -321,6 +358,7 @@ module.exports = {
   buildProposerUserPayload,
   validateSemanticEnvelope,
   schemaRepairPrompt,
+  schemaRepairRequest,
   bindSpecialistSchema,
   ERROR_REASONS,
 };

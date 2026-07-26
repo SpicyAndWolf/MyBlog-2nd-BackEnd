@@ -130,7 +130,7 @@ Harness 是 2.01 的必要组成部分，分别验证 Semantic 行为、Renderer
 - Todo/Agreement领域 terminal actions shape正确；
 - relative/dayOfMonth Todo要求 anchorMessageId且属于 direct evidence；
 - support-only relative/dayOfMonth date schema/compile失败；
-- Provider输出schema repair最多一次，非法原文不持久化。
+- Provider transport parse/missing-output repair 与 Semantic Schema repair 分别按 `CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX`、`CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX` 有界执行；rejected tool arguments 有界持久化到 task、重启后按 assistant turn 回放，且不进入 ops/append-only 日志。
 
 Semantic Proposer 的模型行为另用不进入生产 prompt 的合成评测集校准：至少覆盖无永久性关键词的可复用沟通偏好、明确一次性测试的 noop、上层角色结束后的带时态 Profile/Relationship 演化，以及只 cancel 依赖该角色的 standing agreements。Profile 长窗口用例固定 64 条，在窗口前中后分散放置多项独立回复边界，要求一次 User 专家调用完整找回。评测记录 change 级漏记、误写、误路由与过宽失效，不用堆叠线上 few-shot 代替评测。
 

@@ -485,7 +485,7 @@ function providerView(task) {
   const left = document.createElement("div");
   left.className = "panel-stack";
   left.append(
-    codePanel({ kicker: "SYSTEM", title: task.input.currentRepairPrompt ? "当前 Prompt + repair feedback" : "当前 Prompt", note: "便于单独检查；权威的线级输入以上方完整 HTTP body 为准。", value: task.input.currentRepairPrompt || task.input.currentPrompt, emptyMessage: task.proposer === "profileRelationshipProposer" ? "Profile 聚合任务的专家 Prompt 已分别包含在上方请求中。" : task.input.reconstructionError || "无法重建 Prompt", expanded: false }),
+    codePanel({ kicker: "SYSTEM", title: task.input.currentRepairPrompt ? "Prompt + repair 对照视图" : "当前 Prompt", note: "repair 实际通过上方 assistant/user 多轮消息发送；这里仅便于合并阅读。权威线级输入以上方完整 HTTP body 为准。", value: task.input.currentRepairPrompt || task.input.currentPrompt, emptyMessage: task.proposer === "profileRelationshipProposer" ? "Profile 聚合任务的专家 Prompt 已分别包含在上方请求中。" : task.input.reconstructionError || "无法重建 Prompt", expanded: false }),
     codePanel({ kicker: "SOURCE SCHEMA", title: "Pre-transport response schema", note: "仅供对照；API 实际收到的已绑定、已编译 schema 位于上方 response_format 或 tools 中。", value: task.input.responseSchema, expanded: false }),
   );
   const right = document.createElement("div");
@@ -499,15 +499,18 @@ function providerView(task) {
 function durableView(task) {
   const view = document.createElement("section");
   view.className = "view-section";
-  const missingOutput = task.output.availability === "invalid_output_not_persisted"
-    ? "Schema 无效的模型原文按隐私设计不会落库；请到“诊断”查看校验路径。"
-    : "该任务没有持久化 Semantic result。";
+  const missingOutput = task.output.availability === "rejected_output_persisted"
+    ? "Schema 无效输出已作为受控诊断数据持久化，未进入 Semantic IR。"
+    : task.output.availability === "invalid_output_not_persisted"
+      ? "该旧任务没有持久化 Schema 无效输出；请到“诊断”查看校验路径。"
+      : "该任务没有持久化 Semantic result。";
   const grid = document.createElement("div");
   grid.className = "panel-grid";
   const results = document.createElement("div");
   results.className = "panel-stack";
   results.append(
     codePanel({ kicker: "SEMANTIC IR", title: "Persisted Semantic result", note: "来自 stage_payload.semanticResult。", value: task.output.semanticResult, emptyMessage: missingOutput }),
+    codePanel({ kicker: "REJECTED", title: "Schema-rejected provider outputs", note: "来自 stage_payload.schemaRejectedOutputs；仅用于修复与诊断，不进入 Compiler。", value: task.output.rejectedOutputs, expanded: Boolean(task.output.rejectedOutputs?.length) }),
     codePanel({ kicker: "UNABLE", title: "Persisted unable result", note: "来自 stage_payload.unableResult；该分支不会进入 Compiler。", value: task.output.unableResult, expanded: Boolean(task.output.unableResult) }),
     codePanel({ kicker: "COMPILED", title: "Compiled proposal", note: "来自 stage_payload.compiledProposal。", value: task.output.compiledProposal }),
   );
@@ -532,7 +535,7 @@ function diagnosticsView(task) {
   if (task.notBefore) view.append(callout("warning", "Retry scheduled.", formatDate(task.notBefore)));
   if (task.input.reconstructionError) view.append(callout("error", "Reconstruction failed.", task.input.reconstructionError));
   if (task.output.availability === "invalid_output_not_persisted") {
-    view.append(callout("warning", "原始无效输出不可用。", "隐私设计只持久化校验错误，不保存 Provider 原文。"));
+    view.append(callout("warning", "原始无效输出不可用。", "这是新持久化策略启用前创建的旧任务。"));
   }
   const grid = document.createElement("div");
   grid.className = "panel-grid";
@@ -542,6 +545,7 @@ function diagnosticsView(task) {
   durable.className = "panel-stack";
   durable.append(
     codePanel({ kicker: "REPAIR", title: "Schema repair feedback", note: "下一次 Provider 调用使用的结构化修复提示。", value: task.input.repairFeedback, expanded: Boolean(task.input.repairFeedback), compact: true }),
+    codePanel({ kicker: "REJECTED", title: "Rejected output attempts", note: "受控持久化的 Provider 失败稿；不会写入普通日志。", value: task.output.rejectedOutputs, expanded: Boolean(task.output.rejectedOutputs?.length), compact: true }),
     codePanel({ kicker: "STAGE", title: "Raw stage payload", value: task.stagePayload, expanded: false, compact: true }),
   );
   grid.append(timeline, durable);

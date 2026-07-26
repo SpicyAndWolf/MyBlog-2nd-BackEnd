@@ -40,7 +40,7 @@ const config = {
     maxItems: section === "recentEpisodes" ? 1 : 20,
     maxRenderedChars: 2000,
   }])),
-  providerRecovery: { retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 10, backoffMaxMs: 100, haltAfterConsecutiveErrors: 3 },
+  providerRecovery: { retryMax: 1, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 10, backoffMaxMs: 100, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
 };
 

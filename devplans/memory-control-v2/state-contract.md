@@ -408,13 +408,15 @@ compiledProposal
 unableResult
 expandedArtifact
 schemaInvalidAttempts
+transportInvalidAttempts
 schemaRepairFeedback
+schemaRejectedOutputs
 maintenanceTaskId
 identities
 blockingViolation
 ```
 
-Artifact、expanded artifact、Semantic IR（包括 unable result）和 compiled proposal 属于受控敏感派生数据，不能写入 append-only 应用日志，privacy hard delete 必须清除。
+Artifact、expanded artifact、Semantic IR（包括 unable result）、compiled proposal 和有界 schema rejected tool arguments 属于受控敏感派生数据，不能写入 append-only 应用日志，privacy hard delete 必须清除。
 
 ## 12. Per-target Status 与 Ops Log
 
@@ -609,7 +611,7 @@ Adapter 错误：
 }
 ```
 
-首次 Provider 输出边界 schema 错误可使用同一 input variant 的 immutable public input 和持久化 repair feedback 重试一次。非法输出原文不得持久化或回传。Compiler error 不属于 Provider Adapter result。
+Provider 输出边界错误使用分层、有界 repair：JSON 无法解析或 structured output 缺失使用 `CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX` 次 transport repair；JSON 可解析后的 Semantic Schema 错误独立使用 `CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX` 次 semantic repair，避免后层错误因前层失败而永远不可见。两层都使用同一 input variant 的 immutable public input、持久化 repair feedback 和有界 rejected tool arguments。实际请求采用 `system → user(original task) → assistant(rejected arguments) → user(repair feedback)` 多轮形式；旧 task 若没有 rejected arguments，继续兼容 combined-system-prompt fallback。Rejected arguments 只保存在可按 scope 清理的 task `stage_payload`，不得写入 ops 或 append-only 日志。Compiler error 不属于 Provider Adapter result。
 
 ## 18. Retention 不变量
 

@@ -1,7 +1,7 @@
 const { buildOutputSchema } = require("./outputSchema");
 const {
   buildProposerUserPayload,
-  schemaRepairPrompt,
+  schemaRepairRequest,
 } = require("./memoryProviderAdapter");
 const {
   bindOutputSchema,
@@ -50,6 +50,7 @@ function previewEntry(providerConfig, semanticRequest, { phase, section = null }
 async function buildProviderRequestPreviews({
   envelope,
   repairFeedback = null,
+  rejectedOutput,
   providerConfig,
   promptLoader,
 } = {}) {
@@ -64,15 +65,17 @@ async function buildProviderRequestPreviews({
       envelope.artifact,
       envelope.task.targetSections,
     );
-    const systemPrompt = schemaRepairPrompt(
+    const repair = schemaRepairRequest(
       await promptLoader(envelope.task.proposer),
       repairFeedback,
       userPayload.task,
+      rejectedOutput,
     );
     return [previewEntry(providerConfig, {
       proposer: envelope.task.proposer,
-      systemPrompt,
+      systemPrompt: repair.systemPrompt,
       userPayload,
+      repairContext: repair.repairContext,
       responseSchema,
     }, {
       phase: repairFeedback ? "schema-repair" : "initial",
@@ -94,15 +97,17 @@ async function buildProviderRequestPreviews({
       artifact,
       specialist.section,
     );
-    const systemPrompt = schemaRepairPrompt(
+    const repair = schemaRepairRequest(
       await promptLoader(specialist.proposer),
       feedback,
       payload.task,
+      feedback ? rejectedOutput : undefined,
     );
     return previewEntry(providerConfig, {
       proposer: specialist.proposer,
-      systemPrompt,
+      systemPrompt: repair.systemPrompt,
       userPayload: payload,
+      repairContext: repair.repairContext,
       responseSchema,
     }, {
       phase: feedback ? "schema-repair" : "initial",

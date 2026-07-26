@@ -32,6 +32,7 @@ function validEnv() {
     CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS: "10", CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS: "1000",
     CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS: "10000", CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES: "10",
     CHAT_MEMORY_V2_PROVIDER_RETRY_MAX: "2",
+    CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS: "1000", CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS: "10000",
     CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS: "3", CHAT_MEMORY_V2_COMPACTION_RETRY_MAX: "2",
@@ -185,10 +186,17 @@ test("DeepSeek provider config passes thinking mode through", () => {
   assert.equal(loadMemoryProviderConfig(env).thinkingMode, "enabled");
 });
 
-test("schema-invalid retry budget is configurable", () => {
+test("transport-invalid and schema-invalid retry budgets are independently configurable", () => {
   const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX = "3";
   env.CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX = "2";
+  assert.equal(loadMemoryV2Config(env).providerRecovery.transportInvalidRetryMax, 3);
   assert.equal(loadMemoryV2Config(env).providerRecovery.schemaInvalidRetryMax, 2);
+  delete env.CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX;
+  assert.throws(
+    () => loadMemoryV2Config(env),
+    /CHAT_MEMORY_V2_PROVIDER_TRANSPORT_INVALID_RETRY_MAX/,
+  );
 });
 
 test("v2-off is rejected as a production or rollback mode", () => {

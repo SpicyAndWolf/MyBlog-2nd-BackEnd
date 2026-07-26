@@ -7,7 +7,7 @@ const { createMemoryTestConfig, sha256 } = require("../support/memory-builders")
 
 const config = createMemoryTestConfig({
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } },
-  providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
+  providerRecovery: { retryMax: 2, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
 });
 const content = "我答应明天还书";

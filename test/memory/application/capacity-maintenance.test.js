@@ -13,7 +13,7 @@ const config = {
   targets: { todos: { lagThreshold: 1, contextWindow: 2 } }, overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((section) => [section, { maxItems: section === "todos" ? 2 : 20, maxRenderedChars: 2000 }])),
-  providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
+  providerRecovery: { retryMax: 2, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
   compaction: { retryMax: 1 },
 };
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };

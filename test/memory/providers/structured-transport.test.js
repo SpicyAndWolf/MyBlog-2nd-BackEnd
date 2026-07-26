@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { parseToolArguments } = require("../../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
 const { compileOpencodeGoSchema } = require("../../../modules/memory/infrastructure/providers/opencodeGoSchemaCompiler");
 const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
+const { buildStructuredMessages } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
 
 test("DeepSeek tool argument parser only repairs excess trailing closing braces", () => {
   assert.deepEqual(parseToolArguments('{"ok":true}}'), {
@@ -13,6 +14,22 @@ test("DeepSeek tool argument parser only repairs excess trailing closing braces"
   });
   assert.equal(parseToolArguments('{"ok":').error, "tool_arguments_invalid_json");
   assert.equal(parseToolArguments('{"ok":tru}').error, "tool_arguments_invalid_json");
+});
+
+test("structured repair requests use provider-neutral multi-turn conversation roles", () => {
+  assert.deepEqual(buildStructuredMessages({
+    systemPrompt: "prompt",
+    userPayload: { value: 1 },
+    repairContext: {
+      assistantOutput: '{"bad":true}',
+      userMessage: "replace it",
+    },
+  }), [
+    { role: "system", content: "prompt" },
+    { role: "user", content: "{\"value\":1}" },
+    { role: "assistant", content: "{\"bad\":true}" },
+    { role: "user", content: "replace it" },
+  ]);
 });
 
 test("structured transport factory maps DeepSeek strict tool calls to normalized output", async () => {
@@ -46,9 +63,11 @@ test("structured transport factory maps DeepSeek strict tool calls to normalized
   assert.equal(request.body.response_format, undefined);
   assert.equal(request.body.max_tokens, 1024);
   assert.deepEqual(request.body.thinking, { type: "disabled" });
+  assert.deepEqual(request.body.messages.map((message) => message.role), ["system", "user"]);
   assert.equal(request.body.tools[0].function.strict, true);
   assert.equal(request.body.tool_choice.function.name, "probe");
   assert.deepEqual(result.output, { ok: true });
+  assert.equal(result.rawOutput, '{"ok":true}');
 });
 
 test("structured transport routes models by proposer and falls back to the default", async () => {
@@ -163,6 +182,7 @@ test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables r
     items: { type: "integer" },
   });
   assert.deepEqual(result.output, { ok: true });
+  assert.equal(result.rawOutput, '{"ok":true}');
   assert.equal(result.model, "hy3");
 });
 

@@ -62,7 +62,7 @@ function fixture() {
   return { state, messages, config, envelope, proposal };
 }
 
-test("task shadow replay fails fast when schema retry configuration is missing", () => {
+test("task shadow replay fails fast when classified retry configuration is missing", () => {
   const { config } = fixture();
   const invalidConfig = { ...config };
   delete invalidConfig.providerRecovery;
@@ -77,7 +77,7 @@ test("task shadow replay fails fast when schema retry configuration is missing",
       config: invalidConfig,
       providerAdapter: { propose: async () => ({ status: "ok" }) },
     }),
-    /requires providerRecovery\.schemaInvalidRetryMax/,
+    /requires providerRecovery\.transportInvalidRetryMax/,
   );
 });
 
@@ -170,7 +170,10 @@ test("task shadow replay returns provider schema failures without attempting Red
 
 test("task shadow replay mirrors the bounded schema repair before preflight", async () => {
   const { state, messages, config: baseConfig, envelope, proposal } = fixture();
-  const config = { ...baseConfig, providerRecovery: { schemaInvalidRetryMax: 1 } };
+  const config = {
+    ...baseConfig,
+    providerRecovery: { transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1 },
+  };
   const options = [];
   const replay = createMemoryTaskShadowReplay({
     repositories: {
@@ -199,7 +202,7 @@ test("task shadow replay mirrors the bounded schema repair before preflight", as
   assert.equal(report.status, "completed");
   assert.equal(report.replay.providerAttempts.length, 2);
   assert.equal(options[0].repairFeedback, null);
-  assert.equal(options[1].repairFeedback.policyVersion, 1);
+  assert.equal(options[1].repairFeedback.policyVersion, 4);
   assert.deepEqual(options[1].repairFeedback.errors, [{
     code: "CONTRACT_INVALID",
     path: "$.tickId",

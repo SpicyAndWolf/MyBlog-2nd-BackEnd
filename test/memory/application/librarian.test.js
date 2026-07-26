@@ -104,6 +104,7 @@ function config() {
     ...createMemoryTestConfig(),
     providerRecovery: {
       retryMax: 1,
+      transportInvalidRetryMax: 1,
       schemaInvalidRetryMax: 1,
       backoffBaseMs: 10,
       backoffMaxMs: 100,
@@ -123,6 +124,16 @@ test("Librarian fails fast when required config or time-zone access is missing",
       config: missingRecovery,
     }),
     /providerRecovery config is required/,
+  );
+  const missingTransportRetry = config();
+  delete missingTransportRetry.providerRecovery.transportInvalidRetryMax;
+  assert.throws(
+    () => createMemoryLibrarian({
+      repositories: data.repositories,
+      providerAdapter,
+      config: missingTransportRetry,
+    }),
+    /providerRecovery\.transportInvalidRetryMax/,
   );
   assert.throws(
     () => createMemoryLibrarian({
@@ -272,16 +283,20 @@ test("schema repair allowance is persisted before the Librarian retry", async ()
   const data = store();
   await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
   const repairFeedback = [];
+  const rejectedOutputs = [];
+  const rejectedOutput = { tickId: "invalid", proposer: "librarianProposer", operations: "invalid" };
   const librarian = createMemoryLibrarian({
     repositories: data.repositories,
     config: config(),
     providerAdapter: {
       async propose(envelope, options) {
         repairFeedback.push(options?.repairFeedback ?? null);
+        rejectedOutputs.push(options?.rejectedOutput);
         if (repairFeedback.length === 1) {
           return {
             status: "error",
             reason: "output_schema_invalid",
+            rejectedOutput,
             detail: {
               boundary: "output",
               errors: [{ path: "$.operations", message: "must be an array" }],
@@ -309,7 +324,10 @@ test("schema repair allowance is persisted before the Librarian retry", async ()
   assert.equal(repairFeedback.length, 2);
   assert.equal(repairFeedback[0], null);
   assert.equal(repairFeedback[1].attempt, 1);
+  assert.deepEqual(rejectedOutputs[1], rejectedOutput);
   assert.equal(task.stage_payload.schemaInvalidAttempts, 1);
+  assert.deepEqual(task.stage_payload.schemaRejectedOutputs[0].output, rejectedOutput);
+  assert.doesNotMatch(JSON.stringify(data.inspect.ops), /"operations":"invalid"/);
   assert.equal(task.attempt, 1);
   assert.equal(data.inspect.ops.some((entry) => entry.outcome === "output_schema_invalid_retry"), true);
 });
@@ -318,18 +336,22 @@ test("schema repair allowance survives an interrupted Librarian process", async 
   const data = store();
   await alignBarrier(data, PERIODIC_BOUNDARY_MESSAGE_ID);
   const repairFeedback = [];
+  const rejectedOutputs = [];
+  const rejectedOutput = { malformed: "restart-safe" };
   let calls = 0;
   const librarian = createMemoryLibrarian({
     repositories: data.repositories,
     config: config(),
     providerAdapter: {
       async propose(envelope, options) {
-        calls += 1;
-        repairFeedback.push(options?.repairFeedback ?? null);
-        if (calls === 1) {
-          return {
-            status: "error",
-            reason: "output_schema_invalid",
+          calls += 1;
+          repairFeedback.push(options?.repairFeedback ?? null);
+          rejectedOutputs.push(options?.rejectedOutput);
+          if (calls === 1) {
+            return {
+              status: "error",
+              reason: "output_schema_invalid",
+              rejectedOutput,
             detail: {
               boundary: "output",
               errors: [{ path: "$.operations", message: "must be an array" }],
@@ -362,6 +384,8 @@ test("schema repair allowance survives an interrupted Librarian process", async 
 
   assert.equal(result.status, "noop");
   assert.equal(repairFeedback[2].attempt, 1);
+  assert.deepEqual(rejectedOutputs[1], rejectedOutput);
+  assert.deepEqual(rejectedOutputs[2], rejectedOutput);
   assert.equal(data.inspect.tasks.get(envelope.task.taskId).attempt, 1);
 });
 

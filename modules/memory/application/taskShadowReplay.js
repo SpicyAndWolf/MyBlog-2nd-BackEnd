@@ -6,7 +6,7 @@ const {
 const { reduceCompiledProposal } = require("../domain/compiledReducer");
 const { createSemanticCompiler } = require("./semanticCompiler");
 const { isSemanticTaskEnvelope } = require("./envelope");
-const { createRepairFeedback } = require("./outputRepair");
+const { createRepairFeedback, isTransportRepairFailure } = require("./outputRepair");
 const { buildOutputSchema } = require("../infrastructure/providers/outputSchema");
 const { loadProposerPrompt } = require("../prompts");
 const { resolveMemoryProviderModel } = require("../config/loadProviderConfig");
@@ -103,6 +103,12 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     throw new Error("Task shadow replay requires read-only Memory repositories");
   }
   if (!config?.enabled || !config?.provider) throw new Error("Memory v2 must be enabled for task shadow replay");
+  if (!Number.isInteger(config.providerRecovery?.transportInvalidRetryMax)
+    || config.providerRecovery.transportInvalidRetryMax < 0) {
+    throw new TypeError(
+      "Task shadow replay requires providerRecovery.transportInvalidRetryMax to be a non-negative integer",
+    );
+  }
   if (!Number.isInteger(config.providerRecovery?.schemaInvalidRetryMax)
     || config.providerRecovery.schemaInvalidRetryMax < 0) {
     throw new TypeError(
@@ -178,12 +184,13 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
 
     const providerAttempts = [];
     let providerResult;
-    const schemaRetryMax = config.providerRecovery.schemaInvalidRetryMax;
-    for (let attempt = 0; attempt <= schemaRetryMax; attempt += 1) {
-      const repairFeedback = attempt === 0
-        ? null
-        : createRepairFeedback(providerResult?.detail, attempt, envelope.task);
-      providerResult = await providerAdapter.propose(envelope, { repairFeedback });
+    let repairFeedback = null;
+    let rejectedOutput;
+    let transportInvalidAttempts = 0;
+    let schemaInvalidAttempts = 0;
+    while (true) {
+      const attempt = providerAttempts.length;
+      providerResult = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
       providerAttempts.push({
         attempt,
         status: providerResult.status,
@@ -195,6 +202,16 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
         && providerResult.reason === "output_schema_invalid"
         && providerResult.detail?.boundary === "output";
       if (!retryableSchemaFailure) break;
+      const transportFailure = isTransportRepairFailure(providerResult.detail);
+      const used = transportFailure ? transportInvalidAttempts : schemaInvalidAttempts;
+      const limit = transportFailure
+        ? config.providerRecovery.transportInvalidRetryMax
+        : config.providerRecovery.schemaInvalidRetryMax;
+      if (used >= limit) break;
+      if (transportFailure) transportInvalidAttempts += 1;
+      else schemaInvalidAttempts += 1;
+      repairFeedback = createRepairFeedback(providerResult.detail, attempt + 1, envelope.task);
+      rejectedOutput = providerResult.rejectedOutput;
     }
     if (providerResult.status !== "ok") {
       report.status = "provider_error";

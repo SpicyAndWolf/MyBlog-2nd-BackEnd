@@ -29,7 +29,7 @@ const config = {
   overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
   scene: { ttlMs: 1000, maxRenderedChars: 1000 },
   sectionBudgets: Object.fromEntries(["todos", "standingAgreements", "recentEpisodes", "milestones", "worldFacts", "userProfile", "assistantProfile", "relationship"].map((key) => [key, { maxItems: 20, maxRenderedChars: 2000 }])),
-  providerRecovery: { retryMax: 2, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
+  providerRecovery: { retryMax: 2, transportInvalidRetryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1000, backoffMaxMs: 8000, haltAfterConsecutiveErrors: 3 },
 };
 const intent = { targetKey: "todos", proposer: "todoProposer", targetSections: ["todos"], trigger: { type: "lagThreshold" } };
 

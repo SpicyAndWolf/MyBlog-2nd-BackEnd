@@ -1,4 +1,11 @@
-const { createRepairFeedback, summarizeOutputShape } = require("./outputRepair");
+const {
+  appendRejectedOutputAttempt,
+  createRepairFeedback,
+  isTransportRepairFailure,
+  latestRejectedOutput,
+  repairAttemptCount,
+  summarizeOutputShape,
+} = require("./outputRepair");
 
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const RETRYABLE_ADAPTER_ERRORS = new Set([
@@ -81,13 +88,25 @@ function createNormalProviderRecovery({
         )
         : null;
       const retryAt = delay === null ? null : new Date(now().getTime() + delay).toISOString();
-      await repositories.runtime.updateTask(envelope.task.taskId, {
+      const taskChanges = {
         status: halted ? "failed" : "retry_wait",
         stage: "provider_error",
         attempt,
         not_before: retryAt,
         last_error_reason: adapterResult.reason,
-      }, { client });
+      };
+      if (["output_schema_invalid", "semantic_schema_invalid"].includes(adapterResult.reason)) {
+        const stagePayload = rowValue(task, "stage_payload", "stagePayload");
+        taskChanges.stage_payload = appendRejectedOutputAttempt(
+          stagePayload,
+          adapterResult,
+          repairAttemptCount(stagePayload),
+          config.providerRecovery.schemaInvalidRetryMax
+            + config.providerRecovery.transportInvalidRetryMax
+            + 1,
+        );
+      }
+      await repositories.runtime.updateTask(envelope.task.taskId, taskChanges, { client });
       const targetStatus = halted
         ? "halted"
         : envelope.task.mode === "maintenance"
@@ -123,8 +142,9 @@ function createNormalProviderRecovery({
         )
         : adapterResult.detail;
       await appendOps(envelope, adapterResult.reason, attempt, detail, client);
+      const { rejectedOutput: _rejectedOutput, ...safeAdapterResult } = adapterResult;
       return {
-        ...adapterResult,
+        ...safeAdapterResult,
         taskId: envelope.task.taskId,
         halted,
         attempt,
@@ -201,29 +221,45 @@ function createNormalProviderRecovery({
       if (!task) throw new Error("Memory task disappeared before schema retry persistence");
       if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return false;
       const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
-      const used = Number(stagePayload.schemaInvalidAttempts || 0);
-      const limit = config.providerRecovery.schemaInvalidRetryMax;
+      const transportFailure = isTransportRepairFailure(adapterResult.detail);
+      const counter = transportFailure ? "transportInvalidAttempts" : "schemaInvalidAttempts";
+      const used = Number(stagePayload[counter] || 0);
+      const limit = transportFailure
+        ? config.providerRecovery.transportInvalidRetryMax
+        : config.providerRecovery.schemaInvalidRetryMax;
       if (used >= limit) return false;
       const attempt = numberValue(task, "attempt", "attempt") + 1;
-      stagePayload.schemaInvalidAttempts = used + 1;
-      stagePayload.schemaRepairFeedback = createRepairFeedback(
+      const repairAttempt = repairAttemptCount(stagePayload);
+      const nextStagePayload = appendRejectedOutputAttempt(
+        stagePayload,
+        adapterResult,
+        repairAttempt,
+        config.providerRecovery.schemaInvalidRetryMax
+          + config.providerRecovery.transportInvalidRetryMax
+          + 1,
+      );
+      nextStagePayload[counter] = used + 1;
+      nextStagePayload.schemaRepairFeedback = createRepairFeedback(
         adapterResult.detail,
-        stagePayload.schemaInvalidAttempts,
+        repairAttempt + 1,
         envelope.task,
       );
       await repositories.runtime.updateTask(envelope.task.taskId, {
         status: "running",
         stage: "schema_invalid_retry",
-        stage_payload: stagePayload,
+        stage_payload: nextStagePayload,
         attempt,
         not_before: null,
         last_error_reason: "output_schema_invalid",
       }, { client });
       await appendOps(envelope, "output_schema_invalid_retry", attempt, {
-        ...schemaErrorLogDetail(adapterResult.detail, stagePayload.schemaRepairFeedback),
-        repairFeedback: stagePayload.schemaRepairFeedback,
+        ...schemaErrorLogDetail(adapterResult.detail, nextStagePayload.schemaRepairFeedback),
+        repairFeedback: nextStagePayload.schemaRepairFeedback,
       }, client);
-      return stagePayload.schemaRepairFeedback;
+      return {
+        feedback: nextStagePayload.schemaRepairFeedback,
+        rejectedOutput: latestRejectedOutput(nextStagePayload, nextStagePayload.schemaRepairFeedback),
+      };
     });
   }
 
@@ -231,16 +267,14 @@ function createNormalProviderRecovery({
     const persisted = repositories.runtime.getTask
       ? await repositories.runtime.getTask(envelope.task.taskId)
       : null;
-    let repairFeedback = rowValue(
-      persisted,
-      "stage_payload",
-      "stagePayload",
-    )?.schemaRepairFeedback ?? null;
+    const persistedStagePayload = rowValue(persisted, "stage_payload", "stagePayload");
+    let repairFeedback = persistedStagePayload?.schemaRepairFeedback ?? null;
+    let rejectedOutput = latestRejectedOutput(persistedStagePayload, repairFeedback);
     while (true) {
       const startedAt = monotonicNow();
       let result;
       try {
-        result = await providerAdapter.propose(envelope, { repairFeedback });
+        result = await providerAdapter.propose(envelope, { repairFeedback, rejectedOutput });
       } finally {
         metrics?.observe(
           "memory_provider_latency_ms",
@@ -305,6 +339,7 @@ function createNormalProviderRecovery({
               errors: validation.errors,
               shape: summarizeOutputShape(result.output),
             },
+            rejectedOutput: result.output,
           };
         }
       }
@@ -318,9 +353,10 @@ function createNormalProviderRecovery({
         && result.reason === "output_schema_invalid"
         && result.detail?.boundary === "output";
       if (!retryableSchemaOutput) return result;
-      const reservedFeedback = await reserveSchemaInvalidRetry(envelope, result);
-      if (!reservedFeedback) return result;
-      repairFeedback = reservedFeedback;
+      const reserved = await reserveSchemaInvalidRetry(envelope, result);
+      if (!reserved) return result;
+      repairFeedback = reserved.feedback;
+      rejectedOutput = reserved.rejectedOutput;
     }
   }
 

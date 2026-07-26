@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  flatWireRepairErrors,
   flatWireToSemanticOutput,
   semanticOutputToFlatWire,
 } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
@@ -100,4 +101,27 @@ test("SemanticResult converts to the same flat shape used by provider preflight"
       anchorSource: "message:101",
     }],
   });
+});
+
+test("schema repair diagnostics are translated back to flat wire paths", () => {
+  const output = {
+    sectionStatuses: { recentEpisodes: "changes", milestones: "changes" },
+    changes: [
+      { section: "milestones", action: "add", sources: ["message:1"] },
+      { section: "recentEpisodes", action: "add", sources: ["message:2"] },
+    ],
+  };
+  const errors = flatWireRepairErrors([
+    { path: "$.sectionResults.recentEpisodes.changes[0].supportRefs[0]", message: "invalid source" },
+    { path: "$.sectionResults.milestones.changes", message: "must not be empty" },
+    { path: "$.sectionResults.milestones.status", message: "invalid status" },
+  ], output, {
+    proposer: "episodeProposer",
+    targetSections: ["recentEpisodes", "milestones"],
+  });
+  assert.deepEqual(errors.map((error) => error.path), [
+    "$.changes[1].sources[0]",
+    "$.changes",
+    "$.sectionStatuses.milestones",
+  ]);
 });

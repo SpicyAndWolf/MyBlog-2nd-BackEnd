@@ -137,8 +137,12 @@ test("Provider Adapter preserves token usage for unsuccessful structured respons
   assert.deepEqual(result.usage, usage);
 });
 
-test("Provider Adapter appends bounded schema repair feedback without replaying invalid output", async () => {
+test("Provider Adapter replays rejected output and feedback as a multi-turn repair request", async () => {
   let request;
+  const rejectedOutput = {
+    sectionStatuses: { recentEpisodes: "noop", milestones: "noop" },
+    changes: [{ section: "recentEpisodes", action: "add", sources: [] }],
+  };
   const adapter = createMemoryProviderAdapter({
     promptLoader: async () => "base prompt",
     invokeStructured: async (value) => {
@@ -148,16 +152,35 @@ test("Provider Adapter appends bounded schema repair feedback without replaying 
   });
   const result = await adapter.propose(envelope(), {
     repairFeedback: { attempt: 1, errors: [{ path: "$.sectionResults.todos.changes[0].dueAt", message: "days must be non-negative" }] },
+    rejectedOutput,
   });
   assert.equal(result.status, "ok");
-  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V1\]/);
-  assert.match(request.systemPrompt, /dueAt.*days must be non-negative/s);
-  assert.doesNotMatch(request.systemPrompt, /rawInvalidOutput/);
+  assert.equal(request.systemPrompt, "base prompt");
+  assert.doesNotMatch(request.systemPrompt, /SCHEMA_REPAIR/);
+  assert.deepEqual(request.repairContext.assistantOutput, rejectedOutput);
+  assert.match(request.repairContext.userMessage, /\[SCHEMA_REPAIR_V4\]/);
+  assert.match(request.repairContext.userMessage, /dueAt.*days must be non-negative/s);
   assert.deepEqual(request.userPayload, buildProposerUserPayload(envelope()));
   assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "taskId"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(request.userPayload.task, "now"), false);
   assert.equal(request.userPayload.task.userTimeZone, "UTC");
   assert.equal(request.userPayload.messages[0].createdAt, "2026-07-12T00:00:00.000Z");
+});
+
+test("Provider Adapter keeps the legacy combined-prompt fallback for old repair tasks", async () => {
+  let request;
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "base prompt",
+    invokeStructured: async (value) => {
+      request = value;
+      return { output: { tickId: 7, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } } } };
+    },
+  });
+  await adapter.propose(envelope(), {
+    repairFeedback: { attempt: 1, errors: [{ path: "$", message: "invalid" }] },
+  });
+  assert.match(request.systemPrompt, /\[SCHEMA_REPAIR_V4\]/);
+  assert.equal(request.repairContext, null);
 });
 
 test("schema repair adds concise positive enum guidance only for selector errors", () => {
@@ -167,7 +190,7 @@ test("schema repair adds concise positive enum guidance only for selector errors
   });
   assert.match(repaired, /SELECT_ONLY_SCHEMA_ENUM_SOURCES|tool schema 的 enum/);
   assert.match(repaired, /\[SUPPORT_REF_INVALID\]/);
-  assert.doesNotMatch(repaired, /不要|误当|竖线/);
+  assert.doesNotMatch(repaired, /误当|竖线/);
   assert.doesNotMatch(repaired, /S-LOCATION/);
   const ordinary = schemaRepairPrompt("base", { errors: [{ path: "$.tickId", message: "must match" }] });
   assert.doesNotMatch(ordinary, /tool schema 的 enum/);
