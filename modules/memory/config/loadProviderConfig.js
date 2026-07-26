@@ -1,3 +1,5 @@
+const { LIBRARIAN_PROPOSER } = require("../contracts/constants");
+
 const ADAPTER_IDS = Object.freeze(["openai-json-schema", "deepseek-strict-tools", "opencode-go-json-schema"]);
 const PROPOSER_IDS = Object.freeze([
   "currentStateProposer",
@@ -10,6 +12,7 @@ const PROPOSER_IDS = Object.freeze([
   "relationshipProposer",
   "worldFactProposer",
   "compactionProposer",
+  LIBRARIAN_PROPOSER,
 ]);
 // 与 chat 模块 opencodeGoOpenai 的 REASONING_EFFORT_OPTIONS 全集保持一致。
 const REASONING_EFFORT_VALUES = Object.freeze(["max", "xhigh", "high", "medium", "low", "minimal", "none"]);

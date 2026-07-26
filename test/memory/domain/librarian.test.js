@@ -1,0 +1,170 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const {
+  createInitialMemoryState,
+  LIBRARIAN_INTERVAL_TURNS,
+  validateLibrarianSemanticResult,
+} = require("../../../modules/memory/contracts");
+const {
+  compileLibrarianProposal,
+  reduceLibrarianProposal,
+} = require("../../../modules/memory/domain/librarian");
+const { buildLibrarianEnvelope } = require("../../../modules/memory/application/librarianRenderer");
+const { mapEventToRow } = require("../../../modules/memory/application/eventMapper");
+const { replayEventGroups } = require("../../../modules/memory/domain/eventReplay");
+const { createMemoryTestConfig, sha256, sequence } = require("../support/memory-builders");
+
+function item(id, text, messageIds) {
+  return {
+    id,
+    text,
+    sourceRefs: messageIds.map((messageId) => ({ messageId, contentHash: sha256(`${id}:${messageId}`) })),
+    createdAtMessageId: Math.min(...messageIds),
+    updatedAtMessageId: Math.max(...messageIds),
+  };
+}
+
+function fixture() {
+  const state = createInitialMemoryState();
+  state.meta.revision = 4;
+  state.working.standingAgreements.push(item("agreement:1", "以后回答保持简洁。", [1]));
+  state.longTerm.worldFacts.push(item("worldFact:1", "用户偏好简洁回答。", [2]));
+  state.longTerm.userProfile.push(item("userProfile:1", "用户偏好简洁回答。", [3]));
+  state.longTerm.relationship.push(item("relationship:1", "双方是长期写作搭档。", [4]));
+  const envelope = buildLibrarianEnvelope({
+    userId: 1,
+    presetId: "default",
+    state,
+    boundaryMessageId: 4,
+    turnOrdinal: LIBRARIAN_INTERVAL_TURNS,
+    triggerType: "periodic",
+    now: "2026-07-26T00:00:00.000Z",
+    userTimeZone: "Asia/Shanghai",
+    taskId: "librarian-task",
+    tickId: 7,
+  });
+  return { state, envelope };
+}
+
+test("Librarian Renderer exposes every allowed section as writable without persistence metadata", () => {
+  const { envelope } = fixture();
+  assert.deepEqual(envelope.artifact.publicInput.messages, []);
+  assert.equal(envelope.artifact.publicInput.memoryText.includes("agreement:1"), false);
+  assert.equal(envelope.artifact.publicInput.memoryText.includes("sha256:"), false);
+  assert.equal(Object.keys(envelope.artifact.refMap.readOnly).length, 0);
+  assert.equal(Object.keys(envelope.artifact.refMap.writable).length, 4);
+  assert.equal(envelope.task.cursorBefore, undefined);
+  assert.equal(envelope.task.targetMessageId, undefined);
+});
+
+test("Librarian validates conflicts before compilation", () => {
+  const { envelope } = fixture();
+  const result = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [
+      { action: "move", ref: "W1", toSection: "userProfile" },
+      { action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
+    ],
+  };
+  const validation = validateLibrarianSemanticResult(result, envelope.artifact);
+  assert.equal(validation.ok, false);
+  assert.match(validation.errors.map((entry) => entry.message).join(" "), /more than one/);
+});
+
+test("Librarian merge is cross-section, provenance preserving, and revision atomic", () => {
+  const { state, envelope } = fixture();
+  const semanticResult = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [
+      { action: "merge", refs: ["W1", "UP1"], toSection: "userProfile", text: "用户偏好简洁回答。" },
+    ],
+  };
+  const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
+  const reduction = reduceLibrarianProposal({
+    state,
+    task: envelope.task,
+    proposal,
+    config: createMemoryTestConfig(),
+    idFactory: sequence("merged"),
+  });
+  assert.equal(reduction.outcome, "committable");
+  assert.equal(state.meta.revision, 4);
+  assert.equal(reduction.state.meta.revision, 5);
+  assert.equal(reduction.state.longTerm.worldFacts.length, 0);
+  assert.equal(reduction.state.longTerm.userProfile.length, 1);
+  assert.equal(reduction.state.longTerm.userProfile[0].id, "userProfile:merged");
+  assert.deepEqual(reduction.state.longTerm.userProfile[0].sourceRefs.map((ref) => ref.messageId), [2, 3]);
+  assert.equal(reduction.events[0].normalizedOperation.sources.length, 2);
+});
+
+test("Librarian dropDuplicate preserves keeper identity/text/creation while merging evidence", () => {
+  const { state, envelope } = fixture();
+  const semanticResult = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [
+      { action: "dropDuplicate", keeperRef: "UP1", duplicateRefs: ["W1"] },
+    ],
+  };
+  const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
+  const reduction = reduceLibrarianProposal({ state, task: envelope.task, proposal, config: createMemoryTestConfig() });
+  const keeper = reduction.state.longTerm.userProfile[0];
+  assert.equal(keeper.id, "userProfile:1");
+  assert.equal(keeper.text, "用户偏好简洁回答。");
+  assert.equal(keeper.createdAtMessageId, 3);
+  assert.equal(keeper.updatedAtMessageId, 3);
+  assert.deepEqual(keeper.sourceRefs.map((ref) => ref.messageId), [2, 3]);
+});
+
+test("Librarian rejects the whole proposal when a target section exceeds capacity", () => {
+  const { state, envelope } = fixture();
+  const semanticResult = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [{ action: "move", ref: "W1", toSection: "userProfile" }],
+  };
+  const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
+  const config = createMemoryTestConfig();
+  config.sectionBudgets.userProfile = { maxItems: 1, maxRenderedChars: 2000 };
+  assert.throws(
+    () => reduceLibrarianProposal({ state, task: envelope.task, proposal, config }),
+    (error) => error.code === "MEMORY_LIBRARIAN_PROPOSAL_INVALID" && error.reason === "capacity_exceeded",
+  );
+  assert.equal(state.longTerm.worldFacts.length, 1);
+  assert.equal(state.longTerm.userProfile.length, 1);
+  assert.equal(state.meta.revision, 4);
+});
+
+test("Librarian normalized events deterministically replay a cross-section revision", () => {
+  const { state, envelope } = fixture();
+  const semanticResult = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [{ action: "move", ref: "W1", toSection: "userProfile" }],
+  };
+  const proposal = compileLibrarianProposal({ artifact: envelope.artifact, semanticResult, baseState: state });
+  const reduction = reduceLibrarianProposal({ state, task: envelope.task, proposal, config: createMemoryTestConfig() });
+  const group = {
+    event_group_id: "group-1",
+    user_id: 1,
+    preset_id: "default",
+    task_id: "librarian-task",
+    target_key: "librarian",
+    source_generation: 0,
+    schema_version: "2.01",
+    base_revision: 4,
+    result_revision: 5,
+    cursor_before: null,
+    cursor_after: null,
+    group_kind: "maintenance",
+  };
+  const events = reduction.events.map((event, index) => mapEventToRow(event, envelope, "group-1", index));
+  assert.deepEqual(replayEventGroups(state, [group], events, { userId: 1, presetId: "default" }), reduction.state);
+});

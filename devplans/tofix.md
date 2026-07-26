@@ -80,7 +80,7 @@
 
 图书管理员只维护现有 Memory，不消费新的对话，也不改变普通 proposer 的消息 cursor。
 
-用于“每 100 个完整对话 turn”调度的 durable checkpoint 只是维护调度水位，不是消息消费 cursor，也不参与普通 proposer 的 lag、rebuild 进度或 source evidence 判定。
+用于“每 96 个完整对话 turn”调度的 durable checkpoint 只是维护调度水位，不是消息消费 cursor，也不参与普通 proposer 的 lag、rebuild 进度或 source evidence 判定。
 
 ## 操作范围
 
@@ -171,8 +171,8 @@ Librarian 使用与普通 proposer 一致的 section 语义，并以条目的核
 
 图书管理员周期性运行，不在每次 Memory 更新后立即执行。触发方式固定为：
 
-1. 同一 `userId/presetId/sourceGeneration` 每新增 100 个完整 User→Assistant 对话 turn，触发一次；
-2. rebuild 按相同的每 100 turn 边界同步触发，并在 rebuild 最终 boundary 再运行一次；若最终 boundary 恰好已经完成一次 Librarian，则去重，不重复调用；
+1. 同一 `userId/presetId/sourceGeneration` 每新增 96 个完整 User→Assistant 对话 turn，触发一次；
+2. rebuild 按相同的每 96 turn 边界同步触发，并在 rebuild 最终 boundary 再运行一次；若最终 boundary 恰好已经完成一次 Librarian，则去重，不重复调用；
 3. 通过专用 CLI 手动触发，预期入口为 `npm run librarian:memory-v2 -- --userId <id> --presetId <id>`。
 
 “完整 turn”以现有 Chat turn 契约为准：User message 与唯一 Assistant message 通过同一 `turn_id` 和 `parent_user_message_id` 形成完整配对。只有 User message、Assistant 尚未成功落库的未完成 turn 不计数。缺少现行 turn metadata 的历史消息不参与周期计数，但仍会在 rebuild 最终 boundary 的 Librarian 运行中被整理。
@@ -201,7 +201,7 @@ Librarian 不能在参与 section 的普通 proposer 处于不同历史进度时
 Librarian 上线后：
 
 - 删除或禁用主动 high-watermark hygiene，避免与 Librarian 重复调用、重复整理；
-- 保留容量超限应急 compaction。Librarian 每 100 turn 才运行一次，不能替代写入路径上的容量安全阀；
+- 保留容量超限应急 compaction。Librarian 每 96 turn 才运行一次，不能替代写入路径上的容量安全阀；
 - 应急 compaction 仍只允许单 section merge，不获得 move、dropDuplicate 或 splitMove 权限；
 - Librarian 不作为 capacity-blocked normal task 的 child，也不负责 replay 被阻塞的普通 proposal。
 

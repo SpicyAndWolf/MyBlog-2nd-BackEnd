@@ -79,6 +79,39 @@ function createChatMemorySourceReader({ database } = {}) {
     return rows[0]?.boundary === null || rows[0]?.boundary === undefined ? 0 : Number(rows[0].boundary);
   }
 
+  async function listCompleteTurnBoundaries(userId, presetId, upToMessageId, { client } = {}) {
+    const scope = normalizeScope(userId, presetId);
+    const boundary = Number(upToMessageId);
+    if (!Number.isSafeInteger(boundary) || boundary < 0) throw new Error("Complete-turn boundary must be a non-negative safe integer");
+    if (boundary === 0) return [];
+    const { rows } = await executor(client).query(`
+      SELECT ROW_NUMBER() OVER (ORDER BY a.id)::BIGINT AS turn_ordinal,
+             a.id::BIGINT AS boundary_message_id
+      FROM chat_messages a
+      JOIN chat_messages u
+        ON u.id=a.parent_user_message_id
+       AND u.user_id=a.user_id
+       AND u.preset_id=a.preset_id
+       AND u.session_id=a.session_id
+       AND u.role='user'
+       AND u.turn_id IS NOT NULL
+       AND u.turn_id=a.turn_id
+      JOIN chat_sessions s ON s.id=a.session_id
+      WHERE a.user_id=$1
+        AND a.preset_id=$2
+        AND s.deleted_at IS NULL
+        AND a.role='assistant'
+        AND a.turn_id IS NOT NULL
+        AND a.parent_user_message_id IS NOT NULL
+        AND a.id<=$3
+      ORDER BY a.id
+    `, [scope.userId, scope.presetId, boundary]);
+    return rows.map((row) => ({
+      turnOrdinal: Number(row.turn_ordinal),
+      boundaryMessageId: Number(row.boundary_message_id),
+    }));
+  }
+
   async function hasAnyBetween(userId, presetId, lowerExclusive, upperInclusive, { client } = {}) {
     const scope = normalizeScope(userId, presetId);
     const { rows } = await executor(client).query(`SELECT EXISTS(SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id WHERE ${SOURCE_WHERE} AND m.id>$3 AND m.id<=$4) AS present`, [scope.userId, scope.presetId, lowerExclusive, upperInclusive]);
@@ -140,7 +173,7 @@ function createChatMemorySourceReader({ database } = {}) {
     return [...overlap, ...batch].map(mapRow);
   }
 
-  return Object.freeze({ countAfter, listScopes, getObservedWindow, getByIds, listUpTo, getBoundary, hasAnyBetween, getHistoryMetrics, getHistoryFingerprint, getForceDrainWindow });
+  return Object.freeze({ countAfter, listScopes, getObservedWindow, getByIds, listUpTo, getBoundary, listCompleteTurnBoundaries, hasAnyBetween, getHistoryMetrics, getHistoryFingerprint, getForceDrainWindow });
 }
 
 module.exports = { createChatMemorySourceReader };

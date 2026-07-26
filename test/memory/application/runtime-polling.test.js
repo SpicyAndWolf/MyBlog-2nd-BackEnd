@@ -2,6 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createMemoryRuntime } = require("../../../modules/memory/application/runtime");
 const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
+const {
+  createMemoryTestConfig,
+  withLibrarianRepositoryStubs,
+} = require("../support/memory-builders");
 
 test("durable task polling continuously scans queued and due retry tasks", async () => {
   let scans = 0;
@@ -14,8 +18,13 @@ test("durable task polling continuously scans queued and due retry tasks", async
     audit: {}, sidecars: {}, async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
-    config: { enabled: true, targets, tasks: { pollIntervalMs: 250 }, projections: { pollIntervalMs: 1000 }, providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 }, compaction: { retryMax: 1 } },
-    repositories,
+    config: createMemoryTestConfig({
+      enabled: true,
+      targets,
+      tasks: { pollIntervalMs: 250 },
+      projections: { pollIntervalMs: 1000 },
+    }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
   });
   const stop = runtime.startTaskPolling();

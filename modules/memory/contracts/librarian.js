@@ -1,0 +1,146 @@
+const {
+  LIBRARIAN_PROPOSER,
+  LIBRARIAN_SECTIONS,
+  LIBRARIAN_TARGET_KEY,
+} = require("./constants");
+const { isPlainObject, isIsoTimestamp } = require("./state");
+
+function issue(path, message) { return { path, message }; }
+function text(value) { return typeof value === "string" && value.trim().length > 0; }
+function integer(value, { positive = false } = {}) {
+  return Number.isSafeInteger(value) && (positive ? value > 0 : value >= 0);
+}
+function exactKeys(value, required, optional, path, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(issue(path, "must be an object"));
+    return false;
+  }
+  const allowed = new Set([...required, ...optional]);
+  for (const key of Object.keys(value)) if (!allowed.has(key)) errors.push(issue(`${path}.${key}`, "is not allowed"));
+  for (const key of required) if (!Object.prototype.hasOwnProperty.call(value, key)) errors.push(issue(`${path}.${key}`, "is required"));
+  return true;
+}
+function validateSection(value, path, errors) {
+  if (!LIBRARIAN_SECTIONS.includes(value)) errors.push(issue(path, "is not a Librarian section"));
+}
+function validateRefs(refs, path, errors, { min = 1 } = {}) {
+  if (!Array.isArray(refs) || refs.length < min) {
+    errors.push(issue(path, `must contain at least ${min} short ref(s)`));
+    return;
+  }
+  refs.forEach((ref, index) => { if (!text(ref)) errors.push(issue(`${path}[${index}]`, "must be a non-empty short ref")); });
+  if (new Set(refs).size !== refs.length) errors.push(issue(path, "must not contain duplicates"));
+}
+
+function validateLibrarianArtifact(artifact) {
+  const errors = [];
+  if (!exactKeys(artifact, ["publicInput", "refMap", "messageMeta"], [], "$", errors)) return { ok: false, errors };
+  if (exactKeys(artifact.publicInput, ["task", "memoryText", "messages"], [], "$.publicInput", errors)) {
+    const task = artifact.publicInput.task;
+    const keys = ["taskId", "tickId", "proposer", "targetKey", "targetSections", "boundaryMessageId", "turnOrdinal", "triggerType", "now", "userTimeZone"];
+    if (exactKeys(task, keys, [], "$.publicInput.task", errors)) {
+      if (!text(task.taskId)) errors.push(issue("$.publicInput.task.taskId", "must be a non-empty string"));
+      if (!integer(task.tickId)) errors.push(issue("$.publicInput.task.tickId", "must be a non-negative safe integer"));
+      if (task.proposer !== LIBRARIAN_PROPOSER) errors.push(issue("$.publicInput.task.proposer", "must identify the Librarian proposer"));
+      if (task.targetKey !== LIBRARIAN_TARGET_KEY) errors.push(issue("$.publicInput.task.targetKey", "must identify the Librarian target"));
+      if (JSON.stringify(task.targetSections) !== JSON.stringify(LIBRARIAN_SECTIONS)) errors.push(issue("$.publicInput.task.targetSections", "must exactly cover Librarian sections"));
+      if (!integer(task.boundaryMessageId)) errors.push(issue("$.publicInput.task.boundaryMessageId", "must be a non-negative safe integer"));
+      if (!integer(task.turnOrdinal)) errors.push(issue("$.publicInput.task.turnOrdinal", "must be a non-negative safe integer"));
+      if (!["periodic", "rebuild", "rebuild_final", "manual"].includes(task.triggerType)) errors.push(issue("$.publicInput.task.triggerType", "is invalid"));
+      if (!isIsoTimestamp(task.now)) errors.push(issue("$.publicInput.task.now", "must be an ISO timestamp"));
+      if (!text(task.userTimeZone)) errors.push(issue("$.publicInput.task.userTimeZone", "must be a non-empty string"));
+    }
+    if (typeof artifact.publicInput.memoryText !== "string") errors.push(issue("$.publicInput.memoryText", "must be a string"));
+    if (!Array.isArray(artifact.publicInput.messages) || artifact.publicInput.messages.length !== 0) errors.push(issue("$.publicInput.messages", "must be an empty array"));
+  }
+  if (!isPlainObject(artifact.refMap)) errors.push(issue("$.refMap", "must be an object"));
+  else {
+    if (!isPlainObject(artifact.refMap.writable)) errors.push(issue("$.refMap.writable", "must be an object"));
+    if (!isPlainObject(artifact.refMap.readOnly) || Object.keys(artifact.refMap.readOnly).length) errors.push(issue("$.refMap.readOnly", "must be an empty object"));
+    for (const [ref, entry] of Object.entries(artifact.refMap.writable || {})) {
+      const path = `$.refMap.writable.${ref}`;
+      if (!/^[A-Z][A-Z0-9]*$/.test(ref)) errors.push(issue(path, "has an invalid short ref"));
+      if (!exactKeys(entry, ["section", "itemId"], [], path, errors)) continue;
+      validateSection(entry.section, `${path}.section`, errors);
+      if (!text(entry.itemId)) errors.push(issue(`${path}.itemId`, "must be a non-empty item id"));
+    }
+  }
+  if (!isPlainObject(artifact.messageMeta) || Object.keys(artifact.messageMeta).length) errors.push(issue("$.messageMeta", "must be an empty object"));
+  return { ok: errors.length === 0, errors };
+}
+
+function validateLibrarianSemanticResult(result, taskOrArtifact) {
+  const task = taskOrArtifact?.publicInput?.task || taskOrArtifact;
+  const artifact = taskOrArtifact?.publicInput ? taskOrArtifact : null;
+  const errors = [];
+  if (!task || task.proposer !== LIBRARIAN_PROPOSER || task.targetKey !== LIBRARIAN_TARGET_KEY) {
+    return { ok: false, errors: [issue("$.task", "does not identify a Librarian task")] };
+  }
+  if (!exactKeys(result, ["tickId", "proposer", "status", "operations"], [], "$", errors)) return { ok: false, errors };
+  if (result.tickId !== task.tickId) errors.push(issue("$.tickId", "does not match task"));
+  if (result.proposer !== LIBRARIAN_PROPOSER) errors.push(issue("$.proposer", "does not match task"));
+  if (!["changes", "noop"].includes(result.status)) errors.push(issue("$.status", "is invalid"));
+  if (result.status === "noop") {
+    if (!Array.isArray(result.operations) || result.operations.length !== 0) errors.push(issue("$.operations", "must be an empty array when status is noop"));
+    return { ok: errors.length === 0, errors };
+  }
+  if (!Array.isArray(result.operations) || result.operations.length === 0) {
+    errors.push(issue("$.operations", "must be a non-empty array"));
+    return { ok: false, errors };
+  }
+  const usedRefs = new Set();
+  const rendered = artifact?.refMap?.writable;
+  const participate = (ref, path) => {
+    if (!text(ref)) errors.push(issue(path, "must be a non-empty short ref"));
+    else {
+      if (rendered && !rendered[ref]) errors.push(issue(path, `ref ${ref} was not rendered as writable Memory`));
+      if (usedRefs.has(ref)) errors.push(issue(path, `ref ${ref} participates in more than one top-level operation`));
+      usedRefs.add(ref);
+    }
+  };
+  result.operations.forEach((operation, index) => {
+    const path = `$.operations[${index}]`;
+    if (!isPlainObject(operation)) {
+      errors.push(issue(path, "must be an object"));
+      return;
+    }
+    if (operation.action === "move") {
+      if (!exactKeys(operation, ["action", "ref", "toSection"], [], path, errors)) return;
+      participate(operation.ref, `${path}.ref`);
+      validateSection(operation.toSection, `${path}.toSection`, errors);
+      if (rendered?.[operation.ref]?.section === operation.toSection) errors.push(issue(`${path}.toSection`, "must differ from the source section"));
+    } else if (operation.action === "merge") {
+      if (!exactKeys(operation, ["action", "refs", "toSection", "text"], [], path, errors)) return;
+      validateRefs(operation.refs, `${path}.refs`, errors, { min: 2 });
+      for (const ref of operation.refs || []) participate(ref, `${path}.refs`);
+      validateSection(operation.toSection, `${path}.toSection`, errors);
+      if (!text(operation.text)) errors.push(issue(`${path}.text`, "must be a non-empty string"));
+    } else if (operation.action === "dropDuplicate") {
+      if (!exactKeys(operation, ["action", "keeperRef", "duplicateRefs"], [], path, errors)) return;
+      validateRefs(operation.duplicateRefs, `${path}.duplicateRefs`, errors);
+      participate(operation.keeperRef, `${path}.keeperRef`);
+      for (const ref of operation.duplicateRefs || []) participate(ref, `${path}.duplicateRefs`);
+      if (operation.duplicateRefs?.includes(operation.keeperRef)) errors.push(issue(`${path}.duplicateRefs`, "must not contain keeperRef"));
+    } else if (operation.action === "splitMove") {
+      if (!exactKeys(operation, ["action", "ref", "parts"], [], path, errors)) return;
+      participate(operation.ref, `${path}.ref`);
+      if (!Array.isArray(operation.parts) || operation.parts.length < 2) errors.push(issue(`${path}.parts`, "must contain at least two parts"));
+      else {
+        operation.parts.forEach((part, partIndex) => {
+          const partPath = `${path}.parts[${partIndex}]`;
+          if (!exactKeys(part, ["toSection", "text"], [], partPath, errors)) return;
+          validateSection(part.toSection, `${partPath}.toSection`, errors);
+          if (!text(part.text)) errors.push(issue(`${partPath}.text`, "must be a non-empty string"));
+        });
+        const sourceSection = rendered?.[operation.ref]?.section;
+        if (sourceSection && !operation.parts.some((part) => part.toSection !== sourceSection)) errors.push(issue(`${path}.parts`, "at least one part must change section"));
+      }
+    } else errors.push(issue(`${path}.action`, "is invalid"));
+  });
+  return { ok: errors.length === 0, errors };
+}
+
+module.exports = {
+  validateLibrarianArtifact,
+  validateLibrarianSemanticResult,
+};

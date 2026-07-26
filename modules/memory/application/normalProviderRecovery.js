@@ -1,0 +1,334 @@
+const { createRepairFeedback, summarizeOutputShape } = require("./outputRepair");
+
+const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+const RETRYABLE_ADAPTER_ERRORS = new Set([
+  "llm_call_failed",
+  "safety_policy_blocked",
+  "max_output_truncated",
+]);
+const ADAPTER_METRIC_RESULTS = new Set([
+  "ok",
+  "llm_call_failed",
+  "safety_policy_blocked",
+  "max_output_truncated",
+  "output_schema_invalid",
+  "semantic_schema_invalid",
+]);
+
+function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
+function numberValue(row, snake, camel, fallback = 0) {
+  return Number(rowValue(row, snake, camel) ?? fallback);
+}
+
+function schemaErrorLogDetail(detail, feedback) {
+  return {
+    boundary: detail?.boundary ?? null,
+    ...(detail?.specialist ? { specialist: detail.specialist } : {}),
+    ...(detail?.shape ? { shape: detail.shape } : {}),
+    ...(detail?.transportError ? { transportError: detail.transportError } : {}),
+    ...(detail?.transportRecovery ? { transportRecovery: detail.transportRecovery } : {}),
+    ...(detail?.finishReason ? { finishReason: detail.finishReason } : {}),
+    repairPolicyVersion: feedback.policyVersion,
+    errors: feedback.errors,
+  };
+}
+
+function createNormalProviderRecovery({
+  repositories,
+  providerAdapter,
+  config,
+  metrics,
+  monotonicNow,
+  now,
+  appendOps,
+  observeTaskAge,
+  observedMessages,
+  validateProviderOutput,
+} = {}) {
+  async function recordAdapterError(envelope, adapterResult) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task disappeared before provider error persistence");
+      if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        return { status: task.status, taskId: envelope.task.taskId, duplicate: true };
+      }
+      const target = await repositories.runtime.getTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        envelope.task.targetKey,
+        { client, forUpdate: true },
+      );
+      const attempt = numberValue(task, "attempt", "attempt") + 1;
+      const consecutiveErrors = numberValue(
+        target,
+        "consecutive_errors",
+        "consecutiveErrors",
+      ) + 1;
+      const retryable = RETRYABLE_ADAPTER_ERRORS.has(adapterResult.reason);
+      const haltAfter = config.providerRecovery.haltAfterConsecutiveErrors;
+      const maintenanceLimitReached = envelope.task.mode === "maintenance"
+        && attempt > config.compaction.retryMax;
+      const normalLimitReached = envelope.task.mode !== "maintenance"
+        && attempt > config.providerRecovery.retryMax;
+      const halted = !retryable
+        || maintenanceLimitReached
+        || normalLimitReached
+        || (envelope.task.mode !== "maintenance" && consecutiveErrors >= haltAfter);
+      const delay = retryable && !halted
+        ? Math.min(
+          config.providerRecovery.backoffMaxMs,
+          config.providerRecovery.backoffBaseMs * (2 ** Math.max(0, attempt - 1)),
+        )
+        : null;
+      const retryAt = delay === null ? null : new Date(now().getTime() + delay).toISOString();
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: halted ? "failed" : "retry_wait",
+        stage: "provider_error",
+        attempt,
+        not_before: retryAt,
+        last_error_reason: adapterResult.reason,
+      }, { client });
+      const targetStatus = halted
+        ? "halted"
+        : envelope.task.mode === "maintenance"
+          ? "capacity_blocked"
+          : "retry_wait";
+      if (halted) {
+        metrics?.increment("memory_target_halted_total", {
+          targetKey: envelope.task.targetKey,
+          reason: adapterResult.reason,
+        });
+        observeTaskAge(task, "halt", envelope.task.targetKey);
+      }
+      await repositories.runtime.upsertTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        {
+          targetKey: envelope.task.targetKey,
+          sourceGeneration: envelope.task.sourceGeneration,
+          status: targetStatus,
+          consecutiveErrors,
+          lastErrorReason: adapterResult.reason,
+          lastTaskId: envelope.task.taskId,
+          nextRetryAt: retryAt,
+        },
+        { client },
+      );
+      const detail = ["output_schema_invalid", "semantic_schema_invalid"].includes(
+        adapterResult.reason,
+      )
+        ? schemaErrorLogDetail(
+          adapterResult.detail,
+          createRepairFeedback(adapterResult.detail, 0, envelope.task),
+        )
+        : adapterResult.detail;
+      await appendOps(envelope, adapterResult.reason, attempt, detail, client);
+      return {
+        ...adapterResult,
+        taskId: envelope.task.taskId,
+        halted,
+        attempt,
+        consecutiveErrors,
+        notBefore: retryAt,
+      };
+    });
+  }
+
+  async function recordProviderCircuitDeferral(envelope, adapterResult) {
+    const providerHealth = adapterResult.providerHealth || {};
+    const needsAttention = providerHealth.status === "needs_attention";
+    const nextRetryAt = needsAttention ? null : providerHealth.nextRetryAt || null;
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task disappeared before provider deferral persistence");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) {
+        return {
+          status: rowValue(task, "status", "status"),
+          taskId: envelope.task.taskId,
+          duplicate: true,
+        };
+      }
+      const target = await repositories.runtime.getTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        envelope.task.targetKey,
+        { client, forUpdate: true },
+      );
+      const taskStatus = needsAttention ? "failed" : "retry_wait";
+      const targetStatus = needsAttention ? "halted" : "retry_wait";
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: taskStatus,
+        stage: "provider_circuit_open",
+        not_before: nextRetryAt,
+        last_error_reason: "provider_circuit_open",
+      }, { client });
+      await repositories.runtime.upsertTargetStatus(
+        envelope.task.userId,
+        envelope.task.presetId,
+        {
+          targetKey: envelope.task.targetKey,
+          sourceGeneration: envelope.task.sourceGeneration,
+          status: targetStatus,
+          consecutiveErrors: numberValue(target, "consecutive_errors", "consecutiveErrors"),
+          lastErrorReason: "provider_circuit_open",
+          lastTaskId: envelope.task.taskId,
+          nextRetryAt,
+        },
+        { client },
+      );
+      await appendOps(
+        envelope,
+        "provider_circuit_open",
+        numberValue(task, "attempt", "attempt"),
+        {
+          providerStatus: providerHealth.status || "degraded",
+          nextRetryAt,
+        },
+        client,
+      );
+      return {
+        status: needsAttention ? "halted" : "retry_wait",
+        outcome: "provider_circuit_open",
+        taskId: envelope.task.taskId,
+        notBefore: nextRetryAt,
+      };
+    });
+  }
+
+  async function reserveSchemaInvalidRetry(envelope, adapterResult) {
+    return repositories.withTransaction(async (client) => {
+      const task = await repositories.runtime.getTaskForUpdate(envelope.task.taskId, { client });
+      if (!task) throw new Error("Memory task disappeared before schema retry persistence");
+      if (TERMINAL_TASK_STATUSES.has(rowValue(task, "status", "status"))) return false;
+      const stagePayload = structuredClone(rowValue(task, "stage_payload", "stagePayload") || {});
+      const used = Number(stagePayload.schemaInvalidAttempts || 0);
+      const limit = config.providerRecovery.schemaInvalidRetryMax;
+      if (used >= limit) return false;
+      const attempt = numberValue(task, "attempt", "attempt") + 1;
+      stagePayload.schemaInvalidAttempts = used + 1;
+      stagePayload.schemaRepairFeedback = createRepairFeedback(
+        adapterResult.detail,
+        stagePayload.schemaInvalidAttempts,
+        envelope.task,
+      );
+      await repositories.runtime.updateTask(envelope.task.taskId, {
+        status: "running",
+        stage: "schema_invalid_retry",
+        stage_payload: stagePayload,
+        attempt,
+        not_before: null,
+        last_error_reason: "output_schema_invalid",
+      }, { client });
+      await appendOps(envelope, "output_schema_invalid_retry", attempt, {
+        ...schemaErrorLogDetail(adapterResult.detail, stagePayload.schemaRepairFeedback),
+        repairFeedback: stagePayload.schemaRepairFeedback,
+      }, client);
+      return stagePayload.schemaRepairFeedback;
+    });
+  }
+
+  async function proposeWithSchemaRetry(envelope) {
+    const persisted = repositories.runtime.getTask
+      ? await repositories.runtime.getTask(envelope.task.taskId)
+      : null;
+    let repairFeedback = rowValue(
+      persisted,
+      "stage_payload",
+      "stagePayload",
+    )?.schemaRepairFeedback ?? null;
+    while (true) {
+      const startedAt = monotonicNow();
+      let result;
+      try {
+        result = await providerAdapter.propose(envelope, { repairFeedback });
+      } finally {
+        metrics?.observe(
+          "memory_provider_latency_ms",
+          { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer },
+          monotonicNow() - startedAt,
+        );
+      }
+      if (result.status === "deferred") {
+        metrics?.increment("memory_provider_admission_deferred_total", {
+          targetKey: envelope.task.targetKey,
+          proposer: envelope.task.proposer,
+        });
+        return result;
+      }
+      const providerCallCount = Number.isSafeInteger(result.callCount) && result.callCount > 0
+        ? result.callCount
+        : 1;
+      metrics?.increment(
+        "memory_provider_calls_total",
+        {
+          targetKey: envelope.task.targetKey,
+          proposer: envelope.task.proposer,
+          status: result.status,
+        },
+        providerCallCount,
+      );
+      const messageCount = observedMessages(envelope).length;
+      metrics?.increment(
+        "memory_provider_observed_messages_total",
+        { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer },
+        messageCount * providerCallCount,
+      );
+      metrics?.observe(
+        "memory_provider_calls_per_message",
+        { targetKey: envelope.task.targetKey, proposer: envelope.task.proposer },
+        providerCallCount / Math.max(1, messageCount),
+      );
+      const inputTokens = Number(result.usage?.input_tokens ?? result.usage?.prompt_tokens);
+      const outputTokens = Number(result.usage?.output_tokens ?? result.usage?.completion_tokens);
+      if (Number.isFinite(inputTokens)) {
+        metrics?.observe(
+          "memory_provider_input_tokens",
+          { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" },
+          inputTokens,
+        );
+      }
+      if (Number.isFinite(outputTokens)) {
+        metrics?.observe(
+          "memory_provider_output_tokens",
+          { targetKey: envelope.task.targetKey, model: result.model ?? "unknown" },
+          outputTokens,
+        );
+      }
+      if (result.status !== "error") {
+        const validation = validateProviderOutput(result.output, envelope);
+        if (!validation.ok) {
+          result = {
+            status: "error",
+            reason: "output_schema_invalid",
+            detail: {
+              boundary: "output",
+              errors: validation.errors,
+              shape: summarizeOutputShape(result.output),
+            },
+          };
+        }
+      }
+      const metricResult = result.status === "error" ? result.reason : "ok";
+      metrics?.increment("memory_provider_results_total", {
+        targetKey: envelope.task.targetKey,
+        proposer: envelope.task.proposer,
+        result: ADAPTER_METRIC_RESULTS.has(metricResult) ? metricResult : "unknown",
+      });
+      const retryableSchemaOutput = result.status === "error"
+        && result.reason === "output_schema_invalid"
+        && result.detail?.boundary === "output";
+      if (!retryableSchemaOutput) return result;
+      const reservedFeedback = await reserveSchemaInvalidRetry(envelope, result);
+      if (!reservedFeedback) return result;
+      repairFeedback = reservedFeedback;
+    }
+  }
+
+  return Object.freeze({
+    recordAdapterError,
+    recordProviderCircuitDeferral,
+    proposeWithSchemaRetry,
+  });
+}
+
+module.exports = { createNormalProviderRecovery };

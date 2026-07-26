@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { LIBRARIAN_PROPOSER } = require("../contracts");
 
 const FILES = Object.freeze({
   currentStateProposer: "current-state-proposer.md",
@@ -11,6 +12,7 @@ const FILES = Object.freeze({
   relationshipProposer: "relationship-proposer.md",
   worldFactProposer: "world-fact-proposer.md",
   compactionProposer: "compaction-proposer.md",
+  [LIBRARIAN_PROPOSER]: "librarian-proposer.md",
 });
 async function loadProposerPrompt(proposer) {
   const file = FILES[proposer];

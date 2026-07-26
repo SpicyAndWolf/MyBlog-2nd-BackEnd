@@ -1,7 +1,16 @@
 const { classifyIssues } = require("./classifyIssues");
 const { ISSUE_CODES, OUTPUT_REPAIR_POLICY_VERSION } = require("./policy");
+const { LIBRARIAN_PROPOSER } = require("../../contracts");
 
 function expectedShape(task) {
+  if (task?.proposer === LIBRARIAN_PROPOSER) {
+    return {
+      tickId: "<copy task.tickId>",
+      proposer: LIBRARIAN_PROPOSER,
+      status: "noop | changes",
+      operations: "<empty for noop; complete operation array for changes>",
+    };
+  }
   const sections = Array.isArray(task?.targetSections) ? task.targetSections : [];
   return {
     tickId: "<copy task.tickId>",

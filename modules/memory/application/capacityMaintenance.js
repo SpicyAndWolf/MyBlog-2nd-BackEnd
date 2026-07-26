@@ -80,15 +80,6 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     return rowValue(row, "task_payload", "taskPayload") || envelope;
   }
 
-  async function createHygieneChild(parentEnvelope, state, section, client) {
-    const maxItems = config.sectionBudgets[section].maxItems;
-    const itemCount = (["todos", "standingAgreements", "recentEpisodes"].includes(section) ? state.working[section] : state.longTerm[section]).length;
-    const trigger = { type: "hygiene", itemCount, maxItems, highWatermarkPercent: config.hygiene?.highWatermarkPercent ?? 70 };
-    const envelope = buildMaintenanceEnvelope({ parentEnvelope, state, section, trigger, resumeEpoch: 0, config });
-    const row = await repositories.runtime.createTask(maintenanceTaskRow(envelope), { client });
-    return rowValue(row, "task_payload", "taskPayload") || envelope;
-  }
-
   async function deferNormal({ parentEnvelope, state, proposal, reduction, client }) {
     const groupId = stablePhaseId(parentEnvelope.task.taskId, "capacity_blocked");
     const existing = await repositories.audit.getEventGroup(groupId, { client });
@@ -571,58 +562,12 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     return createChild(parentEnvelope, state, violation, resumeEpoch, client);
   }
 
-  async function maybeRunHygiene(parentEnvelope) {
-    const highWatermarkPercent = config.hygiene?.highWatermarkPercent ?? 70;
-    const minItemDelta = config.hygiene?.minItemDelta ?? 5;
-    const created = [];
-    for (const section of parentEnvelope.task.targetSections) {
-      const budget = config.sectionBudgets[section];
-      if (!budget || section === "recentEpisodes") continue;
-      let child;
-      try {
-        child = await repositories.withTransaction(async (client) => {
-          const state = await repositories.state.getState(parentEnvelope.task.userId, parentEnvelope.task.presetId, { client, forUpdate: true });
-          if (!state || state.meta.sourceGeneration !== parentEnvelope.task.sourceGeneration) return null;
-          const itemCount = sectionItems(state, section).length;
-          const highWatermark = Math.ceil(budget.maxItems * highWatermarkPercent / 100);
-          if (itemCount < highWatermark) return null;
-          const tasks = await repositories.runtime.listTasksForTarget(parentEnvelope.task.userId, parentEnvelope.task.presetId, parentEnvelope.task.targetKey, { client });
-          const previous = tasks.find((row) => {
-            const payload = rowValue(row, "task_payload", "taskPayload");
-            return rowValue(row, "task_type", "taskType") === "maintenance"
-              && payload?.task?.sourceGeneration === parentEnvelope.task.sourceGeneration
-              && payload?.task?.trigger?.type === "hygiene"
-              && payload.task.targetSections?.[0] === section;
-          });
-          const previousPayload = rowValue(previous, "stage_payload", "stagePayload");
-          const previousTrigger = rowValue(previous, "task_payload", "taskPayload")?.task?.trigger;
-          const baseline = Number(previousPayload?.resultItemCount ?? previousTrigger?.itemCount);
-          if (Number.isFinite(baseline) && itemCount < baseline + minItemDelta) return null;
-          return createHygieneChild(parentEnvelope, state, section, client);
-        });
-      } catch (error) {
-        metrics?.increment("memory_hygiene_schedule_errors_total", { targetKey: parentEnvelope.task.targetKey, section });
-        created.push({ status: "hygiene_schedule_failed", section, reason: String(error?.message || "schedule_failed").slice(0, 200) });
-        continue;
-      }
-      if (!child) continue;
-      try {
-        created.push(await processMaintenanceEnvelope(child));
-      } catch (error) {
-        metrics?.increment("memory_hygiene_execution_errors_total", { targetKey: parentEnvelope.task.targetKey, section });
-        created.push({ status: "hygiene_queued", section, taskId: child.task.taskId, reason: String(error?.message || "execution_failed").slice(0, 200) });
-      }
-    }
-    return created;
-  }
-
   return Object.freeze({
     deferNormal,
     processMaintenanceEnvelope,
     advanceParent,
     resumeParent,
     createResumeChild,
-    maybeRunHygiene,
     persistMaintenanceSemanticResult,
     persistMaintenanceSemanticResultWithRecovery,
   });

@@ -1,5 +1,5 @@
 const crypto = require("node:crypto");
-const { SCHEMA_VERSION } = require("../contracts");
+const { LIBRARIAN_TARGET_KEY, SCHEMA_VERSION } = require("../contracts");
 const { createObserver } = require("./observer");
 const { createNormalWritePipeline } = require("./normalWritePipeline");
 const { createMemoryRecovery } = require("./recovery");
@@ -17,6 +17,13 @@ const { createProviderAdmission, admissionControlledAdapter } = require("./provi
 const { createProviderCircuitBreaker } = require("../../../shared/resilience/providerCircuitBreaker");
 const { circuitControlledAdapter } = require("./providerCircuitAdapter");
 const { createMemoryRuntimeHealth } = require("./runtimeHealth");
+const { createMemoryLibrarian } = require("./librarian");
+
+const MAX_BACKGROUND_FAILURE_REASON_CHARS = 200;
+
+function backgroundFailureReason(error, fallback) {
+  return String(error?.code || error?.name || fallback).slice(0, MAX_BACKGROUND_FAILURE_REASON_CHARS);
+}
 
 function createKeyedExecutor() {
   const lanes = new Map();
@@ -60,10 +67,12 @@ function startupRecoveryIssues({
     "error",
   ]);
   for (const result of tasks || []) {
+    if (result?.targetKey === LIBRARIAN_TARGET_KEY) continue;
     const status = String(result?.status || "unknown");
     if (failedTaskStatuses.has(status)) issues.push({ kind: "task", taskId: result?.taskId ?? null, status });
   }
   for (const task of pendingTasks || []) {
+    if ((task?.target_key ?? task?.targetKey) === LIBRARIAN_TARGET_KEY) continue;
     issues.push({
       kind: "pending_task",
       taskId: task?.task_id ?? task?.taskId ?? null,
@@ -121,6 +130,7 @@ function createDisabledRuntime(repositories, privacyStores = [], enqueueByKey = 
     markRecoveryNotificationsDelivered: (ids) =>
       repositories?.sidecars?.markRecoveryNotificationsDelivered?.(ids) ?? Promise.resolve([]),
     runRetentionScope: disabled,
+    runLibrarian: disabled,
     reconcileRebuilds: async () => ({}),
     reconcilePrivacyDeletes: () => privacyDelete?.reconcilePending() ?? Promise.resolve({}),
     drainProjections: disabled,
@@ -195,7 +205,7 @@ function createMemoryRuntime({
   if (unsupportedProjectionKeys.length)
     throw new Error(`Unsupported Memory projection drain: ${unsupportedProjectionKeys.join(",")}`);
 
-  const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
+  const admission = createProviderAdmission(config.admission);
   const rawInvokeStructured = providerAdapter ? null : createStructuredTransport(config.provider);
   const rawAdapter =
     providerAdapter ||
@@ -213,7 +223,15 @@ function createMemoryRuntime({
     metrics,
   });
   const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config, metrics });
-  const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
+  let sourceRebuild;
+  const librarian = createMemoryLibrarian({
+    repositories,
+    providerAdapter: adapter,
+    config,
+    metrics,
+    drainBarrier: (userId, presetId, options) => sourceRebuild.forceDrainTargetsTo(userId, presetId, options),
+  });
+  sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, librarian, config });
   const privacyDelete = repositories.privacy
     ? createPrivacyHardDelete({ repositories, sourceRebuild, stores: privacyStores, enqueueByKey, onBackgroundError })
     : null;
@@ -221,6 +239,7 @@ function createMemoryRuntime({
   const recovery = createMemoryRecovery({
     repositories,
     pipeline,
+    librarianPipeline: librarian,
     enqueueByKey,
     metrics,
     onDispatchError: onBackgroundError,
@@ -319,7 +338,7 @@ function createMemoryRuntime({
       } catch (error) {
         results.diagnostics = {
           status: "failed",
-          reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
+          reason: backgroundFailureReason(error, "projection_failed"),
         };
         if (!error?.suppressed) onBackgroundError?.(error);
         metrics.observe(
@@ -343,7 +362,7 @@ function createMemoryRuntime({
       } catch (error) {
         results[projectionKey] = {
           status: "failed",
-          reason: String(error?.code || error?.name || "projection_failed").slice(0, 200),
+          reason: backgroundFailureReason(error, "projection_failed"),
         };
         if (!error?.suppressed) onBackgroundError?.(error);
         metrics.observe(
@@ -481,9 +500,20 @@ function createMemoryRuntime({
     return runInBackground(() =>
       enqueueByKey(`${userId}:${presetId}`, async () => {
         await ensureState(userId, presetId);
+        let librarianResult;
+        try {
+          librarianResult = await librarian.runScheduled(userId, presetId);
+        } catch (error) {
+          librarianResult = {
+            status: "failed",
+            reason: backgroundFailureReason(error, "librarian_failed"),
+          };
+          metrics.increment("memory_librarian_background_errors_total", {});
+          onBackgroundError?.(error);
+        }
         const memory = await pipeline.processScope(userId, presetId);
         const projections = await drainProjectionsNow(userId, presetId);
-        return { memory, projections };
+        return { memory, librarian: librarianResult, projections };
       }),
     );
   }
@@ -648,6 +678,10 @@ function createMemoryRuntime({
     return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => retention.runScope(userId, presetId)));
   }
 
+  function runLibrarian(userId, presetId) {
+    return runInBackground(() => enqueueByKey(`${userId}:${presetId}`, () => librarian.runManual(userId, presetId)));
+  }
+
   return Object.freeze({
     enabled: true,
     ensureScope,
@@ -671,6 +705,7 @@ function createMemoryRuntime({
     scheduleHousekeeping,
     scheduleStateRecovery,
     resumeTarget,
+    runLibrarian,
     getHealthSnapshot: runtimeHealth.getHealthSnapshot,
     metrics,
     getProviderAdmissionSnapshot: () => admission.snapshot(),

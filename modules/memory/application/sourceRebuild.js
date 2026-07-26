@@ -1,5 +1,16 @@
-const { createInitialMemoryState, assertMemoryState, SCHEMA_VERSION, TARGETS, TARGET_KEYS } = require("../contracts");
+const {
+  createInitialMemoryState,
+  assertMemoryState,
+  SCHEMA_VERSION,
+  TARGETS,
+  TARGET_KEYS,
+} = require("../contracts");
 const { isDeepStrictEqual } = require("node:util");
+const {
+  nextLibrarianPeriodicOrdinal,
+  furthestLibrarianBarrierCursor,
+  findAlignedLibrarianTurn,
+} = require("../domain/librarianSchedule");
 
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 const TERMINAL_TASK_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
@@ -45,9 +56,16 @@ function cloneSnapshotState(snapshot, current, sourceGeneration) {
   return next;
 }
 
-function createMemorySourceRebuild({ repositories, normalWritePipeline, config, enqueueByKey = (_key, work) => work(), now = () => new Date() } = {}) {
+function createMemorySourceRebuild({ repositories, normalWritePipeline, librarian, config, enqueueByKey = (_key, work) => work(), now = () => new Date() } = {}) {
   if (!repositories?.withTransaction || !repositories.state || !repositories.source || !repositories.runtime || !repositories.audit || !repositories.sidecars) throw new Error("Source rebuild repositories are required");
   if (!normalWritePipeline?.createTask || !normalWritePipeline?.processEnvelope) throw new Error("Source rebuild requires the normal write pipeline");
+  if (!librarian?.runAt || !librarian?.runFinal) throw new Error("Source rebuild requires the Memory Librarian");
+  if (typeof repositories.source.listCompleteTurnBoundaries !== "function") {
+    throw new Error("Source rebuild requires a complete-turn boundary reader");
+  }
+  if (typeof repositories.runtime.getLibrarianCheckpoint !== "function") {
+    throw new Error("Source rebuild requires the Librarian checkpoint repository");
+  }
 
   async function findSafeSnapshotState(userId, presetId, current, affectedFromMessageId, boundaryMessageId, client) {
     if (affectedFromMessageId === null) return null;
@@ -205,10 +223,13 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     });
   }
 
-  async function forceDrainTo(userId, presetId, {
+  async function forceDrainTargetsTo(userId, presetId, {
     sourceGeneration,
     boundaryMessageId,
     resumeHalted = false,
+    targetKeys = TARGET_KEYS,
+    rebuildBoundaryMessageId = boundaryMessageId,
+    finalizeTargets = true,
   }) {
     if (typeof normalWritePipeline.prepareEnvelope !== "function"
       || typeof normalWritePipeline.commitPreparedWave !== "function") {
@@ -219,7 +240,8 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
       const state = await repositories.state.getState(userId, presetId);
       if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale", sourceGeneration, results };
       const candidates = [];
-      for (const targetKey of TARGET_KEYS) {
+      for (const targetKey of targetKeys) {
+        if (!TARGETS[targetKey]) throw new Error(`Invalid force-drain target: ${targetKey}`);
         const cursor = state.meta.targetCursors[targetKey] ?? 0;
         if (cursor >= boundaryMessageId) continue;
         const targetStatus = await repositories.runtime.getTargetStatus(userId, presetId, targetKey);
@@ -245,12 +267,12 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
             results,
           };
         }
-        if (targetBoundary !== boundaryMessageId
+        if (targetBoundary !== rebuildBoundaryMessageId
           || (resumeHalted && targetRuntimeStatus === "halted")) {
           await repositories.runtime.upsertTargetStatus(userId, presetId, {
             targetKey,
             sourceGeneration,
-            rebuildBoundaryMessageId: boundaryMessageId,
+            rebuildBoundaryMessageId,
             status: "rebuilding",
             consecutiveErrors: 0,
             lastErrorReason: null,
@@ -425,10 +447,91 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
         };
       }
     }
-    for (const targetKey of TARGET_KEYS) {
-      const validated = await validateTarget(userId, presetId, targetKey, sourceGeneration, boundaryMessageId);
-      if (validated.status === "stale") return { status: "stale", sourceGeneration, results };
+    if (finalizeTargets) {
+      for (const targetKey of targetKeys) {
+        const validated = await validateTarget(userId, presetId, targetKey, sourceGeneration, boundaryMessageId);
+        if (validated.status === "stale") return { status: "stale", sourceGeneration, results };
+      }
     }
+    return { status: "completed", sourceGeneration, boundaryMessageId, results };
+  }
+
+  async function forceDrainTo(userId, presetId, options) {
+    const { sourceGeneration, boundaryMessageId } = options;
+    const turns = await repositories.source.listCompleteTurnBoundaries(userId, presetId, boundaryMessageId);
+    const checkpoint = await repositories.runtime.getLibrarianCheckpoint(userId, presetId, sourceGeneration);
+    let completed = Number(rowValue(checkpoint, "completed_turn_ordinal", "completedTurnOrdinal") ?? 0);
+    const results = [];
+    const alignPeriodicBoundary = async (desiredOrdinal) => {
+      const state = await repositories.state.getState(userId, presetId);
+      if (!state || state.meta.sourceGeneration !== sourceGeneration) return { status: "stale" };
+      const aligned = findAlignedLibrarianTurn(turns, {
+        minimumOrdinal: desiredOrdinal,
+        minimumBoundaryMessageId: furthestLibrarianBarrierCursor(state),
+      });
+      return aligned ? { status: "ready", ...aligned } : { status: "awaiting_complete_turn" };
+    };
+    let nextOrdinal = nextLibrarianPeriodicOrdinal(completed);
+    while (nextOrdinal <= turns.length) {
+      const aligned = await alignPeriodicBoundary(nextOrdinal);
+      if (aligned.status === "stale") return { status: "stale", sourceGeneration, results };
+      if (aligned.status === "awaiting_complete_turn") break;
+      const periodicBoundary = aligned.boundaryMessageId;
+      const periodicOrdinal = aligned.turnOrdinal;
+      const drained = await forceDrainTargetsTo(userId, presetId, {
+        ...options,
+        boundaryMessageId: periodicBoundary,
+        rebuildBoundaryMessageId: boundaryMessageId,
+        finalizeTargets: false,
+      });
+      results.push(...(drained.results || []));
+      if (drained.status !== "completed") return { ...drained, results };
+      const maintained = await librarian.runAt(userId, presetId, {
+        sourceGeneration,
+        boundaryMessageId: periodicBoundary,
+        turnOrdinal: periodicOrdinal,
+        triggerType: "rebuild",
+        skipBarrier: true,
+      });
+      results.push(maintained);
+      if (!["committed", "noop", "completed"].includes(maintained.status)) {
+        return {
+          status: "incomplete",
+          sourceGeneration,
+          boundaryMessageId: periodicBoundary,
+          reason: "librarian_not_terminal",
+          result: maintained,
+          results,
+        };
+      }
+      completed = periodicOrdinal;
+      nextOrdinal = nextLibrarianPeriodicOrdinal(completed);
+    }
+    const drained = await forceDrainTargetsTo(userId, presetId, {
+      ...options,
+      rebuildBoundaryMessageId: boundaryMessageId,
+      finalizeTargets: false,
+    });
+    results.push(...(drained.results || []));
+    if (drained.status !== "completed") return { ...drained, results };
+    const final = await librarian.runFinal(userId, presetId, boundaryMessageId, {
+      triggerType: "rebuild_final",
+      skipBarrier: true,
+    });
+    results.push(...(final.results || []));
+    if (final.status !== "completed") {
+      return {
+        status: "incomplete",
+        sourceGeneration,
+        boundaryMessageId,
+        reason: "librarian_final_not_terminal",
+        result: final,
+        results,
+      };
+    }
+    const finalized = await forceDrainTargetsTo(userId, presetId, options);
+    results.push(...(finalized.results || []));
+    if (finalized.status !== "completed") return { ...finalized, results };
     return { status: "completed", sourceGeneration, boundaryMessageId, results };
   }
 
@@ -440,7 +543,7 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, config, 
     });
   }
 
-  return Object.freeze({ initializeGeneration, initializeRecoveryGeneration, forceDrainTo, validateTarget, mutateAndRebuild });
+  return Object.freeze({ initializeGeneration, initializeRecoveryGeneration, forceDrainTo, forceDrainTargetsTo, validateTarget, mutateAndRebuild });
 }
 
 module.exports = { createMemorySourceRebuild };

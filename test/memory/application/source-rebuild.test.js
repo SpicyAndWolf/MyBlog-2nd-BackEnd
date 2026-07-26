@@ -1,11 +1,60 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
-const { createMemorySourceRebuild } = require("../../../modules/memory/application/sourceRebuild");
+const {
+  createInitialMemoryState,
+  TARGET_KEYS,
+  LIBRARIAN_INTERVAL_TURNS,
+} = require("../../../modules/memory/contracts");
+const {
+  createMemorySourceRebuild: createProductionMemorySourceRebuild,
+} = require("../../../modules/memory/application/sourceRebuild");
 
 const REBUILD_BOUNDARY_MESSAGE_ID = 20;
 const OLD_SOURCE = { messageId: 10, contentHash: `sha256:${"a".repeat(64)}` };
 const item = (id, sourceRefs) => ({ id, text: id, sourceRefs, createdAtMessageId: sourceRefs[0].messageId, updatedAtMessageId: Math.max(...sourceRefs.map((ref) => ref.messageId)) });
+const NOOP_LIBRARIAN = Object.freeze({
+  async runAt() { return { status: "noop" }; },
+  async runFinal() { return { status: "completed", results: [] }; },
+});
+
+function createMemorySourceRebuild(options) {
+  const repositories = {
+    ...options.repositories,
+    source: {
+      ...options.repositories.source,
+      listCompleteTurnBoundaries: options.repositories.source.listCompleteTurnBoundaries
+        || (async () => []),
+    },
+    runtime: {
+      ...options.repositories.runtime,
+      getLibrarianCheckpoint: options.repositories.runtime.getLibrarianCheckpoint
+        || (async () => null),
+    },
+  };
+  return createProductionMemorySourceRebuild({
+    ...options,
+    repositories,
+    librarian: options.librarian || NOOP_LIBRARIAN,
+  });
+}
+
+test("source rebuild fails fast when Librarian dependencies are absent", () => {
+  assert.throws(
+    () => createProductionMemorySourceRebuild({
+      repositories: {
+        withTransaction() {},
+        state: {},
+        source: {},
+        runtime: {},
+        audit: {},
+        sidecars: {},
+      },
+      normalWritePipeline: { createTask() {}, processEnvelope() {} },
+      config: {},
+    }),
+    /requires the Memory Librarian/,
+  );
+});
 
 function makeRebuildHarness() {
   const state = createInitialMemoryState();
@@ -378,6 +427,91 @@ test("force drain advances targets by source-watermark waves from one frozen bas
   assert.ok(waves.every((wave) => new Set(wave.map((entry) => entry.baseRevision)).size === 1));
   assert.equal(maxActiveProviders, TARGET_KEYS.length);
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy"), true);
+});
+
+test("rebuild rebases its first Librarian boundary beyond restored target cursors", async () => {
+  const completeTurnCount = LIBRARIAN_INTERVAL_TURNS + 4;
+  const boundaryMessageId = completeTurnCount * 2;
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  state.meta.targetCursors = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, boundaryMessageId]));
+  const statuses = Object.fromEntries(TARGET_KEYS.map((targetKey) => [targetKey, {
+    target_key: targetKey,
+    source_generation: 1,
+    status: "rebuilding",
+    rebuild_boundary_message_id: boundaryMessageId,
+  }]));
+  const snapshot = {
+    revision: 0,
+    source_generation: 1,
+    schema_version: "2.01",
+    state: structuredClone(state),
+  };
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: { async getState() { return structuredClone(state); } },
+    source: {
+      async listCompleteTurnBoundaries() {
+        return Array.from({ length: completeTurnCount }, (_, index) => ({
+          turnOrdinal: index + 1,
+          boundaryMessageId: (index + 1) * 2,
+        }));
+      },
+      async getForceDrainWindow() { throw new Error("restored cursors must not drain backwards"); },
+    },
+    runtime: {
+      async getLibrarianCheckpoint() { return null; },
+      async getTargetStatus(_u, _p, targetKey) { return statuses[targetKey]; },
+      async upsertTargetStatus(_u, _p, value) {
+        statuses[value.targetKey] = {
+          ...statuses[value.targetKey],
+          source_generation: value.sourceGeneration,
+          rebuild_boundary_message_id: value.rebuildBoundaryMessageId,
+          status: value.status,
+        };
+      },
+    },
+    audit: {
+      async getSnapshot() { return snapshot; },
+      async listSnapshots() { return [snapshot]; },
+      async listRevisionGroups() { return []; },
+    },
+    sidecars: {},
+  };
+  const calls = [];
+  const librarian = {
+    async runAt(_u, _p, options) {
+      calls.push(options);
+      return { status: "noop" };
+    },
+    async runFinal() { return { status: "completed", results: [] }; },
+  };
+  const normalWritePipeline = {
+    async createTask() { throw new Error("restored cursors require no proposal"); },
+    async processEnvelope() { throw new Error("restored cursors require no proposal"); },
+    async prepareEnvelope() { throw new Error("restored cursors require no proposal"); },
+    async commitPreparedWave() { throw new Error("restored cursors require no proposal"); },
+  };
+  const targets = Object.fromEntries(TARGET_KEYS.map((targetKey) => [
+    targetKey,
+    { lagThreshold: 16, contextWindow: 32 },
+  ]));
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline,
+    librarian,
+    config: { targets },
+  });
+
+  const result = await rebuild.forceDrainTo(7, "companion", {
+    sourceGeneration: 1,
+    boundaryMessageId,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].turnOrdinal, completeTurnCount);
+  assert.equal(calls[0].boundaryMessageId, boundaryMessageId);
 });
 
 test("target validation preserves valid rebuilt 2.01 state without suppression storage", async () => {

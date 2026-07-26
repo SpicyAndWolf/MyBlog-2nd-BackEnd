@@ -72,6 +72,29 @@ function bindSectionResult(resultSchema, artifact, section) {
 
 function bindOutputSchema(schema, artifact, sections) {
   const bound = structuredClone(schema);
+  if (bound.name === "memory_librarian_semantic") {
+    const refs = Object.keys(artifact?.refMap?.writable || {}).sort();
+    const operationArray = bound.schema?.properties?.operations;
+    if (!refs.length) {
+      bound.schema.properties.status = { const: "noop" };
+      operationArray.maxItems = 0;
+      return bound;
+    }
+    let operations = operationArray?.items?.oneOf || [];
+    if (refs.length < 2) {
+      operations = operations.filter((variant) => !["merge", "dropDuplicate"].includes(variant.properties?.action?.const));
+      operationArray.items.oneOf = operations;
+    }
+    for (const variant of operations) {
+      for (const field of ["ref", "keeperRef"]) {
+        if (variant.properties?.[field]) variant.properties[field] = { type: "string", enum: refs };
+      }
+      for (const field of ["refs", "duplicateRefs"]) {
+        if (variant.properties?.[field]?.items) variant.properties[field].items = { type: "string", enum: refs };
+      }
+    }
+    return bound;
+  }
   const sectionResults = bound.schema?.properties?.sectionResults;
   const selected = Array.isArray(sections) && sections.length
     ? sections

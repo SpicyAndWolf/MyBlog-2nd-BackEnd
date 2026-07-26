@@ -82,3 +82,14 @@ test("profile specialist schemas each expose exactly one owned section", () => {
     assert.equal(schema.properties.proposer.const, proposer);
   }
 });
+
+test("Librarian output schema exposes only conservative global maintenance operations", () => {
+  const schema = buildOutputSchema("librarianProposer").schema;
+  assert.deepEqual(schema.required, ["tickId", "proposer", "status", "operations"]);
+  const variants = schema.properties.operations.items.oneOf;
+  assert.deepEqual(variants.map((variant) => variant.properties.action.const), [
+    "move", "merge", "dropDuplicate", "splitMove",
+  ]);
+  assert.equal(JSON.stringify(schema).includes("evidenceMessageIds"), false);
+  assert.equal(JSON.stringify(schema).includes("addItem"), false);
+});

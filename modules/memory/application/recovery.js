@@ -1,4 +1,4 @@
-const { TARGETS } = require("../contracts");
+const { LIBRARIAN_TARGET_KEY, TARGETS } = require("../contracts");
 const { isSemanticTaskEnvelope } = require("./envelope");
 
 const CAPACITY_REASONS = new Set(["capacity_still_exceeded", "unable_to_compact", "compaction_failed", "replay_failed"]);
@@ -6,15 +6,18 @@ const CAPACITY_REASONS = new Set(["capacity_still_exceeded", "unable_to_compact"
 function rowValue(row, snake, camel) { return row?.[snake] ?? row?.[camel]; }
 function isForceDrainEnvelope(envelope) { return envelope?.task?.trigger?.type === "forceDrain"; }
 
-function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, onDispatchError, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date() } = {}) {
+function createMemoryRecovery({ repositories, pipeline, librarianPipeline, enqueueByKey, metrics, onDispatchError, buildKey = (userId, presetId) => `${userId}:${presetId}`, now = () => new Date() } = {}) {
   if (!repositories?.runtime || !repositories.withTransaction || !pipeline?.processEnvelope) throw new Error("Memory recovery dependencies are required");
 
   async function dispatch(envelope) {
-    if (typeof enqueueByKey !== "function") return pipeline.processEnvelope(envelope);
-    return enqueueByKey(buildKey(envelope.task.userId, envelope.task.presetId), () => pipeline.processEnvelope(envelope));
+    const selected = envelope?.task?.targetKey === LIBRARIAN_TARGET_KEY ? librarianPipeline : pipeline;
+    if (!selected?.processEnvelope) throw new Error(`Memory pipeline is unavailable for ${envelope?.task?.targetKey}`);
+    if (typeof enqueueByKey !== "function") return selected.processEnvelope(envelope);
+    return enqueueByKey(buildKey(envelope.task.userId, envelope.task.presetId), () => selected.processEnvelope(envelope));
   }
 
   async function isRebuildManaged(envelope) {
+    if (envelope?.task?.targetKey === LIBRARIAN_TARGET_KEY && String(envelope?.task?.triggerType || "").startsWith("rebuild")) return true;
     if (isForceDrainEnvelope(envelope)) return true;
     const parentTaskId = envelope?.task?.parentTaskId;
     if (!parentTaskId || typeof repositories.runtime.getTask !== "function") return false;
@@ -38,7 +41,8 @@ function createMemoryRecovery({ repositories, pipeline, enqueueByKey, metrics, o
         continue;
       }
       try {
-        results.push(await dispatch(envelope));
+        const result = await dispatch(envelope);
+        results.push(envelope.task.targetKey === LIBRARIAN_TARGET_KEY ? { ...result, targetKey: LIBRARIAN_TARGET_KEY } : result);
       } catch (error) {
         metrics?.increment("memory_task_recovery_dispatch_errors_total", { status, targetKey: envelope.task.targetKey });
         onDispatchError?.(error, envelope.task);

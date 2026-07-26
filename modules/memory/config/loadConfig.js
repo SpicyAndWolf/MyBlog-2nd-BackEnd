@@ -44,8 +44,6 @@ function loadMemoryV2Config(env = {}) {
   const schemaInvalidRetryMax = requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX");
   const haltAfterConsecutiveErrors = requiredInt(env, "CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS", { min: 1 });
   if (retryMax >= haltAfterConsecutiveErrors) throw new Error("CHAT_MEMORY_V2_PROVIDER_RETRY_MAX must be less than CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS");
-  const hygieneHighWatermarkPercent = requiredInt(env, "CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT", { min: 1 });
-  if (hygieneHighWatermarkPercent > 100) throw new Error("CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT must be <= 100");
   return Object.freeze({
     enabled: true, schemaVersion: "2.01", sectionBudgets: Object.freeze(sectionBudgets), targets: Object.freeze(targets),
     scene: Object.freeze({ maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS", { min: 1 }), ttlMs: requiredInt(env, "CHAT_MEMORY_V2_SCENE_TTL_MS", { min: 1 }) }),
@@ -53,10 +51,6 @@ function loadMemoryV2Config(env = {}) {
     gapBridge: Object.freeze({ maxRawChars: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS", { min: 1 }), retainedMessages: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES", { min: 1 }) }),
     providerRecovery: Object.freeze({ retryMax, schemaInvalidRetryMax, backoffBaseMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS", { min: 1 }), backoffMaxMs: requiredInt(env, "CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS", { min: 1 }), haltAfterConsecutiveErrors }),
     compaction: Object.freeze({ retryMax: requiredInt(env, "CHAT_MEMORY_V2_COMPACTION_RETRY_MAX") }),
-    hygiene: Object.freeze({
-      highWatermarkPercent: hygieneHighWatermarkPercent,
-      minItemDelta: requiredInt(env, "CHAT_MEMORY_V2_HYGIENE_MIN_ITEM_DELTA", { min: 1 }),
-    }),
     retention: Object.freeze({ snapshotDays: requiredInt(env, "CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS", { min: 1 }), eventDays: requiredInt(env, "CHAT_MEMORY_V2_EVENT_RETENTION_DAYS", { min: 1 }), taskDays: requiredInt(env, "CHAT_MEMORY_V2_TASK_RETENTION_DAYS", { min: 1 }), opsLogDays: requiredInt(env, "CHAT_MEMORY_V2_OPS_LOG_RETENTION_DAYS", { min: 1 }), debugDays: requiredInt(env, "CHAT_MEMORY_V2_DEBUG_RETENTION_DAYS") }),
     health: Object.freeze({ alertDebounceMs: requiredInt(env, "CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS"), recoveryStableMs: requiredInt(env, "CHAT_MEMORY_V2_RECOVERY_STABLE_MS") }),
     tasks: Object.freeze({ pollIntervalMs: requiredInt(env, "CHAT_MEMORY_V2_TASK_POLL_INTERVAL_MS", { min: 250 }) }),

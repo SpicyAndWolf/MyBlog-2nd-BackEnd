@@ -1,4 +1,5 @@
 const {
+  LIBRARIAN_PROPOSER,
   validateRendererArtifact,
   validateSemanticResult,
 } = require("../../contracts");
@@ -39,7 +40,10 @@ function validateSemanticEnvelope(envelope) {
   const publicTask = envelope?.artifact?.publicInput?.task;
   if (!task || !publicTask) errors.push({ path: "$.task", message: "semantic task metadata is required" });
   else {
-    for (const key of ["taskId", "tickId", "proposer", "targetKey", "cursorBefore", "targetMessageId", "now", "userTimeZone"]) {
+    const matchingKeys = task.proposer === LIBRARIAN_PROPOSER
+      ? ["taskId", "tickId", "proposer", "targetKey", "boundaryMessageId", "turnOrdinal", "triggerType", "now", "userTimeZone"]
+      : ["taskId", "tickId", "proposer", "targetKey", "cursorBefore", "targetMessageId", "now", "userTimeZone"];
+    for (const key of matchingKeys) {
       if (task[key] !== publicTask[key]) errors.push({ path: `$.task.${key}`, message: "must match Renderer artifact" });
     }
     if (JSON.stringify(task.targetSections) !== JSON.stringify(publicTask.targetSections)) {
@@ -53,6 +57,21 @@ function buildProposerUserPayload(envelope) {
   const publicInput = envelope?.artifact?.publicInput;
   const task = publicInput?.task;
   if (!publicInput || !task) throw new Error("semantic task public input is required");
+  if (task.proposer === LIBRARIAN_PROPOSER) {
+    return {
+      task: {
+        tickId: task.tickId,
+        proposer: task.proposer,
+        targetKey: task.targetKey,
+        targetSections: structuredClone(task.targetSections),
+        boundaryMessageId: task.boundaryMessageId,
+        turnOrdinal: task.turnOrdinal,
+        triggerType: task.triggerType,
+      },
+      memoryText: publicInput.memoryText,
+      messages: [],
+    };
+  }
   return {
     task: {
       tickId: task.tickId,

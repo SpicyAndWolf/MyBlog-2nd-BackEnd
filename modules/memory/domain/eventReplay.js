@@ -3,6 +3,8 @@ const {
   SCHEMA_VERSION,
   SCENE_FIELDS,
   TARGETS,
+  LIBRARIAN_SECTIONS,
+  LIBRARIAN_TARGET_KEY,
   SECTION_OPS,
   validateSourceRefs,
   assertMemoryState,
@@ -13,6 +15,7 @@ const DECISIONS = new Set(["accepted", "rejected", "noop", "system_cleanup"]);
 const GROUP_KINDS = new Set(["proposal", "maintenance", "system_cleanup"]);
 const ITEM_SECTIONS = new Set(Object.values(TARGETS).flatMap((target) => target.sections).filter((section) => section !== "scene"));
 const PATCH_OPS = new Set(Object.values(SECTION_OPS).flat());
+const LIBRARIAN_OPS = new Set(["librarianMove", "librarianMerge", "librarianDropDuplicate", "librarianSplitMove"]);
 const CLEANUPS = Object.freeze({
   scene_expired: { section: "scene", targetKey: "scene", keys: ["cleanupKind", "expiredAt"] },
   expired_scene_evicted: { section: "scene", targetKey: "scene", keys: ["cleanupKind"] },
@@ -115,6 +118,77 @@ function validateAcceptedOperation(event, operation) {
   if (operation.op !== "mergeItems") requireNullish(mergedFrom, `${operation.op} event merged_from_item_ids`);
 }
 
+function requireLibrarianSelector(selector, label) {
+  requireExactKeys(selector, ["section", "itemId"], label);
+  if (!LIBRARIAN_SECTIONS.includes(selector.section)) fail(`${label} has invalid section`);
+  requireText(selector.itemId, `${label}.itemId`);
+}
+
+function requireLibrarianItem(item, label) {
+  requireExactKeys(item, ["id", "text", "sourceRefs", "createdAtMessageId", "updatedAtMessageId"], label);
+  requireText(item.id, `${label}.id`);
+  requireText(item.text, `${label}.text`);
+  requireSourceRefs(item.sourceRefs, `${label}.sourceRefs`);
+  if (!Number.isSafeInteger(item.createdAtMessageId) || !item.sourceRefs.some((ref) => ref.messageId === item.createdAtMessageId)) fail(`${label}.createdAtMessageId is invalid`);
+  if (item.updatedAtMessageId !== Math.max(...item.sourceRefs.map((ref) => ref.messageId))) fail(`${label}.updatedAtMessageId is invalid`);
+}
+
+function validateLibrarianOperation(event, operation) {
+  if (!LIBRARIAN_OPS.has(operation.op)) fail(`Unknown Librarian operation: ${operation.op ?? "<missing>"}`);
+  if (rowValue(event, "op", "op") !== operation.op) fail("Librarian event op does not match normalized operation");
+  if (operation.op === "librarianMove") {
+    requireExactKeys(operation, ["op", "source", "toSection", "value"], "librarianMove operation");
+    requireLibrarianSelector(operation.source, "librarianMove source");
+    if (!LIBRARIAN_SECTIONS.includes(operation.toSection) || operation.toSection === operation.source.section) fail("librarianMove target is invalid");
+    requireLibrarianItem(operation.value, "librarianMove value");
+    if (operation.value.id !== operation.source.itemId) fail("librarianMove item identity changed");
+    if (rowValue(event, "item_id", "itemId") !== operation.source.itemId
+      || present(rowValue(event, "result_item_id", "resultItemId"))
+      || present(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"))
+      || event.section !== operation.toSection) fail("librarianMove event metadata is inconsistent");
+  } else if (operation.op === "librarianMerge") {
+    requireExactKeys(operation, ["op", "sources", "toSection", "result"], "librarianMerge operation");
+    if (!Array.isArray(operation.sources) || operation.sources.length < 2) fail("librarianMerge sources are invalid");
+    operation.sources.forEach((source, index) => requireLibrarianSelector(source, `librarianMerge sources[${index}]`));
+    if (new Set(operation.sources.map((source) => source.itemId)).size !== operation.sources.length) fail("librarianMerge sources are duplicated");
+    if (!LIBRARIAN_SECTIONS.includes(operation.toSection)) fail("librarianMerge target is invalid");
+    requireLibrarianItem(operation.result, "librarianMerge result");
+    if (present(rowValue(event, "item_id", "itemId"))
+      || rowValue(event, "result_item_id", "resultItemId") !== operation.result.id
+      || !isDeepStrictEqual(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"), operation.sources.map((source) => source.itemId))
+      || event.section !== operation.toSection) fail("librarianMerge event metadata is inconsistent");
+  } else if (operation.op === "librarianDropDuplicate") {
+    requireExactKeys(operation, ["op", "keeper", "duplicates", "value"], "librarianDropDuplicate operation");
+    requireLibrarianSelector(operation.keeper, "librarianDropDuplicate keeper");
+    if (!Array.isArray(operation.duplicates) || !operation.duplicates.length) fail("librarianDropDuplicate duplicates are invalid");
+    operation.duplicates.forEach((source, index) => requireLibrarianSelector(source, `librarianDropDuplicate duplicates[${index}]`));
+    if (operation.duplicates.some((source) => source.itemId === operation.keeper.itemId)
+      || new Set(operation.duplicates.map((source) => source.itemId)).size !== operation.duplicates.length) fail("librarianDropDuplicate selectors conflict");
+    requireLibrarianItem(operation.value, "librarianDropDuplicate value");
+    if (operation.value.id !== operation.keeper.itemId) fail("librarianDropDuplicate keeper identity changed");
+    if (rowValue(event, "item_id", "itemId") !== operation.keeper.itemId
+      || present(rowValue(event, "result_item_id", "resultItemId"))
+      || !isDeepStrictEqual(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"), operation.duplicates.map((source) => source.itemId))
+      || event.section !== operation.keeper.section) fail("librarianDropDuplicate event metadata is inconsistent");
+  } else {
+    requireExactKeys(operation, ["op", "source", "parts"], "librarianSplitMove operation");
+    requireLibrarianSelector(operation.source, "librarianSplitMove source");
+    if (!Array.isArray(operation.parts) || operation.parts.length < 2) fail("librarianSplitMove parts are invalid");
+    operation.parts.forEach((part, index) => {
+      requireExactKeys(part, ["toSection", "value"], `librarianSplitMove parts[${index}]`);
+      if (!LIBRARIAN_SECTIONS.includes(part.toSection)) fail("librarianSplitMove target is invalid");
+      requireLibrarianItem(part.value, `librarianSplitMove parts[${index}].value`);
+    });
+    if (new Set(operation.parts.map((part) => part.value.id)).size !== operation.parts.length) fail("librarianSplitMove result ids are duplicated");
+    if (!operation.parts.some((part) => part.toSection !== operation.source.section)) fail("librarianSplitMove does not move any part");
+    if (rowValue(event, "item_id", "itemId") !== operation.source.itemId
+      || present(rowValue(event, "result_item_id", "resultItemId"))
+      || present(rowValue(event, "merged_from_item_ids", "mergedFromItemIds"))
+      || event.section !== operation.parts[0].toSection) fail("librarianSplitMove event metadata is inconsistent");
+  }
+  if (!LIBRARIAN_SECTIONS.includes(event.section)) fail("Librarian event section is invalid");
+}
+
 function validateCleanupOperation(event, operation) {
   requireObject(operation, "cleanup normalized operation");
   const definition = CLEANUPS[operation.cleanupKind];
@@ -150,8 +224,12 @@ function validateEventForGroup(event, group, expectedIndex) {
     if (eventKind !== "proposal_decision") fail("accepted event must be a proposal_decision");
     if (!operation) fail("Replayable event is missing normalized operation");
     if (rowValue(event, "target_key", "targetKey") !== rowValue(group, "target_key", "targetKey")) fail("accepted event target does not match group");
-    if (!TARGETS[rowValue(group, "target_key", "targetKey")]?.sections.includes(event.section)) fail("accepted event section does not belong to group target");
-    validateAcceptedOperation(event, operation);
+    if (rowValue(group, "target_key", "targetKey") === LIBRARIAN_TARGET_KEY) {
+      validateLibrarianOperation(event, operation);
+    } else {
+      if (!TARGETS[rowValue(group, "target_key", "targetKey")]?.sections.includes(event.section)) fail("accepted event section does not belong to group target");
+      validateAcceptedOperation(event, operation);
+    }
   } else if (decision === "system_cleanup") {
     if (eventKind !== "system_cleanup") fail("system_cleanup decision must use system_cleanup event kind");
     if (!operation) fail("Replayable event is missing normalized operation");
@@ -170,6 +248,41 @@ function applySemanticEvent(state, event) {
   if (!["accepted", "system_cleanup"].includes(decision)) return;
   if (!operation) fail("Replayable event is missing normalized operation");
   if (decision === "accepted") {
+    if (LIBRARIAN_OPS.has(operation.op)) {
+      if (operation.op === "librarianMove") {
+        const source = sectionItems(state, operation.source.section);
+        const index = source.findIndex((item) => item.id === operation.source.itemId);
+        if (index < 0) fail(`Replay Librarian source missing: ${operation.source.itemId}`);
+        source.splice(index, 1);
+        sectionItems(state, operation.toSection).push(structuredClone(operation.value));
+      } else if (operation.op === "librarianMerge") {
+        for (const selector of operation.sources) {
+          const items = sectionItems(state, selector.section);
+          const index = items.findIndex((item) => item.id === selector.itemId);
+          if (index < 0) fail(`Replay Librarian merge source missing: ${selector.itemId}`);
+          items.splice(index, 1);
+        }
+        sectionItems(state, operation.toSection).push(structuredClone(operation.result));
+      } else if (operation.op === "librarianDropDuplicate") {
+        const keeperItems = sectionItems(state, operation.keeper.section);
+        const keeperIndex = keeperItems.findIndex((item) => item.id === operation.keeper.itemId);
+        if (keeperIndex < 0) fail(`Replay Librarian keeper missing: ${operation.keeper.itemId}`);
+        keeperItems[keeperIndex] = structuredClone(operation.value);
+        for (const selector of operation.duplicates) {
+          const items = sectionItems(state, selector.section);
+          const index = items.findIndex((item) => item.id === selector.itemId);
+          if (index < 0) fail(`Replay Librarian duplicate missing: ${selector.itemId}`);
+          items.splice(index, 1);
+        }
+      } else {
+        const source = sectionItems(state, operation.source.section);
+        const index = source.findIndex((item) => item.id === operation.source.itemId);
+        if (index < 0) fail(`Replay Librarian split source missing: ${operation.source.itemId}`);
+        source.splice(index, 1);
+        for (const part of operation.parts) sectionItems(state, part.toSection).push(structuredClone(part.value));
+      }
+      return;
+    }
     if (!PATCH_OPS.has(operation.op)) fail(`Unknown accepted operation: ${operation.op ?? "<missing>"}`);
     const section = event.section;
     if (operation.op === "setField") {
@@ -253,9 +366,10 @@ function replayEventGroups(anchorState, groups, events, expectedScope = {}) {
     if (String(rowValue(group, "user_id", "userId")) !== String(scopeUserId) || String(rowValue(group, "preset_id", "presetId")) !== String(scopePresetId)) fail("Replay group scope mismatch");
     requireText(rowValue(group, "task_id", "taskId"), "group task_id");
     const targetKey = requireText(rowValue(group, "target_key", "targetKey"), "group target_key");
-    if (!TARGETS[targetKey]) fail(`Unknown group target: ${targetKey}`);
+    if (!TARGETS[targetKey] && targetKey !== LIBRARIAN_TARGET_KEY) fail(`Unknown group target: ${targetKey}`);
     const groupKind = rowValue(group, "group_kind", "groupKind");
     if (!GROUP_KINDS.has(groupKind)) fail(`Unknown group kind: ${groupKind ?? "<missing>"}`);
+    if (targetKey === LIBRARIAN_TARGET_KEY && groupKind !== "maintenance") fail("Librarian groups must use maintenance kind");
     const baseRevision = safeInteger(rowValue(group, "base_revision", "baseRevision"), "group base_revision");
     const resultRevision = safeInteger(rowValue(group, "result_revision", "resultRevision"), "group result_revision");
     if (baseRevision !== state.meta.revision) fail(`Replay revision gap before group ${groupId}`);

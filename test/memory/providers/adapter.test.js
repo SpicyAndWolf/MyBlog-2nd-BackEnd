@@ -6,6 +6,7 @@ const {
   createMockMemoryProviderAdapter,
 } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
+const { buildLibrarianEnvelope } = require("../../../modules/memory/application/librarianRenderer");
 const { envelope, profileEnvelope } = require("../support/provider-envelopes");
 
 test("Provider Adapter accepts valid native structured output", async () => {
@@ -162,4 +163,33 @@ test("schema repair adds concise positive enum guidance only for selector errors
   assert.doesNotMatch(repaired, /S-LOCATION/);
   const ordinary = schemaRepairPrompt("base", { errors: [{ path: "$.tickId", message: "must match" }] });
   assert.doesNotMatch(ordinary, /tool schema 的 enum/);
+});
+
+test("Provider Adapter accepts the Librarian message-free global maintenance contract", async () => {
+  const librarianEnvelope = buildLibrarianEnvelope({
+    userId: 1,
+    presetId: "default",
+    state: createInitialMemoryState(),
+    boundaryMessageId: 0,
+    turnOrdinal: 0,
+    triggerType: "manual",
+    now: "2026-07-26T00:00:00.000Z",
+    userTimeZone: "Asia/Shanghai",
+    taskId: "librarian-task",
+    tickId: 99,
+  });
+  let request;
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "librarian prompt",
+    invokeStructured: async (value) => {
+      request = value;
+      return { output: { tickId: 99, proposer: "librarianProposer", status: "noop", operations: [] } };
+    },
+  });
+  const result = await adapter.propose(librarianEnvelope);
+  assert.equal(result.status, "ok");
+  assert.deepEqual(request.userPayload.messages, []);
+  assert.equal(request.userPayload.task.cursorBefore, undefined);
+  assert.equal(request.responseSchema.name, "memory_librarian_semantic");
+  assert.deepEqual(request.responseSchema.schema.properties.status, { const: "noop" });
 });

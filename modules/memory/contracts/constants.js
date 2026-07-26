@@ -25,6 +25,21 @@ const TARGETS = Object.freeze({
 });
 
 const TARGET_KEYS = Object.freeze(Object.keys(TARGETS));
+const LIBRARIAN_TARGET_KEY = "librarian";
+const LIBRARIAN_PROPOSER = "librarianProposer";
+const LIBRARIAN_INTERVAL_TURNS = 96;
+const LIBRARIAN_SECTIONS = Object.freeze([
+  "standingAgreements",
+  "worldFacts",
+  "userProfile",
+  "assistantProfile",
+  "relationship",
+]);
+const LIBRARIAN_BARRIER_TARGETS = Object.freeze([
+  "standingAgreements",
+  "worldFacts",
+  "profileRelationship",
+]);
 const SEMANTIC_NORMAL_PROPOSERS = Object.freeze([
   "episodeProposer",
   "profileRelationshipProposer",
@@ -82,6 +97,7 @@ const READ_ONLY_CONTEXT_PATHS = Object.freeze({
     "longTerm.relationship",
   ],
   compactionProposer: [],
+  librarianProposer: [],
 });
 
 const TARGET_STATUSES = Object.freeze(["healthy", "retry_wait", "capacity_blocked", "halted", "rebuilding"]);
@@ -92,6 +108,11 @@ module.exports = {
   SECTIONS,
   TARGETS,
   TARGET_KEYS,
+  LIBRARIAN_TARGET_KEY,
+  LIBRARIAN_PROPOSER,
+  LIBRARIAN_INTERVAL_TURNS,
+  LIBRARIAN_SECTIONS,
+  LIBRARIAN_BARRIER_TARGETS,
   SEMANTIC_NORMAL_PROPOSERS,
   SCENE_FIELDS,
   ITEM_SECTIONS,

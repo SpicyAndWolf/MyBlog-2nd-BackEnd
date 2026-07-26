@@ -67,12 +67,13 @@ function classifyIssues(errors) {
 function summarizeOutputShape(output) {
   const summary = { rootType: valueType(output) };
   if (!output || typeof output !== "object" || Array.isArray(output)) return summary;
-  const knownTopLevelKeys = ["proposer", "sectionResults", "tickId"];
+  const knownTopLevelKeys = ["operations", "proposer", "sectionResults", "status", "tickId"];
   const actualTopLevelKeys = Object.keys(output);
   summary.topLevelKeys = knownTopLevelKeys.filter((key) => actualTopLevelKeys.includes(key));
   const unexpectedTopLevelKeyCount = actualTopLevelKeys.length - summary.topLevelKeys.length;
   if (unexpectedTopLevelKeyCount) summary.unexpectedTopLevelKeyCount = unexpectedTopLevelKeyCount;
-  summary.sectionResultsType = valueType(output.sectionResults);
+  if (Object.prototype.hasOwnProperty.call(output, "sectionResults")) summary.sectionResultsType = valueType(output.sectionResults);
+  if (Object.prototype.hasOwnProperty.call(output, "operations")) summary.operationsType = valueType(output.operations);
   if (output.sectionResults && typeof output.sectionResults === "object" && !Array.isArray(output.sectionResults)) {
     const knownSections = [
       "assistantProfile",

@@ -1,11 +1,15 @@
-const { TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES } = require("../../contracts");
+const {
+  TARGET_KEYS, TARGET_STATUSES, TASK_STATUSES, TASK_TYPES, LIBRARIAN_TARGET_KEY,
+} = require("../../contracts");
 const { createRepositoryContext, normalizeScope } = require("./helpers");
 
 function createRuntimeRepository(dependencies = {}) {
 const { executor, withTransaction } = createRepositoryContext(dependencies);
 
 async function createTask(task, { client } = {}) {
-  if (!TASK_TYPES.includes(task.task_type) || !TASK_STATUSES.includes(task.status) || !TARGET_KEYS.includes(task.target_key)) throw new Error("Invalid Memory v2 task enum");
+  const targetIsValid = TARGET_KEYS.includes(task.target_key)
+    || (task.task_type === "maintenance" && task.target_key === LIBRARIAN_TARGET_KEY);
+  if (!TASK_TYPES.includes(task.task_type) || !TASK_STATUSES.includes(task.status) || !targetIsValid) throw new Error("Invalid Memory v2 task enum");
   const fields = ["task_id","dedupe_key","user_id","preset_id","target_key","source_generation","schema_version","task_type","parent_task_id","predecessor_task_id","resume_epoch","status","stage","cursor_before","target_message_id","base_revision","task_payload","stage_payload","attempt","context_expansion_attempt","not_before","last_error_reason","result_revision"];
   const values = fields.map((field) => task[field] ?? null);
   const { rows } = await executor(client).query(`INSERT INTO chat_memory_tasks (${fields.join(",")}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(",")}) ON CONFLICT (user_id,preset_id,dedupe_key) DO UPDATE SET dedupe_key=EXCLUDED.dedupe_key RETURNING *`, values);
@@ -44,7 +48,7 @@ async function getTargetStatus(userId, presetId, targetKey, { client, forUpdate 
 }
 async function listTasksForTarget(userId, presetId, targetKey, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
-  if (!TARGET_KEYS.includes(targetKey)) throw new Error("Invalid target key");
+  if (!TARGET_KEYS.includes(targetKey) && targetKey !== LIBRARIAN_TARGET_KEY) throw new Error("Invalid target key");
   const { rows } = await executor(client).query(`SELECT * FROM chat_memory_tasks WHERE user_id=$1 AND preset_id=$2 AND target_key=$3 ORDER BY updated_at DESC,created_at DESC`, [scope.userId, scope.presetId, targetKey]);
   return rows;
 }
@@ -87,7 +91,7 @@ async function cancelNonTerminalTasks(userId, presetId, olderThanGeneration, rea
 async function deleteRetainedRuntime(userId, presetId, { taskBefore, opsBefore }, { client } = {}) {
   const scope = normalizeScope(userId, presetId);
   const db = executor(client);
-  const taskResult = await db.query(`DELETE FROM chat_memory_tasks t WHERE t.user_id=$1 AND t.preset_id=$2 AND t.updated_at<$3 AND t.status IN ('succeeded','failed','cancelled') AND NOT EXISTS (SELECT 1 FROM chat_memory_tasks active WHERE active.user_id=t.user_id AND active.preset_id=t.preset_id AND active.status IN ('queued','running','retry_wait') AND (active.task_id=t.task_id OR active.parent_task_id=t.task_id OR active.predecessor_task_id=t.task_id)) AND NOT EXISTS (SELECT 1 FROM chat_memory_event_groups g WHERE g.task_id=t.task_id)`, [scope.userId, scope.presetId, taskBefore]);
+  const taskResult = await db.query(`DELETE FROM chat_memory_tasks t WHERE t.user_id=$1 AND t.preset_id=$2 AND t.updated_at<$3 AND t.status IN ('succeeded','failed','cancelled') AND NOT EXISTS (SELECT 1 FROM chat_memory_tasks active WHERE active.user_id=t.user_id AND active.preset_id=t.preset_id AND active.status IN ('queued','running','retry_wait') AND (active.task_id=t.task_id OR active.parent_task_id=t.task_id OR active.predecessor_task_id=t.task_id)) AND NOT EXISTS (SELECT 1 FROM chat_memory_event_groups g WHERE g.task_id=t.task_id) AND NOT EXISTS (SELECT 1 FROM chat_memory_librarian_checkpoints c WHERE c.last_task_id=t.task_id)`, [scope.userId, scope.presetId, taskBefore]);
   const opsResult = await db.query(`DELETE FROM chat_memory_ops_log WHERE user_id=$1 AND preset_id=$2 AND created_at<$3 AND task_id NOT IN (SELECT task_id FROM chat_memory_tasks WHERE user_id=$1 AND preset_id=$2)`, [scope.userId, scope.presetId, opsBefore]);
   return { tasks: taskResult.rowCount || 0, ops: opsResult.rowCount || 0 };
 }
@@ -100,7 +104,34 @@ async function recordSuccessfulTargetTask(userId, presetId, { targetKey, sourceG
     consecutiveErrors: 0, lastErrorReason: null, lastTaskId: taskId, nextRetryAt: null,
   }, { client });
 }
-return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime });
+async function getLibrarianCheckpoint(userId, presetId, sourceGeneration, { client, forUpdate = false } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  if (!Number.isSafeInteger(sourceGeneration) || sourceGeneration < 0) throw new Error("Invalid Librarian source generation");
+  const { rows } = await executor(client).query(`SELECT * FROM chat_memory_librarian_checkpoints WHERE user_id=$1 AND preset_id=$2 AND source_generation=$3${forUpdate ? " FOR UPDATE" : ""}`, [scope.userId, scope.presetId, sourceGeneration]);
+  return rows[0] || null;
+}
+async function upsertLibrarianCheckpoint(userId, presetId, checkpoint, { client } = {}) {
+  const scope = normalizeScope(userId, presetId);
+  const ordinal = Number(checkpoint.completedTurnOrdinal);
+  const boundary = Number(checkpoint.boundaryMessageId);
+  if (!Number.isSafeInteger(checkpoint.sourceGeneration) || checkpoint.sourceGeneration < 0
+    || !Number.isSafeInteger(ordinal) || ordinal < 0
+    || !Number.isSafeInteger(boundary) || boundary < 0) throw new Error("Invalid Librarian checkpoint");
+  const { rows } = await executor(client).query(`
+    INSERT INTO chat_memory_librarian_checkpoints
+      (user_id,preset_id,source_generation,completed_turn_ordinal,boundary_message_id,last_task_id)
+    VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (user_id,preset_id,source_generation) DO UPDATE SET
+      completed_turn_ordinal=EXCLUDED.completed_turn_ordinal,
+      boundary_message_id=EXCLUDED.boundary_message_id,
+      last_task_id=EXCLUDED.last_task_id,
+      updated_at=NOW()
+    WHERE chat_memory_librarian_checkpoints.completed_turn_ordinal <= EXCLUDED.completed_turn_ordinal
+    RETURNING *
+  `, [scope.userId, scope.presetId, checkpoint.sourceGeneration, ordinal, boundary, checkpoint.lastTaskId ?? null]);
+  return rows[0] || getLibrarianCheckpoint(userId, presetId, checkpoint.sourceGeneration, { client });
+}
+return Object.freeze({ createTask, getTask, getTaskForUpdate, updateTask, listRecoverableTasks, listPendingTasks, getTargetStatus, getTargetStatuses, listTasksForTarget, upsertTargetStatus, recordSuccessfulTargetTask, appendOpsLog, cancelNonTerminalTasks, deleteRetainedRuntime, getLibrarianCheckpoint, upsertLibrarianCheckpoint });
 }
 
 module.exports = { createRuntimeRepository };

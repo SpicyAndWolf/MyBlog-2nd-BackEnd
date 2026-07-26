@@ -1,6 +1,8 @@
 const {
   TARGETS, TARGET_KEYS, SECTIONS, ITEM_SECTIONS, SCENE_FIELDS, PROFILE_TEXT_MAX_CHARS,
+  LIBRARIAN_PROPOSER,
 } = require("./constants");
+const { validateLibrarianArtifact, validateLibrarianSemanticResult } = require("./librarian");
 const { isPlainObject, isIsoTimestamp } = require("./state");
 const { dueAtRequiresMessageAnchor, validateDueAtExpression } = require("./dueAt");
 const { VALIDATION_ISSUE_CODES } = require("./validationIssueCodes");
@@ -124,6 +126,7 @@ function validateRefEntry(entry, namespace, ref, errors) {
 }
 
 function validateRendererArtifact(artifact) {
+  if (artifact?.publicInput?.task?.proposer === LIBRARIAN_PROPOSER) return validateLibrarianArtifact(artifact);
   const errors = [];
   if (!checkObject(artifact, ["publicInput", "refMap", "messageMeta"], [], "$", errors)) return { ok: false, errors };
   if (checkObject(artifact.publicInput, ["task", "memoryText", "messages"], [], "$.publicInput", errors)) {
@@ -279,6 +282,7 @@ function validateSemanticChange(change, section, path, errors, { maintenance = f
 
 function validateSemanticResult(result, taskOrArtifact) {
   const task = taskOrArtifact?.publicInput?.task || taskOrArtifact;
+  if (task?.proposer === LIBRARIAN_PROPOSER) return validateLibrarianSemanticResult(result, taskOrArtifact);
   const artifact = taskOrArtifact?.publicInput ? taskOrArtifact : null;
   const errors = [];
   if (!isPlainObject(task) || !TARGET_KEYS.includes(task.targetKey)) return { ok: false, errors: [{ path: "$.task", message: "has invalid targetKey" }] };

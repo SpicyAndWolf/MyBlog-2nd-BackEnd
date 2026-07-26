@@ -96,3 +96,11 @@ test("RAG projection migration stores resumable batches separately from the acti
   assert.match(migration, /PRIMARY KEY\s*\([\s\S]*source_generation[\s\S]*chunk_index[\s\S]*\)/i);
   assert.match(migration, /idx_chat_rag_projection_staging_build/i);
 });
+
+test("Librarian migration stores one scheduling checkpoint per scope and generation", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../../../migrations/memory/013-memory-librarian.sql"), "utf8");
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS chat_memory_librarian_checkpoints/i);
+  assert.match(migration, /PRIMARY KEY \(user_id, preset_id, source_generation\)/i);
+  assert.match(migration, /completed_turn_ordinal BIGINT NOT NULL/i);
+  assert.match(migration, /boundary_message_id BIGINT NOT NULL/i);
+});

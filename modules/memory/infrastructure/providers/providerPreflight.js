@@ -1,5 +1,10 @@
 const { isDeepStrictEqual } = require("node:util");
-const { TARGETS } = require("../../contracts");
+const {
+  TARGETS,
+  LIBRARIAN_PROPOSER,
+  LIBRARIAN_SECTIONS,
+  LIBRARIAN_TARGET_KEY,
+} = require("../../contracts");
 const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
@@ -45,6 +50,19 @@ function preflightCases() {
     task,
     output: { tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "unable_to_compact" } } },
     responseSchema: buildOutputSchema("compactionProposer", ["todos"]),
+  });
+  const librarianTickId = cases.length + 1;
+  cases.push({
+    name: "librarian",
+    task: {
+      targetKey: LIBRARIAN_TARGET_KEY,
+      proposer: LIBRARIAN_PROPOSER,
+      targetSections: LIBRARIAN_SECTIONS.slice(),
+      tickId: librarianTickId,
+      mode: "librarian",
+    },
+    output: { tickId: librarianTickId, proposer: LIBRARIAN_PROPOSER, status: "noop", operations: [] },
+    responseSchema: buildOutputSchema(LIBRARIAN_PROPOSER),
   });
   return cases;
 }

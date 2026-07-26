@@ -103,6 +103,12 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
     throw new Error("Task shadow replay requires read-only Memory repositories");
   }
   if (!config?.enabled || !config?.provider) throw new Error("Memory v2 must be enabled for task shadow replay");
+  if (!Number.isInteger(config.providerRecovery?.schemaInvalidRetryMax)
+    || config.providerRecovery.schemaInvalidRetryMax < 0) {
+    throw new TypeError(
+      "Task shadow replay requires providerRecovery.schemaInvalidRetryMax to be a non-negative integer",
+    );
+  }
   if (!providerAdapter?.propose) throw new Error("Task shadow replay providerAdapter is required");
 
   async function replay(taskId) {
@@ -172,7 +178,7 @@ function createMemoryTaskShadowReplay({ repositories, config, providerAdapter, p
 
     const providerAttempts = [];
     let providerResult;
-    const schemaRetryMax = Number(config.providerRecovery?.schemaInvalidRetryMax ?? 0);
+    const schemaRetryMax = config.providerRecovery.schemaInvalidRetryMax;
     for (let attempt = 0; attempt <= schemaRetryMax; attempt += 1) {
       const repairFeedback = attempt === 0
         ? null

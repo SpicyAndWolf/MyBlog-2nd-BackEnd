@@ -22,6 +22,7 @@
     "gui:memory-v2": "node --use-env-proxy tools/memory-task-gui/server.js",
     "rebuild:memory-v2": "node --use-env-proxy scripts/rebuild-memory-v2-scope.js",
     "resume:memory-v2": "node --use-env-proxy scripts/resume-memory-v2-target.js",
+    "librarian:memory-v2": "node --use-env-proxy scripts/run-memory-v2-librarian.js",
     "start": "node --use-env-proxy app.js",
     "dev": "nodemon --exec \"node --use-env-proxy\" app.js",
     "regenerate-gists": "node --use-env-proxy regenerateGists.js",

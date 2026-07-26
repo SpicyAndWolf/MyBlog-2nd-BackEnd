@@ -2,6 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createMemoryRuntime, startupRecoveryIssues } = require("../../../modules/memory/application/runtime");
 const { createInitialMemoryState, TARGET_KEYS } = require("../../../modules/memory/contracts");
+const {
+  createMemoryTestConfig,
+  withLibrarianRepositoryStubs,
+} = require("../support/memory-builders");
 
 test("startup recovery reconciles projections for initialized scopes using the public repository method", async () => {
   const state = createInitialMemoryState();
@@ -32,14 +36,12 @@ test("startup recovery reconciles projections for initialized scopes using the p
     },
   }]));
   const runtime = createMemoryRuntime({
-    config: {
+    config: createMemoryTestConfig({
       enabled: true,
       targets,
       projections: { pollIntervalMs: 1000 },
-      providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 },
-      compaction: { retryMax: 1 },
-    },
-    repositories,
+    }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
     projectionDrains,
   });
@@ -81,14 +83,12 @@ test("diagnostic projection failure does not starve the RAG projection during re
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
-    config: {
+    config: createMemoryTestConfig({
       enabled: true,
       targets,
       projections: { pollIntervalMs: 1000 },
-      providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 },
-      compaction: { retryMax: 1 },
-    },
-    repositories,
+    }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
     projectionDrains: {
       rag: { async drain() { throw Object.assign(new Error("rag failed"), { code: "RAG_FAILED" }); } },
@@ -130,13 +130,11 @@ test("runtime rejects the retired recall projection drain", () => {
   const state = createInitialMemoryState();
   const targets = Object.fromEntries(TARGET_KEYS.map((key) => [key, { lagThreshold: 2, contextWindow: 6 }]));
   assert.throws(() => createMemoryRuntime({
-    config: {
+    config: createMemoryTestConfig({
       enabled: true,
       targets,
       projections: { pollIntervalMs: 1000 },
-      providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 },
-      compaction: { retryMax: 1 },
-    },
+    }),
     repositories: {
       state: { async getState() { return state; } },
       source: {},
@@ -166,7 +164,27 @@ test("startup recovery resumes a persisted rebuilding boundary even when no task
     sidecars: { async listProjectionCheckpoints() { return []; } },
     async withTransaction(work) { return work({}); },
   };
-  const runtime = createMemoryRuntime({ config: { enabled: true, targets, projections: { pollIntervalMs: 1000 }, providerRecovery: { haltAfterConsecutiveErrors: 3, retryMax: 1, schemaInvalidRetryMax: 1, backoffBaseMs: 1, backoffMaxMs: 2 }, compaction: { retryMax: 1 } }, repositories, providerAdapter: { async propose() { throw new Error("no provider call expected"); } } });
+  const runtime = createMemoryRuntime({
+    config: createMemoryTestConfig({
+      enabled: true,
+      targets,
+      projections: { pollIntervalMs: 1000 },
+    }),
+    repositories: withLibrarianRepositoryStubs(repositories),
+    providerAdapter: {
+      async propose(envelope) {
+        return {
+          status: "ok",
+          output: {
+            tickId: envelope.task.tickId,
+            proposer: envelope.task.proposer,
+            status: "noop",
+            operations: [],
+          },
+        };
+      },
+    },
+  });
   await runtime.recoverPending();
   assert.equal(Object.values(statuses).every((row) => row.status === "healthy" && row.rebuild_boundary_message_id === null), true);
 });
@@ -186,7 +204,8 @@ test("generic rebuild reconciliation cannot bypass an incomplete privacy purge",
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
-    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {} }, repositories,
+    config: createMemoryTestConfig({ enabled: true, targets: {} }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
   });
   const result = await runtime.reconcileRebuilds();

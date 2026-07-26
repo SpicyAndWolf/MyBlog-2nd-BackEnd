@@ -6,17 +6,13 @@ const {
   assertMemoryState,
 } = require("../contracts");
 const { normalizeItemText } = require("./itemDeduplication");
+const { allocateMemoryItemId } = require("./itemIds");
 const { normalizeLifecycle } = require("./lifecycle");
 const { findCapacityViolation, measureSection } = require("./capacity");
 
 const SECTION_TARGETS = Object.freeze(Object.fromEntries(
   Object.entries(TARGETS).flatMap(([target, value]) => value.sections.map((section) => [section, target])),
 ));
-const SECTION_PREFIX = Object.freeze({
-  todos: "todo", standingAgreements: "agreement", recentEpisodes: "episode", milestones: "milestone",
-  worldFacts: "worldFact", userProfile: "userProfile", assistantProfile: "assistantProfile", relationship: "relationship",
-});
-
 function sectionItems(state, section) {
   return ["todos", "standingAgreements", "recentEpisodes"].includes(section) ? state.working[section] : state.longTerm[section];
 }
@@ -47,28 +43,6 @@ function conflictKeys(section, patch) {
 function exactDuplicate(items, text, excludeItemId = null) {
   const normalized = normalizeItemText(text);
   return normalized && items.some((item) => item.id !== excludeItemId && normalizeItemText(item.text) === normalized);
-}
-
-function allStateItemIds(state) {
-  return [
-    ...state.working.todos,
-    ...state.working.standingAgreements,
-    ...state.working.recentEpisodes,
-    ...state.longTerm.milestones,
-    ...state.longTerm.worldFacts,
-    ...state.longTerm.userProfile,
-    ...state.longTerm.assistantProfile,
-    ...state.longTerm.relationship,
-  ].map((item) => item.id);
-}
-
-function nextItemId(state, section, idFactory) {
-  const existing = new Set(allStateItemIds(state));
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const id = `${SECTION_PREFIX[section]}:${idFactory()}`;
-    if (!existing.has(id)) return id;
-  }
-  throw new Error("Unable to allocate a unique Memory item id");
 }
 
 function updateTodo(item, value, nowMs) {
@@ -104,7 +78,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
   if (patch.op === "addItem") {
     const sourceRefs = structuredClone(patch.sourceRefs);
     const item = {
-      id: nextItemId(state, section, idFactory),
+      id: allocateMemoryItemId(state, section, idFactory),
       text: patch.value.text,
       sourceRefs,
       createdAtMessageId: Math.min(...sourceRefs.map((ref) => ref.messageId)),
@@ -127,7 +101,7 @@ function applyPatch(state, section, patch, { idFactory, nowMs, cleanupEvents }) 
     if (section === "todos" && sources.some((item) => item.status !== "active" || item.actor !== sources[0].actor || item.requester !== sources[0].requester || item.dueAt !== sources[0].dueAt)) return { rejectReason: "invalid_state_transition" };
     const sourceRefs = normalizeSourceRefs(sources.flatMap((item) => item.sourceRefs));
     const item = {
-      id: nextItemId(state, section, idFactory),
+      id: allocateMemoryItemId(state, section, idFactory),
       text: patch.value.text,
       sourceRefs,
       createdAtMessageId: Math.min(...sources.map((source) => source.createdAtMessageId)),

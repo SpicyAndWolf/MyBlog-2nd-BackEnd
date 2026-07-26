@@ -1,5 +1,9 @@
 const { buildDueAtSchema } = require("../../contracts/dueAt");
-const { PROFILE_TEXT_MAX_CHARS } = require("../../contracts/constants");
+const {
+  LIBRARIAN_PROPOSER,
+  LIBRARIAN_SECTIONS,
+  PROFILE_TEXT_MAX_CHARS,
+} = require("../../contracts/constants");
 
 const dueAt = buildDueAtSchema();
 const dueChange = { oneOf: [
@@ -197,7 +201,74 @@ function compactionChangeSchema() {
   };
 }
 
+function buildLibrarianOutputSchema() {
+  const section = {
+    enum: LIBRARIAN_SECTIONS.slice(),
+  };
+  const ref = { type: "string", minLength: 1 };
+  const operation = {
+    oneOf: [
+      {
+        type: "object", additionalProperties: false,
+        required: ["action", "ref", "toSection"],
+        properties: { action: { const: "move" }, ref, toSection: section },
+      },
+      {
+        type: "object", additionalProperties: false,
+        required: ["action", "refs", "toSection", "text"],
+        properties: {
+          action: { const: "merge" },
+          refs: { type: "array", minItems: 2, uniqueItems: true, items: ref },
+          toSection: section,
+          text: { type: "string", minLength: 1 },
+        },
+      },
+      {
+        type: "object", additionalProperties: false,
+        required: ["action", "keeperRef", "duplicateRefs"],
+        properties: {
+          action: { const: "dropDuplicate" },
+          keeperRef: ref,
+          duplicateRefs: { type: "array", minItems: 1, uniqueItems: true, items: ref },
+        },
+      },
+      {
+        type: "object", additionalProperties: false,
+        required: ["action", "ref", "parts"],
+        properties: {
+          action: { const: "splitMove" },
+          ref,
+          parts: {
+            type: "array", minItems: 2,
+            items: {
+              type: "object", additionalProperties: false,
+              required: ["toSection", "text"],
+              properties: { toSection: section, text: { type: "string", minLength: 1 } },
+            },
+          },
+        },
+      },
+    ],
+  };
+  return {
+    name: "memory_librarian_semantic",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["tickId", "proposer", "status", "operations"],
+      properties: {
+        tickId: { type: "integer" },
+        proposer: { const: LIBRARIAN_PROPOSER },
+        status: { enum: ["changes", "noop"] },
+        operations: { type: "array", items: operation },
+      },
+    },
+  };
+}
+
 function buildOutputSchema(proposer, targetSections) {
+  if (proposer === LIBRARIAN_PROPOSER) return buildLibrarianOutputSchema();
   if (proposer === "compactionProposer") {
     if (!Array.isArray(targetSections) || targetSections.length !== 1) throw new Error("Compaction schema requires exactly one target section");
     const [section] = targetSections;
@@ -249,4 +320,5 @@ module.exports = {
   buildAgreementSemanticOutputSchema,
   buildTodoSemanticOutputSchema,
   buildCurrentStateSemanticOutputSchema,
+  buildLibrarianOutputSchema,
 };

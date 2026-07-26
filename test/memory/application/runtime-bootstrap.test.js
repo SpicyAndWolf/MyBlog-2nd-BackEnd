@@ -2,6 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createMemoryRuntime, createKeyedExecutor } = require("../../../modules/memory/application/runtime");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
+const {
+  createMemoryTestConfig,
+  withLibrarianRepositoryStubs,
+} = require("../support/memory-builders");
 
 test("disabled v2 runtime never constructs provider or repository dependencies", async () => {
   const runtime = createMemoryRuntime({ config: { enabled: false } });
@@ -81,12 +85,12 @@ test("enabled runtime does not call the Provider until real Memory work exists",
   };
   try {
     const runtime = createMemoryRuntime({
-      config: {
+      config: createMemoryTestConfig({
         enabled: true,
         provider: { adapter: "openai-json-schema", baseUrl: "https://example.test/v1/", apiKey: "key", model: "preflight-model", timeoutMs: 1000, maxInputTokens: 1_000_000, maxOutputTokens: 8192 },
-        targets: {}, providerRecovery: {}, compaction: {},
-      },
-      repositories,
+        targets: {},
+      }),
+      repositories: withLibrarianRepositoryStubs(repositories),
     });
     assert.equal(runtime.getProviderHealthSnapshot().status, "unknown");
     assert.equal(calls, 0);
@@ -136,8 +140,8 @@ test("ensureScope initializes revision zero before context assembly", async () =
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
-    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {} },
-    repositories,
+    config: createMemoryTestConfig({ enabled: true, targets: {} }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
   });
   const ensured = await runtime.ensureScope({ userId: 1, presetId: "new-preset" });
@@ -155,8 +159,8 @@ test("manual rebuild requests for one active scope return the same operation ide
     async withTransaction(work) { return work({}); },
   };
   const runtime = createMemoryRuntime({
-    config: { enabled: true, targets: {}, providerRecovery: {}, compaction: {}, admission: { concurrency: 1, queueMax: 1 } },
-    repositories,
+    config: createMemoryTestConfig({ enabled: true, targets: {}, admission: { concurrency: 1, queueMax: 1 } }),
+    repositories: withLibrarianRepositoryStubs(repositories),
     providerAdapter: { async propose() { return { status: "ok", output: {} }; } },
   });
   const first = await runtime.rebuildScope(1, "default", { reason: "manual_rebuild" });

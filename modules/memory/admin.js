@@ -6,6 +6,7 @@ const { createRepositorySet } = require("./moduleFactory");
 const { createObserver } = require("./application/observer");
 const { createNormalWritePipeline } = require("./application/normalWritePipeline");
 const { createMemorySourceRebuild } = require("./application/sourceRebuild");
+const { createMemoryLibrarian } = require("./application/librarian");
 const { createProjectionDrain } = require("./application/projectionDrain");
 const { createMemoryMigration } = require("./application/migration");
 const { createMemoryTaskShadowReplay } = require("./application/taskShadowReplay");
@@ -36,31 +37,62 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
     return createProjectionDrain({ repositories, projectionKey, adapter });
   }
 
-  function createMigration({ config, projectionDrains, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
-    if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
-    const admission = createProviderAdmission(config.admission || { concurrency: 1, queueMax: 32 });
+  function createLibrarianStack({ config, providerAdapter, decorateAdapter = (adapter) => adapter }) {
+    const admission = createProviderAdmission(config.admission);
     const rawAdapter = providerAdapter || createMemoryProviderAdapter({
       invokeStructured: createStructuredTransport(config.provider),
       promptLoader: loadProposerPrompt,
     });
-    const trackedAdapter = providerTelemetry?.wrapAdapter
-      ? providerTelemetry.wrapAdapter(rawAdapter, {
-        loadTaskAttempt: async (envelope) => {
-          const task = await repositories.runtime.getTask(envelope?.task?.taskId);
-          return task?.attempt;
-        },
-      })
-      : rawAdapter;
-    const adapter = admissionControlledAdapter(trackedAdapter, admission);
+    const adapter = admissionControlledAdapter(decorateAdapter(rawAdapter), admission);
     const observer = createObserver({
       sourceRepository: repositories.source,
       stateRepository: repositories.state,
       runtimeRepository: repositories.runtime,
       config,
     });
-    const pipeline = createNormalWritePipeline({ observer, providerAdapter: adapter, repositories, config });
-    const sourceRebuild = createMemorySourceRebuild({ repositories, normalWritePipeline: pipeline, config });
+    const pipeline = createNormalWritePipeline({
+      observer,
+      providerAdapter: adapter,
+      repositories,
+      config,
+    });
+    let sourceRebuild;
+    const librarian = createMemoryLibrarian({
+      repositories,
+      providerAdapter: adapter,
+      config,
+      drainBarrier: (userId, presetId, options) =>
+        sourceRebuild.forceDrainTargetsTo(userId, presetId, options),
+    });
+    sourceRebuild = createMemorySourceRebuild({
+      repositories,
+      normalWritePipeline: pipeline,
+      librarian,
+      config,
+    });
+    return { librarian, sourceRebuild };
+  }
+
+  function createMigration({ config, projectionDrains, providerAdapter, providerTelemetry, now, monotonicNow } = {}) {
+    if (!config?.enabled) throw new Error("Memory v2 must be enabled for data migration");
+    const { sourceRebuild } = createLibrarianStack({
+      config,
+      providerAdapter,
+      decorateAdapter: (adapter) => providerTelemetry?.wrapAdapter
+        ? providerTelemetry.wrapAdapter(adapter, {
+          loadTaskAttempt: async (envelope) => {
+            const task = await repositories.runtime.getTask(envelope?.task?.taskId);
+            return task?.attempt;
+          },
+        })
+        : adapter,
+    });
     return createMemoryMigration({ repositories, sourceRebuild, projectionDrains, providerTelemetry, now, monotonicNow });
+  }
+
+  function createLibrarian({ config, providerAdapter } = {}) {
+    if (!config?.enabled) throw new Error("Memory v2 must be enabled for Librarian maintenance");
+    return createLibrarianStack({ config, providerAdapter }).librarian;
   }
 
   function createTaskShadowReplay({ config, providerAdapter } = {}) {
@@ -74,6 +106,7 @@ function createMemoryAdministration({ database, transactionExecutor, sourceReade
 
   return Object.freeze({
     createMigration,
+    createLibrarian,
     createProjectionDrain: createBoundProjectionDrain,
     createTaskShadowReplay,
   });

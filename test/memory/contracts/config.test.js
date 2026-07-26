@@ -35,7 +35,6 @@ function validEnv() {
     CHAT_MEMORY_V2_PROVIDER_SCHEMA_INVALID_RETRY_MAX: "1",
     CHAT_MEMORY_V2_PROVIDER_BACKOFF_BASE_MS: "1000", CHAT_MEMORY_V2_PROVIDER_BACKOFF_MAX_MS: "10000",
     CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS: "3", CHAT_MEMORY_V2_COMPACTION_RETRY_MAX: "2",
-    CHAT_MEMORY_V2_HYGIENE_HIGH_WATERMARK_PERCENT: "70", CHAT_MEMORY_V2_HYGIENE_MIN_ITEM_DELTA: "5",
     CHAT_MEMORY_V2_SNAPSHOT_RETENTION_DAYS: "30", CHAT_MEMORY_V2_EVENT_RETENTION_DAYS: "30",
     CHAT_MEMORY_V2_TASK_RETENTION_DAYS: "30", CHAT_MEMORY_V2_OPS_LOG_RETENTION_DAYS: "30",
     CHAT_MEMORY_V2_DEBUG_RETENTION_DAYS: "7", CHAT_MEMORY_V2_ALERT_DEBOUNCE_MS: "0", CHAT_MEMORY_V2_RECOVERY_STABLE_MS: "0",
@@ -61,7 +60,6 @@ test("v2 config requires an explicit structured-output adapter", () => {
     profileRelationship: { lagThreshold: 32, contextWindow: 64 },
     worldFacts: { lagThreshold: 16, contextWindow: 96 },
   });
-  assert.deepEqual(config.hygiene, { highWatermarkPercent: 70, minItemDelta: 5 });
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "prompt-and-parse";
   assert.throws(() => loadMemoryV2Config(env), /PROVIDER_ADAPTER must be one of/);
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "openai-json-schema";

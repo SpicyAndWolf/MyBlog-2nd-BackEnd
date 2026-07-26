@@ -62,6 +62,25 @@ function fixture() {
   return { state, messages, config, envelope, proposal };
 }
 
+test("task shadow replay fails fast when schema retry configuration is missing", () => {
+  const { config } = fixture();
+  const invalidConfig = { ...config };
+  delete invalidConfig.providerRecovery;
+
+  assert.throws(
+    () => createMemoryTaskShadowReplay({
+      repositories: {
+        runtime: { getTask: async () => null },
+        audit: { getSnapshot: async () => null },
+        source: { getByIds: async () => [] },
+      },
+      config: invalidConfig,
+      providerAdapter: { propose: async () => ({ status: "ok" }) },
+    }),
+    /requires providerRecovery\.schemaInvalidRetryMax/,
+  );
+});
+
 test("task shadow replay is read-only and reports schema, Reducer, and provenance", async () => {
   const { state, messages, config, envelope, proposal } = fixture();
   const calls = [];

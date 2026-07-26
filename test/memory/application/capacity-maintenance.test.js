@@ -301,15 +301,14 @@ test("deterministic exact merge runs before the compaction provider", async () =
   assert.equal(data.inspect.ops.some((entry) => entry.outcome === "unable_to_compact"), false);
 });
 
-test("high-water hygiene compacts proactively without blocking a committed normal task", async () => {
+test("normal commits no longer schedule proactive high-water hygiene", async () => {
   const data = store();
-  const hygieneConfig = {
+  const capacityConfig = {
     ...config,
     sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
-    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
   };
   const pipeline = createNormalWritePipeline({
-    observer: {}, repositories: data.repositories, config: hygieneConfig,
+    observer: {}, repositories: data.repositories, config: capacityConfig,
     idFactory: (() => { const ids = ["normal-patch", "normal-item", "compact-patch", "compact-item"]; return () => ids.shift() || "unused"; })(),
     providerAdapter: { propose: async (envelope) => ({
       status: "ok", output: envelope.task.mode === "maintenance" ? compactionOutput(envelope) : normalOutput(envelope),
@@ -317,65 +316,10 @@ test("high-water hygiene compacts proactively without blocking a committed norma
   });
   const result = await pipeline.processIntent(1, "default", intent);
   const parent = [...data.inspect.tasks.values()].find((task) => task.task_type === "normal");
-  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
   assert.equal(result.status, "committed");
-  assert.equal(result.hygiene[0].status, "hygiene_applied");
+  assert.equal(result.hygiene, undefined);
   assert.equal(parent.status, "succeeded");
-  assert.equal(child.stage, "hygiene_applied");
-  assert.equal(child.task_payload.task.trigger.type, "hygiene");
-  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
-  assert.equal(data.inspect.state.working.todos.length, 2);
-  assert.deepEqual(await pipeline.capacity.maybeRunHygiene(parent.task_payload), []);
-  assert.equal([...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance").length, 1);
-});
-
-test("failed high-water hygiene remains non-blocking", async () => {
-  const data = store();
-  const hygieneConfig = {
-    ...config,
-    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
-    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
-  };
-  const pipeline = createNormalWritePipeline({
-    observer: {}, repositories: data.repositories, config: hygieneConfig,
-    providerAdapter: { propose: async (envelope) => envelope.task.mode === "maintenance"
-      ? { status: "error", reason: "llm_call_failed", detail: {} }
-      : { status: "ok", output: normalOutput(envelope) } },
-  });
-  const result = await pipeline.processIntent(1, "default", intent);
-  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
-  assert.equal(result.status, "committed");
-  assert.equal(result.hygiene[0].status, "hygiene_noop");
-  assert.equal(child.status, "succeeded");
-  assert.equal(child.stage, "hygiene_skipped");
   assert.equal(data.inspect.statuses.get("todos").status, "healthy");
   assert.equal(data.inspect.state.working.todos.length, 3);
-});
-
-test("unable high-water hygiene persists unableResult and leaves the target healthy", async () => {
-  const data = store();
-  const hygieneConfig = {
-    ...config,
-    sectionBudgets: { ...config.sectionBudgets, todos: { maxItems: 4, maxRenderedChars: 2000 } },
-    hygiene: { highWatermarkPercent: 50, minItemDelta: 1 },
-  };
-  const pipeline = createNormalWritePipeline({
-    observer: {}, repositories: data.repositories, config: hygieneConfig,
-    providerAdapter: { propose: async (envelope) => ({
-      status: "ok",
-      output: envelope.task.mode === "maintenance"
-        ? { tickId: envelope.task.tickId, proposer: "compactionProposer", sectionResults: { todos: { status: "unable_to_compact" } } }
-        : normalOutput(envelope),
-    }) },
-  });
-
-  const result = await pipeline.processIntent(1, "default", intent);
-  const child = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
-  assert.equal(result.status, "committed");
-  assert.equal(result.hygiene[0].status, "hygiene_noop");
-  assert.equal(child.status, "succeeded");
-  assert.equal(child.stage, "hygiene_noop");
-  assert.equal(child.stage_payload.unableResult.sectionResults.todos.status, "unable_to_compact");
-  assert.equal(child.stage_payload.semanticResult, undefined);
-  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
+  assert.equal([...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance").length, 0);
 });
