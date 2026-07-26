@@ -449,18 +449,48 @@ function overviewView(task) {
 function providerView(task) {
   const view = document.createElement("section");
   view.className = "view-section";
-  view.append(callout("warning", "Prompt 非历史快照。", "这里用当前工作区 Prompt 重建；它可能与任务执行时的版本不同。"));
+  view.append(callout(
+    "warning",
+    "请求按当前代码与配置重建，不是历史快照。",
+    "下方 HTTP body 与运行时 fetch 共用同一个构造函数；Prompt、模型配置或代码若在任务执行后变更，重建结果也会随之变化。",
+  ));
+  const requests = task.input.providerRequests || [];
+  if (requests.length) {
+    const requestStack = document.createElement("div");
+    requestStack.className = "panel-stack provider-request-stack";
+    for (const [index, request] of requests.entries()) {
+      const phase = request.phase === "schema-repair" ? "schema repair" : "initial";
+      const section = request.section ? ` · ${request.section}` : "";
+      requestStack.append(codePanel({
+        kicker: "LLM API REQUEST",
+        title: `${index + 1}/${requests.length} · ${request.proposer}${section}`,
+        note: `${phase} · ${request.method} ${request.endpoint} · Authorization 不展示。body 是 LLM API 客观接收的完整 JSON 输入。`,
+        value: {
+          method: request.method,
+          endpoint: request.endpoint,
+          body: request.body,
+        },
+      }));
+    }
+    view.append(requestStack);
+  } else {
+    view.append(callout(
+      "error",
+      "无法重建最终 API 请求。",
+      task.input.reconstructionError || "当前 Provider 配置不可用。",
+    ));
+  }
   const grid = document.createElement("div");
   grid.className = "panel-grid";
   const left = document.createElement("div");
   left.className = "panel-stack";
   left.append(
-    codePanel({ kicker: "SYSTEM", title: task.input.currentRepairPrompt ? "当前 Prompt + repair feedback" : "当前 Prompt", note: "Prompt 本身未随 task 保存；这里展示当前工作区版本。", value: task.input.currentRepairPrompt || task.input.currentPrompt, emptyMessage: task.input.reconstructionError || "无法重建 Prompt" }),
-    codePanel({ kicker: "JSON SCHEMA", title: "Response schema", note: "根据 proposer 与 targetSections 从当前代码重建。", value: task.input.responseSchema, expanded: false }),
+    codePanel({ kicker: "SYSTEM", title: task.input.currentRepairPrompt ? "当前 Prompt + repair feedback" : "当前 Prompt", note: "便于单独检查；权威的线级输入以上方完整 HTTP body 为准。", value: task.input.currentRepairPrompt || task.input.currentPrompt, emptyMessage: task.proposer === "profileRelationshipProposer" ? "Profile 聚合任务的专家 Prompt 已分别包含在上方请求中。" : task.input.reconstructionError || "无法重建 Prompt", expanded: false }),
+    codePanel({ kicker: "SOURCE SCHEMA", title: "Pre-transport response schema", note: "仅供对照；API 实际收到的已绑定、已编译 schema 位于上方 response_format 或 tools 中。", value: task.input.responseSchema, expanded: false }),
   );
   const right = document.createElement("div");
   right.className = "panel-stack";
-  right.append(codePanel({ kicker: "USER PAYLOAD", title: "Actual provider user payload", note: "由 effective durable envelope 显式投影；不发送 taskId、task.now 与 private artifact metadata。", value: task.input.providerUserPayload }));
+  right.append(codePanel({ kicker: "USER PAYLOAD", title: "Pre-serialization provider payload", note: "仅供对照；API 实际收到的是上方 messages[user].content 中的 JSON 字符串。", value: task.input.providerUserPayload, expanded: false }));
   grid.append(left, right);
   view.append(grid);
   return view;

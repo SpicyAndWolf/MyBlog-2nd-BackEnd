@@ -4,6 +4,10 @@ const {
   LIBRARIAN_SECTIONS,
   PROFILE_TEXT_MAX_CHARS,
 } = require("../../contracts/constants");
+const {
+  buildFlatWireOutputSchema,
+  isFlatWireProposer,
+} = require("./flatWireProtocol");
 
 const dueAt = buildDueAtSchema();
 const dueChange = { oneOf: [
@@ -331,6 +335,7 @@ function buildOutputSchema(proposer, targetSections) {
       },
     };
   }
+  if (isFlatWireProposer(proposer)) return buildFlatWireOutputSchema(proposer, targetSections);
   if (proposer === "episodeProposer") return buildEpisodeSemanticOutputSchema();
   if (proposer === "profileRelationshipProposer") return buildProfileRelationshipSemanticOutputSchema();
   if (PROFILE_SPECIALIST_SECTIONS[proposer]) {

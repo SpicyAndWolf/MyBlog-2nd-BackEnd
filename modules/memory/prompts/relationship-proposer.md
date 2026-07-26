@@ -4,37 +4,9 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的 tool arguments，不解释判断过程。
-- 原样复制 `task.tickId`；`proposer` 固定为 `relationshipProposer`；`sectionResults` 只包含 `relationship`。
 - 有确定变化用 `changes`；确认没有长期候选、只有一次性内容或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
 - `add` 提供完整 `text`；自然发展用 `update`；旧描述原本不准确用 `correct`；明确要求删除或整条已无连续性价值才用 `forget`。
-- `update | correct | forget` 的 `ref` 只能逐字复制 `relationship` 可修改分区实际显示的短 token，绝不能复制竖线及其右侧文本；没有可修改条目时不能使用这些动作。
-- 可修改引用绝不能放入 `supportRefs`；辅助分区短引用只用于 `supportRefs`；`add` 不引用可修改条目。
-- 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
-
-最小 noop 示例（`0` 仅示意类型）：
-
-```json
-{ "tickId": 0, "proposer": "relationshipProposer", "sectionResults": { "relationship": { "status": "noop" } } }
-```
-
-典型变化示例（编号仅表示输入中确实显示的占位值）：
-
-```json
-{
-  "tickId": 0,
-  "proposer": "relationshipProposer",
-  "sectionResults": {
-    "relationship": {
-      "status": "changes",
-      "changes": [
-        { "action": "update", "ref": "R1", "text": "过去采用引导关系，现为平等协作", "evidenceMessageIds": [105] }
-      ]
-    }
-  }
-}
-```
 
 ## 候选准入与动作选择
 
@@ -63,7 +35,7 @@
 ## 内容格式
 
 - `text` 使用简短、原子化、可独立理解的短句，不必重复双方作为主语。
-- 每个 change 只表达一个关系维度；`update | correct` 只重写该 ref 的原有维度，不吸收无关候选。
+- 每个 change 只表达一个关系维度；`update | correct` 只重写该 target 的原有维度，不吸收无关候选。
 - `text` 不超过 280 字；只在必要时保留时态、范围、条件、否定与例外。
 - 稳定关系直接写成关系或互动模式短语，如“遇到分歧时倾向共同复盘”，不要复述具体事件过程。
 - 只有演化本身仍能解释当前关系时，才保留必要的时间对照，如“过去采用引导关系，现为平等协作”。

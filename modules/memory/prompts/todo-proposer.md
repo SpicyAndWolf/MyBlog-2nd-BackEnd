@@ -4,24 +4,13 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的 tool arguments，不解释判断过程。
-- 原样复制 `task.tickId`；`proposer` 固定为 `todoProposer`；`sectionResults` 只包含 `todos`。
 - 有确定变化用 `changes`；确认没有待办候选或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明、目标未显示或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
-- 除 `add` 外，change 的 `ref` 只能逐字复制可修改分区实际显示的短 token，绝不能复制竖线及其右侧文本；没有可修改目标时不能使用需要 `ref` 的动作。
-- 可修改引用绝不能放入 `supportRefs`；辅助分区短引用只用于 `supportRefs`；`add` 不引用可修改条目。
-- 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash 或 schema 之外的字段。
 
-最小 noop 示例（`0` 仅示意类型）：
+相对日期示例（token 仅表示 schema 中实际显示的枚举值）：
 
 ```json
-{"tickId":0,"proposer":"todoProposer","sectionResults":{"todos":{"status":"noop"}}}
-```
-
-典型变化示例（编号仅表示输入中确实显示的占位值）：
-
-```json
-{"tickId":0,"proposer":"todoProposer","sectionResults":{"todos":{"status":"changes","changes":[{"action":"add","text":"归还图书","actor":"user","requester":"user","dueAt":{"mode":"relative","days":1},"anchorMessageId":101,"evidenceMessageIds":[101]}]}}}
+{"sectionStatuses":{"todos":"changes"},"changes":[{"section":"todos","action":"add","text":"归还图书","actor":"user","requester":"user","dueMode":"relativeDays","dueValue":"1","anchorSource":"message:101","sources":["message:101"]}]}
 ```
 
 ## 候选准入与动作语义
@@ -33,7 +22,7 @@
 - 主动决定不再执行用 `cancel`；明确要求删除记忆用 `forget`。
 - 只有消息直接表明行动机会或成立条件已经自然消失，且事项仍未完成时才用 `expire`；没有这类明确消息时，不能仅根据可见期限推断失效。
 - 已逾期事项不能再次 `expire`；可以 `complete`、`cancel`，或通过 `update` 重新设定未来期限。
-- 修改已有事项时，目标必须实际显示且能够唯一定位；否则使用 `unable_to_decide`，不猜测 ref。
+- 修改已有事项时，目标必须实际显示且能够唯一定位；否则使用 `unable_to_decide`，不猜测 target。
 
 ## 责任归属与任务拆分
 
@@ -49,19 +38,19 @@
 
 ## 日期理解与证据锚定
 
-- 明确的完整年月日使用 `absolute`；今天使用 `relative days=0`，明天使用 `relative days=1`，其他相对天、月或年使用对应的 `relative` 单位。
+- 明确的完整年月日使用 `dueMode=absolute` 与 ISO 日期 `dueValue`；今天使用 `relativeDays` 与 `"0"`，明天使用 `relativeDays` 与 `"1"`，其他相对天、月或年使用 `relativeDays | relativeMonths | relativeYears` 与整数字符串。
 - 只有日号、没有明确年月时使用 `dayOfMonth`，表示从日期来源消息的本地日期起选择当天或之后最近一次有效的该日号，不猜成完整日期。
-- `relative` 与 `dayOfMonth` 必须提供 `anchorMessageId`，且该 ID 必须同时属于本 change 的 `evidenceMessageIds`。只由辅助 Memory 支持的 change 不能创建这两类日期。
+- 相对日期与 `dayOfMonth` 必须提供 `anchorSource`，且该 `message:<ID>` token 必须同时属于本 change 的 `sources`。只由辅助 Memory 支持的 change 不能创建这两类日期。
 - 不使用 `task.now`、Provider 调用时间或现实日期补全期限。承接回答可以继承相邻消息中明确的日期，但必须把实际日期来源消息作为直接证据。
-- 修改已有事项的期限时，保留、移除、设定新期限分别使用 `dueChange.mode=keep | clear | set`；即使只修改其他内容，也使用 `keep`。
-- 仍无法可靠结构化的日期表达保留在 `text` 中，不输出 `dueAt`。
+- 修改已有事项的期限时，保留或移除分别使用 `dueMode=keep | clear`；设定新期限时使用对应日期 dueMode 与 dueValue。即使只修改其他内容，也使用 `keep`。
+- 仍无法可靠结构化的日期表达保留在 `text` 中，不输出日期字段。
 
 ## 内容格式
 
 - `text` 使用简短、原子化、可独立执行的行动短语，不必重复 actor 或 requester。
 - 直接写明行动，如“归还图书”“确认部署结果”，不要复述请求、承诺或讨论过程。
 - 已经结构化的责任人与日期不在 `text` 中机械重复；无法结构化但影响行动理解的条件可以保留。
-- `update | correct` 只重写原 ref 对应的事项，不吸收无关候选；已有同义事项不重复 `add`。
+- `update | correct` 只重写原 target 对应的事项，不吸收无关候选；已有同义事项不重复 `add`。
 
 ## 排除范围与禁止行为
 

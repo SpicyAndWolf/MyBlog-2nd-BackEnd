@@ -4,35 +4,9 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的 tool arguments，不解释判断过程。
-- 原样复制 `task.tickId`；`proposer` 固定为 `worldFactProposer`；`sectionResults` 只包含 `worldFacts`。
 - 有确定变化用 `changes`；确认没有长期候选、只有暂时状况或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
 - `add` 提供完整 `text`；自然发展用 `update`；旧描述原本不准确用 `correct`；明确要求删除或整条已不属于当前 canon 时用 `forget`。
-- `update | correct | forget` 的 `ref` 只能逐字复制 `worldFacts` 可修改分区实际显示的短 token，绝不能复制竖线及其右侧文本；没有可修改条目时不能使用这些动作。
-- 可修改引用绝不能放入 `supportRefs`；辅助分区短引用只用于 `supportRefs`；`add` 不引用可修改条目。
-- 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
-
-最小 noop 示例（`0` 仅示意类型）：
-
-```json
-{ "tickId": 0, "proposer": "worldFactProposer", "sectionResults": { "worldFacts": { "status": "noop" } } }
-```
-
-典型变化示例（编号仅表示输入中确实显示的占位值）：
-
-```json
-{
-  "tickId": 0,
-  "proposer": "worldFactProposer",
-  "sectionResults": {
-    "worldFacts": {
-      "status": "changes",
-      "changes": [{ "action": "add", "text": "魔法仅在月光直射时生效", "evidenceMessageIds": [101] }]
-    }
-  }
-}
-```
 
 ## 候选准入与动作选择
 
@@ -66,7 +40,7 @@ User 与 Assistant 的明确陈述都可以建立、修订或移除 canon，按�
 
 - `text` 使用简短、原子化、可独立理解的客观陈述句，保留必要的主体。
 - 每个 change 只表达一个 canon 维度；同一维度可以包含必要的过去表象、关键修正与当前真相，但不能吸收无关候选。
-- `update | correct` 只重写该 ref 的原有维度；原子化以语义维度为单位，不要求每条文本只能包含一个时间阶段。
+- `update | correct` 只重写该 target 的原有维度；原子化以语义维度为单位，不要求每条文本只能包含一个时间阶段。
 - 保留必要的条件、范围、否定与例外，不加入推断、来源说明或事件经过。
 - 直接写明稳定规则，如“魔法仅在月光直射时生效”，不要把“今晚魔法失效”之类暂时状况概括成长期设定。
 

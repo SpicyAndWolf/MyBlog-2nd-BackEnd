@@ -1,6 +1,7 @@
 const { classifyIssues } = require("./classifyIssues");
 const { ISSUE_CODES, OUTPUT_REPAIR_POLICY_VERSION } = require("./policy");
 const { LIBRARIAN_PROPOSER } = require("../../contracts");
+const { isFlatWireProposer } = require("../../contracts/flatWire");
 
 function expectedShape(task) {
   if (task?.proposer === LIBRARIAN_PROPOSER) {
@@ -12,6 +13,15 @@ function expectedShape(task) {
     };
   }
   const sections = Array.isArray(task?.targetSections) ? task.targetSections : [];
+  if (isFlatWireProposer(task?.proposer)) {
+    return {
+      sectionStatuses: Object.fromEntries(sections.map((section) => [
+        section,
+        "<changes | noop | unable_to_decide>",
+      ])),
+      changes: "<complete flat change array; [] when all sections are noop or unable_to_decide>",
+    };
+  }
   return {
     tickId: "<copy task.tickId>",
     proposer: task?.proposer || "<copy task.proposer>",

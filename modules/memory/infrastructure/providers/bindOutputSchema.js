@@ -71,6 +71,7 @@ function bindSectionResult(resultSchema, artifact, section) {
 }
 
 function bindOutputSchema(schema, artifact, sections) {
+  if (isFlatWireSchema(schema)) return bindFlatWireOutputSchema(schema, artifact, sections);
   const bound = structuredClone(schema);
   if (bound.name === "memory_librarian_semantic") {
     const refs = Object.keys(artifact?.refMap?.writable || {}).sort();
@@ -115,3 +116,7 @@ module.exports = {
   bindSectionResult,
   bindSpecialistSchema,
 };
+const {
+  bindFlatWireOutputSchema,
+  isFlatWireSchema,
+} = require("./flatWireProtocol");

@@ -24,14 +24,8 @@ test("Profile repair retries only the failed specialist and merges cached valid 
         : `${section} fact`;
       return {
         output: {
-          tickId: 9,
-          proposer: request.proposer,
-          sectionResults: {
-            [section]: {
-              status: "changes",
-              changes: [{ action: "add", text, evidenceMessageIds: [1] }],
-            },
-          },
+          sectionStatuses: { [section]: "changes" },
+          changes: [{ section, action: "add", text, sources: ["message:1"] }],
         },
       };
     },
@@ -56,11 +50,11 @@ test("Profile repair retries only the failed specialist and merges cached valid 
   ]);
   assert.match(calls[3].systemPrompt, new RegExp(`Unicode 字符数不得超过 ${PROFILE_TEXT_MAX_CHARS.relationship}`));
   assert.equal(
-    calls[3].responseSchema.schema.properties.proposer.const,
-    "relationshipProposer",
+    calls[3].responseSchema.schema.properties.changes.items.properties.section.enum[0],
+    "relationship",
   );
   assert.deepEqual(
-    calls[3].responseSchema.schema.properties.sectionResults.required,
+    calls[3].responseSchema.schema.properties.sectionStatuses.required,
     ["relationship"],
   );
   assert.doesNotMatch(calls[3].systemPrompt, /"userProfile"|"assistantProfile"/);

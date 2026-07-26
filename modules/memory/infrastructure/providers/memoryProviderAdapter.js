@@ -11,6 +11,7 @@ const {
   summarizeOutputShape,
 } = require("../../application/outputRepair");
 const { bindOutputSchema, bindSpecialistSchema } = require("./bindOutputSchema");
+const { flatWireToSemanticOutput } = require("./flatWireProtocol");
 
 const ERROR_REASONS = Object.freeze(["llm_call_failed", "safety_policy_blocked", "max_output_truncated", "output_schema_invalid"]);
 const PROFILE_SPECIALISTS = Object.freeze([
@@ -177,7 +178,11 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               profileRepairCache.delete(envelope);
               return { status: "error", reason: "max_output_truncated", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }
-            const normalized = normalizeSemanticOutput(specialistResponse?.output);
+            const decodedOutput = flatWireToSemanticOutput(
+              specialistResponse?.output,
+              specialistArtifact.publicInput.task,
+            );
+            const normalized = normalizeSemanticOutput(decodedOutput);
             const specialistValidation = validateSemanticResult(normalized.output, specialistArtifact);
             if (!specialistValidation.ok) {
               invalidRun ??= {
@@ -253,7 +258,8 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       if (isTruncationSignal(response?.finishReason)) {
         return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1 };
       }
-      const normalized = normalizeSemanticOutput(response?.output);
+      const decodedOutput = flatWireToSemanticOutput(response?.output, task);
+      const normalized = normalizeSemanticOutput(decodedOutput);
       const output = normalized.output;
       const validated = validateSemanticResult(output, envelope.artifact);
       if (!validated.ok) {

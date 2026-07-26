@@ -15,7 +15,10 @@ test("Provider Adapter accepts valid native structured output", async () => {
     promptLoader: async () => "prompt",
     invokeStructured: async (value) => {
       request = value;
-      return { output: { tickId: 7, proposer: "episodeProposer", sectionResults: { recentEpisodes: { status: "noop" }, milestones: { status: "noop" } } } };
+      return { output: {
+        sectionStatuses: { recentEpisodes: "noop", milestones: "noop" },
+        changes: [],
+      } };
     },
   });
   const result = await adapter.propose(envelope());
@@ -43,9 +46,13 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
       const section = sections[request.proposer];
       return {
         output: {
-          tickId: 9,
-          proposer: request.proposer,
-          sectionResults: { [section]: { status: "changes", changes: [{ action: "add", text: `${section} fact`, evidenceMessageIds: [1] }] } },
+          sectionStatuses: { [section]: "changes" },
+          changes: [{
+            section,
+            action: "add",
+            text: `${section} fact`,
+            sources: ["message:1"],
+          }],
         },
         usage: { input_tokens: 10, output_tokens: 2 }, model: "test-model",
       };
@@ -67,7 +74,7 @@ test("Provider Adapter evaluates Profile sections independently and merges one a
     const section = sections[request.proposer];
     assert.equal(request.userPayload.messages.length, 64);
     assert.deepEqual(request.userPayload.task.targetSections, [section]);
-    assert.deepEqual(request.responseSchema.schema.properties.sectionResults.required, [section]);
+    assert.deepEqual(request.responseSchema.schema.properties.sectionStatuses.required, [section]);
     assert.equal(result.output.sectionResults[section].changes[0].text, `${section} fact`);
   }
 });
@@ -83,17 +90,18 @@ test("Profile specialist schemas bind writable refs and evidence ids to the rend
     invokeStructured: async (request) => {
       requests.push(request);
       const section = sections[request.proposer];
-      return { output: { tickId: 9, proposer: request.proposer, sectionResults: { [section]: { status: "noop" } } } };
+      return { output: { sectionStatuses: { [section]: "noop" }, changes: [] } };
     },
   });
   assert.equal((await adapter.propose(profileEnvelope({ state }))).status, "ok");
-  const variantsFor = (proposer) => requests.find((request) => request.proposer === proposer)
-    .responseSchema.schema.properties.sectionResults.properties[sections[proposer]].oneOf[0].properties.changes.items.oneOf;
-  assert.deepEqual(variantsFor("userProfileProposer").filter((variant) => variant.properties.ref).map((variant) => variant.properties.ref.enum), [["UP1"], ["UP1"], ["UP1"]]);
-  assert.deepEqual(variantsFor("relationshipProposer").filter((variant) => variant.properties.ref).map((variant) => variant.properties.ref.enum), [["R1"], ["R1"], ["R1"]]);
-  assert.deepEqual(variantsFor("assistantProfileProposer").map((variant) => variant.properties.action.const), ["add"]);
-  assert.deepEqual(variantsFor("userProfileProposer")[0].properties.evidenceMessageIds.items.enum, [1]);
-  assert.equal(Object.hasOwn(variantsFor("userProfileProposer")[0].properties, "supportRefs"), false);
+  const propertiesFor = (proposer) => requests.find((request) => request.proposer === proposer)
+    .responseSchema.schema.properties.changes.items.properties;
+  assert.deepEqual(propertiesFor("userProfileProposer").target.enum, ["UP1"]);
+  assert.deepEqual(propertiesFor("relationshipProposer").target.enum, ["R1"]);
+  assert.equal(Object.hasOwn(propertiesFor("assistantProfileProposer"), "target"), false);
+  assert.deepEqual(propertiesFor("assistantProfileProposer").action.enum, ["add"]);
+  assert.deepEqual(propertiesFor("userProfileProposer").sources.items.enum, ["message:1"]);
+  assert.equal(Object.hasOwn(propertiesFor("userProfileProposer"), "supportRefs"), false);
 });
 
 test("Provider Adapter distinguishes truncation, refusal, call and schema errors", async () => {

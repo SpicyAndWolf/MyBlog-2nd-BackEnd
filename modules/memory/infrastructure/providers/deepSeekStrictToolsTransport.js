@@ -1,14 +1,5 @@
-const { compileDeepSeekSchema } = require("./deepSeekSchemaCompiler");
 const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");
-const { resolveMemoryProviderModel } = require("../../config/loadProviderConfig");
-
-function normalizeBaseUrl(value) {
-  const url = new URL(String(value || "").trim());
-  url.hash = "";
-  url.search = "";
-  if (!url.pathname.endsWith("/")) url.pathname += "/";
-  return url;
-}
+const { buildDeepSeekHttpRequest, normalizeBaseUrl } = require("./structuredHttpRequest");
 
 function parseToolArguments(value) {
   if (value && typeof value === "object") return { output: value, recovery: null, error: null };
@@ -38,40 +29,20 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
   if (normalizedBaseUrl.hostname === "api.deepseek.com" && !normalizedBaseUrl.pathname.endsWith("/beta/")) {
     throw new Error("DeepSeek strict tools require CHAT_MEMORY_V2_PROVIDER_BASE_URL=https://api.deepseek.com/beta");
   }
-  const endpoint = new URL("chat/completions", normalizedBaseUrl).toString();
-
-  const providerConfig = { model, proposerModels };
-  return async function invokeStructured({ proposer, systemPrompt, userPayload, responseSchema }) {
-    const requestedModel = resolveMemoryProviderModel(providerConfig, proposer);
+  const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens, thinkingMode };
+  return async function invokeStructured(request) {
+    const { systemPrompt, userPayload, responseSchema } = request;
     const functionName = responseSchema?.name;
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(functionName || ""))) throw new Error("Structured output schema name is not a valid tool name");
     assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
+    const { endpoint, body } = buildDeepSeekHttpRequest(providerConfig, request);
+    const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
     try {
       const response = await fetchImpl(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...extraHeaders },
-        body: JSON.stringify({
-          model: requestedModel,
-          stream: false,
-          max_tokens: maxOutputTokens,
-          thinking: { type: thinkingMode },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: JSON.stringify(userPayload) },
-          ],
-          tools: [{
-            type: "function",
-            function: {
-              name: functionName,
-              description: "Return the schema-constrained Memory proposer result.",
-              strict: true,
-              parameters: compileDeepSeekSchema(responseSchema.schema),
-            },
-          }],
-          tool_choice: { type: "function", function: { name: functionName } },
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);

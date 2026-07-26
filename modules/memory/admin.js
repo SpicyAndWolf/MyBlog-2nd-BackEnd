@@ -28,6 +28,7 @@ const {
 const { createStructuredTransport } = require("./infrastructure/providers/structuredTransportFactory");
 const { runStructuredOutputPreflight } = require("./infrastructure/providers/providerPreflight");
 const { buildOutputSchema } = require("./infrastructure/providers/outputSchema");
+const { buildProviderRequestPreviews } = require("./infrastructure/providers/providerRequestPreview");
 const { loadProposerPrompt } = require("./prompts");
 
 function createMemoryAdministration({ database, transactionExecutor, sourceReader, userTimeZoneReader } = {}) {
@@ -116,6 +117,7 @@ module.exports = Object.freeze({
   buildMigrationEvidence,
   buildNormalEnvelope,
   buildOutputSchema,
+  buildProviderRequestPreviews,
   buildProposerUserPayload,
   buildProposerTaskArtifact,
   contracts,

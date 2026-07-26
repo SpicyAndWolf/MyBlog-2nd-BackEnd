@@ -7,6 +7,8 @@ const {
   buildOutputSchema,
   buildProposerUserPayload,
   schemaRepairPrompt,
+  loadMemoryProviderConfig,
+  buildProviderRequestPreviews,
 } = require("../../modules/memory/admin");
 
 const HOST = "127.0.0.1";
@@ -121,6 +123,7 @@ async function hydrateTask(row, dependencies = {}) {
   const schemaBuilder = dependencies.schemaBuilder || buildOutputSchema;
   const userPayloadBuilder = dependencies.userPayloadBuilder || buildProposerUserPayload;
   const repairPromptBuilder = dependencies.repairPromptBuilder || schemaRepairPrompt;
+  const providerRequestBuilder = dependencies.providerRequestBuilder || buildProviderRequestPreviews;
   const taskPayload = row.task_payload || null;
   const stagePayload = row.stage_payload || null;
   const { effectiveEnvelope, expandedArtifact, semanticInputVariant } = reconstructEffectiveEnvelope(
@@ -135,16 +138,27 @@ async function hydrateTask(row, dependencies = {}) {
   let currentRepairPrompt = null;
   let providerUserPayload = null;
   let responseSchema = null;
+  let providerRequests = [];
   let reconstructionError = semanticInputVariant === "expanded" && !effectiveEnvelope
     ? "Expanded task artifact is missing from durable state"
     : null;
 
   if (proposer) {
     try {
-      currentPrompt = await promptLoader(proposer);
-      currentRepairPrompt = repairFeedback ? repairPromptBuilder(currentPrompt, repairFeedback) : null;
       providerUserPayload = effectiveEnvelope ? userPayloadBuilder(effectiveEnvelope) : null;
       responseSchema = schemaBuilder(proposer, targetSections);
+      if (proposer !== "profileRelationshipProposer") {
+        currentPrompt = await promptLoader(proposer);
+        currentRepairPrompt = repairFeedback ? repairPromptBuilder(currentPrompt, repairFeedback) : null;
+      }
+      if (effectiveEnvelope && dependencies.providerConfig) {
+        providerRequests = await providerRequestBuilder({
+          envelope: effectiveEnvelope,
+          repairFeedback,
+          providerConfig: dependencies.providerConfig,
+          promptLoader,
+        });
+      }
     } catch (error) {
       reconstructionError = String(error?.message || error);
     }
@@ -189,6 +203,7 @@ async function hydrateTask(row, dependencies = {}) {
       currentPrompt,
       currentRepairPrompt,
       responseSchema,
+      providerRequests,
       repairFeedback,
       reconstructionError,
     },
@@ -299,9 +314,24 @@ async function serveStatic(response, pathname) {
   return true;
 }
 
-function createServer({ db, promptLoader, schemaBuilder, repairPromptBuilder } = {}) {
+function createServer({
+  db,
+  promptLoader,
+  schemaBuilder,
+  userPayloadBuilder,
+  repairPromptBuilder,
+  providerRequestBuilder,
+  providerConfig,
+} = {}) {
   if (!db?.query) throw new Error("Memory task GUI requires a database query dependency");
-  const dependencies = { promptLoader, schemaBuilder, repairPromptBuilder };
+  const dependencies = {
+    promptLoader,
+    schemaBuilder,
+    userPayloadBuilder,
+    repairPromptBuilder,
+    providerRequestBuilder,
+    providerConfig,
+  };
   return http.createServer(async (request, response) => {
     try {
       if (request.method !== "GET") return sendJson(response, 405, { error: "Only GET is supported" });
@@ -333,8 +363,14 @@ async function main(argv = process.argv.slice(2), dependencies = {}) {
     printUsage();
     return { status: "help" };
   }
-  const db = dependencies.db || require("../../app/composition/commandDatabase").createCommandDatabase();
-  const server = createServer({ db });
+  const { loadEnvironment } = require("../../app/composition/environment");
+  const environment = dependencies.environment || loadEnvironment();
+  const db = dependencies.db || require("../../app/composition/commandDatabase").createCommandDatabase({
+    environment,
+    loadDotenv: false,
+  });
+  const providerConfig = dependencies.providerConfig || loadMemoryProviderConfig(environment);
+  const server = createServer({ db, providerConfig });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(options.port, options.host, resolve);

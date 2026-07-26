@@ -27,8 +27,14 @@ test("provider preflight rejects a schema-valid but wrong result branch", async 
   await assert.rejects(() => runStructuredOutputPreflight({
     promptLoader: async () => "prompt",
     invokeStructured: async (request) => ({
-      output: request.userPayload.expectedOutput.sectionResults
-        ? { ...request.userPayload.expectedOutput, sectionResults: Object.fromEntries(Object.keys(request.userPayload.expectedOutput.sectionResults).map((section) => [section, { status: "unable_to_decide" }])) }
+      output: request.userPayload.expectedOutput.sectionStatuses
+        ? {
+          ...request.userPayload.expectedOutput,
+          sectionStatuses: Object.fromEntries(
+            Object.keys(request.userPayload.expectedOutput.sectionStatuses)
+              .map((section) => [section, "unable_to_decide"]),
+          ),
+        }
         : request.userPayload.expectedOutput,
     }),
   }), /exact preflight branch/);

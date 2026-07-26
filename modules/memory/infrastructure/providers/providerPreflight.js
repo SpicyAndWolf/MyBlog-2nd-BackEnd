@@ -8,6 +8,10 @@ const {
 const { validateSemanticResult } = require("../../contracts/semantic");
 const { buildOutputSchema } = require("./outputSchema");
 const { isSafetySignal, isTruncationSignal } = require("./providerProtocol");
+const {
+  flatWireToSemanticOutput,
+  semanticOutputToFlatWire,
+} = require("./flatWireProtocol");
 
 const PROFILE_SPECIALISTS = Object.freeze([
   Object.freeze({ proposer: "userProfileProposer", section: "userProfile" }),
@@ -72,16 +76,18 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
   if (typeof promptLoader !== "function") throw new Error("Preflight promptLoader is required");
   const results = [];
   for (const probe of preflightCases()) {
+    const expectedWireOutput = semanticOutputToFlatWire(probe.output, probe.task);
     const response = await invokeStructured({
       proposer: probe.task.proposer,
       systemPrompt: `${await promptLoader(probe.task.proposer)}\n\n[PREFLIGHT]\nReturn exactly userPayload.expectedOutput through the required schema-constrained output channel. Do not add fields.`,
-      userPayload: { expectedOutput: probe.output },
+      userPayload: { expectedOutput: expectedWireOutput },
       responseSchema: probe.responseSchema,
     });
     if (response?.refusal || response?.safetyBlocked || isSafetySignal(response?.finishReason)) throw new Error(`Provider refused structured-output preflight case: ${probe.name}`);
     if (isTruncationSignal(response?.finishReason)) throw new Error(`Provider truncated structured-output preflight case: ${probe.name}`);
     if (response?.transportError) throw new Error(`Provider transport did not return strict structured output for ${probe.name}`);
-    const validation = validateSemanticResult(response?.output, probe.task);
+    const semanticOutput = flatWireToSemanticOutput(response?.output, probe.task);
+    const validation = validateSemanticResult(semanticOutput, probe.task);
     if (!validation.ok) {
       const error = new Error(`Provider returned schema-invalid preflight output for ${probe.name}`);
       error.detail = {
@@ -92,7 +98,7 @@ async function runStructuredOutputPreflight({ invokeStructured, promptLoader } =
       };
       throw error;
     }
-    if (!isDeepStrictEqual(response.output, probe.output)) {
+    if (!isDeepStrictEqual(response.output, expectedWireOutput)) {
       throw new Error(`Provider did not follow the exact preflight branch for ${probe.name}`);
     }
     results.push({

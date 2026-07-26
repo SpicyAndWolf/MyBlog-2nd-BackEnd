@@ -4,26 +4,9 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的 tool arguments，不解释判断过程。
-- 原样复制 `task.tickId`；`proposer` 固定为 `agreementProposer`；`sectionResults` 只包含 `standingAgreements`。
 - 有确定变化用 `changes`；确认没有持续约定候选、只有一次性内容或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
-- `add` 提供完整 `text`；`update | correct` 提供 `ref` 和完整新 `text`；`forget | cancel` 提供 `ref` 且不带 `text`。
-- `update | correct | forget | cancel` 的 `ref` 只能逐字复制可修改分区实际显示的短 token，绝不能复制竖线及其右侧文本；没有可修改约定时不能使用这些动作。
-- 可修改引用绝不能放入 `supportRefs`；辅助分区短引用只用于 `supportRefs`；`add` 不引用可修改条目。
-- 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
+- `add` 提供完整 `text`；`update | correct` 提供 `target` 和完整新 `text`；`forget | cancel` 提供 `target` 且不带 `text`。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
-
-最小 noop 示例（`0` 仅示意类型）：
-
-```json
-{"tickId":0,"proposer":"agreementProposer","sectionResults":{"standingAgreements":{"status":"noop"}}}
-```
-
-典型变化示例（编号仅表示输入中确实显示的占位值）：
-
-```json
-{"tickId":0,"proposer":"agreementProposer","sectionResults":{"standingAgreements":{"status":"changes","changes":[{"action":"cancel","ref":"A1","evidenceMessageIds":[105]}]}}}
-```
 
 ## 候选准入与动作选择
 
@@ -53,7 +36,7 @@
 ## 内容格式
 
 - `text` 使用简短、原子化、可独立理解的规则短句，不必复述约定的建立过程。
-- 每个 change 只表达一项约定；`update | correct` 只重写该 ref 的原有约定，不吸收无关候选。
+- 每个 change 只表达一项约定；`update | correct` 只重写该 target 的原有约定，不吸收无关候选。
 - 保留必要的执行者、对象、条件、频率、否定与例外，避免抽象口号和事件流水。
 - 直接写明可执行规则，如“修改生产数据前须先确认”。
 - 已终止的约定不写成带时间痕迹的 `text`，而是对原条目使用 `cancel`。

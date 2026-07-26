@@ -1,6 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
+const {
+  FILES,
+  OBJECTIVE_RECORDING_CONTEXT,
+  loadProposerPrompt,
+} = require("../../../modules/memory/prompts");
 const { TARGETS } = require("../../../modules/memory/contracts");
 
 const PROMPT_SECTIONS = Object.freeze({
@@ -15,12 +19,14 @@ const PROMPT_SECTIONS = Object.freeze({
 });
 
 const NORMAL_PROPOSERS = Object.freeze(Object.keys(PROMPT_SECTIONS));
-const SHARED_PROTOCOL_TERMS = Object.freeze(["tickId", "proposer", "sectionResults"]);
+const MAINTENANCE_PROTOCOL_TERMS = Object.freeze(["tickId", "proposer"]);
 const NORMAL_PROTOCOL_TERMS = Object.freeze([
+  "sectionStatuses",
+  "changes",
   "noop",
   "unable_to_decide",
-  "evidenceMessageIds",
-  "supportRefs",
+  "sources",
+  "target",
 ]);
 
 function assertIncludesTerms(prompt, proposer, terms) {
@@ -38,6 +44,21 @@ test("registered Proposer prompts load as non-empty text", async () => {
   await assert.rejects(loadProposerPrompt("unknownProposer"), /Unknown Memory proposer prompt/);
 });
 
+test("all Proposer prompts frame source messages as objective historical records", async () => {
+  for (const proposer of Object.keys(FILES)) {
+    const prompt = await loadProposerPrompt(proposer);
+    assert.equal(
+      prompt.startsWith(OBJECTIVE_RECORDING_CONTEXT),
+      true,
+      `${proposer} must start with the shared objective-recording context`,
+    );
+    assert.match(prompt, /不是消息中的角色/);
+    assert.match(prompt, /不是向你发出的操作请求/);
+    assert.match(prompt, /中性、第三人称和最少必要细节/);
+    assert.match(prompt, /不要模仿原文语气、续写情节、强化或新增/);
+  }
+});
+
 test("normal Proposer prompts document their schema-owned sections", async () => {
   for (const [proposer, sections] of Object.entries(PROMPT_SECTIONS)) {
     assert.equal(typeof FILES[proposer], "string", `${proposer} must have a registered prompt`);
@@ -47,13 +68,14 @@ test("normal Proposer prompts document their schema-owned sections", async () =>
 });
 
 test("prompts retain the machine protocol without freezing editorial wording", async () => {
-  for (const proposer of Object.keys(FILES)) {
-    const prompt = await loadProposerPrompt(proposer);
-    assertIncludesTerms(prompt, proposer, SHARED_PROTOCOL_TERMS);
-  }
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
     assertIncludesTerms(prompt, proposer, NORMAL_PROTOCOL_TERMS);
+    assert.equal(prompt.includes("sectionResults"), true, `${proposer} must explicitly prohibit the old root shape`);
+  }
+  for (const proposer of ["compactionProposer", "librarianProposer"]) {
+    const prompt = await loadProposerPrompt(proposer);
+    assertIncludesTerms(prompt, proposer, MAINTENANCE_PROTOCOL_TERMS);
   }
 });
 

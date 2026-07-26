@@ -4,26 +4,18 @@ const { buildOutputSchema } = require("../../../modules/memory/infrastructure/pr
 const { bindOutputSchema } = require("../../../modules/memory/infrastructure/providers/bindOutputSchema");
 const { sceneEnvelope } = require("../support/provider-envelopes");
 
-test("generic schema binding restricts refs and evidence ids to the rendered artifact", () => {
+test("generic schema binding restricts flat targets and sources to the rendered artifact", () => {
   const envelope = sceneEnvelope();
   const bound = bindOutputSchema(
     buildOutputSchema("currentStateProposer", ["scene"]),
     envelope.artifact,
     ["scene"],
   );
-  const changesBranch = bound.schema.properties.sectionResults.properties.scene.oneOf
-    .find((branch) => branch.properties?.status?.const === "changes");
-  const variants = changesBranch.properties.changes.items.oneOf;
-
-  assert.ok(variants.length > 0);
-  assert.ok(variants.every((variant) => (
-    JSON.stringify(variant.properties.ref.enum)
-      === JSON.stringify(["S-LOCATION", "S-MOOD", "S-NOTE", "S-TIME"])
-  )));
-  assert.ok(variants.every((variant) => (
-    JSON.stringify(variant.properties.evidenceMessageIds.items.enum) === JSON.stringify([1])
-  )));
-  assert.ok(variants.every((variant) => !Object.hasOwn(variant.properties, "supportRefs")));
+  const properties = bound.schema.properties.changes.items.properties;
+  assert.deepEqual(properties.target.enum, ["S-LOCATION", "S-MOOD", "S-NOTE", "S-TIME"]);
+  assert.deepEqual(properties.sources.items.enum, ["message:1"]);
+  assert.equal(Object.hasOwn(properties, "evidenceMessageIds"), false);
+  assert.equal(Object.hasOwn(properties, "supportRefs"), false);
 });
 
 test("generic schema binding also restricts compaction merge refs", () => {
@@ -45,4 +37,17 @@ test("generic schema binding also restricts compaction merge refs", () => {
   const refs = bound.schema.properties.sectionResults.properties.todos.oneOf[0]
     .properties.changes.items.properties.refs.items;
   assert.deepEqual(refs, { type: "string", enum: ["T1", "T2"] });
+});
+
+test("flat binding disables impossible changes when no visible source exists", () => {
+  const bound = bindOutputSchema(
+    buildOutputSchema("currentStateProposer", ["scene"]),
+    {
+      refMap: { writable: {}, readOnly: {} },
+      messageMeta: {},
+    },
+    ["scene"],
+  );
+  assert.equal(bound.schema.properties.changes.maxItems, 0);
+  assert.equal(Object.hasOwn(bound.schema.properties.changes.items.properties, "target"), false);
 });

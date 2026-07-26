@@ -1,41 +1,27 @@
-const { resolveMemoryProviderModel } = require("../../config/loadProviderConfig");
-
-function normalizeBaseUrl(value) {
-  const url = new URL(String(value || "").trim());
-  url.hash = "";
-  url.search = "";
-  if (!url.pathname.endsWith("/")) url.pathname += "/";
-  return url;
-}
+const { assertStructuredRequestLimits, isSafetySignal } = require("./providerProtocol");
+const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
 
 function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {}, extraBody = {}, compileSchema = (schema) => schema } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
-  const endpoint = new URL("chat/completions", normalizeBaseUrl(baseUrl)).toString();
-
-  const providerConfig = { model, proposerModels };
-  return async function invokeStructured({ proposer, systemPrompt, userPayload, responseSchema }) {
-    const requestedModel = resolveMemoryProviderModel(providerConfig, proposer);
+  const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens };
+  return async function invokeStructured(request) {
+    const { systemPrompt, userPayload } = request;
     assertStructuredRequestLimits({ systemPrompt, userPayload, maxInputTokens, maxOutputTokens });
+    const { endpoint, body } = buildOpenAiHttpRequest(providerConfig, request, {
+      compileSchema,
+      extraBody,
+    });
+    const requestedModel = body.model;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("Memory Provider request timeout")), timeoutMs);
     try {
       const response = await fetchImpl(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, ...extraHeaders },
-        body: JSON.stringify({
-          model: requestedModel,
-          stream: false,
-          max_tokens: maxOutputTokens,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: JSON.stringify(userPayload) },
-          ],
-          response_format: { type: "json_schema", json_schema: compileSchema(responseSchema) },
-          ...(typeof extraBody === "function" ? extraBody({ proposer, model: requestedModel }) : extraBody),
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
@@ -69,4 +55,3 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
 }
 
 module.exports = { createOpenAiStructuredTransport };
-const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");

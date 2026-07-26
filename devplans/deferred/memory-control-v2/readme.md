@@ -13,6 +13,7 @@
 - [Scene Snapshot 与 Recall](scene-snapshot-recall.md)：基于 2.01 扁平 `sourceRefs` 的场景快照投影与精确回溯候选方案。
 - [Proposer 独立 Few-shot Golden Messages](proposer-few-shot-golden-messages.md)：把合成 golden 作为独立 user/assistant 消息注入运行时；需先通过跨主题 A/B，并按 provider 原生 structured-output 协议编译。
 - [运行时维护与长历史扩展](runtime-retention-and-history-scaling.md)：Retention 未调度/投影门不一致、全历史热路径、单 item 容量死路、context capability 与 migration 工具加固。
+- [Provider 非法 JSON 的恢复与诊断](provider-invalid-json-recovery.md)：保留当前即时失败行为，延后评估 `content_invalid_json` 的传输重试分类、有边界的本地恢复和脱敏诊断持久化。
 - [杂项](杂项.md)：暂时还没有详细分类
 
 延后条目重新进入主设计前，必须重新评估调用成本、失败路径、schema/校验复杂度，以及当前确定性替代方案是否已经足够。

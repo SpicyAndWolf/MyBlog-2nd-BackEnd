@@ -66,8 +66,9 @@ test("repair instruction uses the actual specialist schema shape and positive co
 
   assert.match(prompt, /\[SCHEMA_REPAIR_V1\]/);
   assert.match(prompt, /Unicode 字符数不得超过 240/);
-  assert.match(prompt, /"proposer":"relationshipProposer"/);
-  assert.match(prompt, /"relationship":"<complete section result>"/);
+  assert.match(prompt, /"sectionStatuses":\{"relationship":/);
+  assert.match(prompt, /"changes":"<complete flat change array/);
+  assert.doesNotMatch(prompt, /"proposer":|"sectionResults":/);
   assert.doesNotMatch(prompt, /userProfile|assistantProfile|profileRelationshipProposer/);
 });
 

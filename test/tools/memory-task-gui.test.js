@@ -71,6 +71,20 @@ function taskRow(overrides = {}) {
   };
 }
 
+function providerConfig(overrides = {}) {
+  return {
+    adapter: "openai-json-schema",
+    baseUrl: "https://llm.example.test/v1",
+    apiKey: "must-not-be-exposed",
+    model: "memory-model",
+    proposerModels: {},
+    timeoutMs: 1000,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 4096,
+    ...overrides,
+  };
+}
+
 test("Memory task GUI validates local port arguments", () => {
   assert.deepEqual(resolveOptions(parseArgs([])), { help: false, host: "127.0.0.1", port: 4317 });
   assert.equal(resolveOptions(parseArgs(["--port", "4318"])).port, 4318);
@@ -93,6 +107,7 @@ test("Memory task GUI reconstructs current provider request and persisted output
     promptLoader: async () => "prompt",
     schemaBuilder: (proposer, sections) => ({ proposer, sections }),
     repairPromptBuilder: (prompt) => `${prompt}:repair`,
+    providerConfig: providerConfig(),
   });
   assert.equal(task.input.currentPrompt, "prompt");
   assert.deepEqual(task.input.responseSchema.sections, ["recentEpisodes", "milestones"]);
@@ -103,6 +118,52 @@ test("Memory task GUI reconstructs current provider request and persisted output
   assert.equal(task.output.availability, "persisted");
   assert.equal(task.output.semanticResult.proposer, "episodeProposer");
   assert.equal(task.output.compiledProposal.proposer, "episodeProposer");
+  assert.equal(task.input.providerRequests.length, 1);
+  const request = task.input.providerRequests[0];
+  assert.equal(request.endpoint, "https://llm.example.test/v1/chat/completions");
+  assert.equal(request.body.model, "memory-model");
+  assert.equal(request.body.max_tokens, 4096);
+  assert.equal(request.body.messages[0].content, "prompt");
+  assert.deepEqual(JSON.parse(request.body.messages[1].content), task.input.providerUserPayload);
+  assert.equal(request.body.response_format.type, "json_schema");
+  assert.equal(JSON.stringify(request).includes("must-not-be-exposed"), false);
+});
+
+test("Memory task GUI exposes each Profile specialist API request", async () => {
+  const row = taskRow();
+  row.task_payload.task.proposer = "profileRelationshipProposer";
+  row.task_payload.task.targetKey = "profileRelationship";
+  row.task_payload.task.targetSections = ["userProfile", "assistantProfile", "relationship"];
+  Object.assign(row.task_payload.artifact.publicInput.task, {
+    proposer: "profileRelationshipProposer",
+    targetKey: "profileRelationship",
+    targetSections: ["userProfile", "assistantProfile", "relationship"],
+  });
+  const task = await hydrateTask(row, {
+    promptLoader: async (proposer) => `prompt:${proposer}`,
+    providerConfig: providerConfig({
+      proposerModels: {
+        userProfileProposer: "user-model",
+        assistantProfileProposer: "assistant-model",
+        relationshipProposer: "relationship-model",
+      },
+    }),
+  });
+  assert.deepEqual(task.input.providerRequests.map((request) => request.proposer), [
+    "userProfileProposer",
+    "assistantProfileProposer",
+    "relationshipProposer",
+  ]);
+  assert.deepEqual(task.input.providerRequests.map((request) => request.body.model), [
+    "user-model",
+    "assistant-model",
+    "relationship-model",
+  ]);
+  assert.deepEqual(task.input.providerRequests.map((request) => JSON.parse(request.body.messages[1].content).task.targetSections), [
+    ["userProfile"],
+    ["assistantProfile"],
+    ["relationship"],
+  ]);
 });
 
 test("Memory task GUI reconstructs expanded input from expandedArtifact and base refMap", async () => {

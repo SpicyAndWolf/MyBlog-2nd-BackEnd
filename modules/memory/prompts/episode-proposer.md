@@ -4,52 +4,15 @@
 
 ## 输出契约
 
-- 只输出 JSON Schema 约束的 tool arguments，不解释判断过程。
-- 原样复制 `task.tickId`；`proposer` 固定为 `episodeProposer`；`sectionResults` 必须同时包含 `recentEpisodes` 与 `milestones`。
 - 每个 section 独立返回终局：有确定变化用 `changes`；确认没有事件候选或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
-- change 的 `action` 只允许 `add | update | correct | forget`。`add` 提供完整 `text`；`update | correct` 提供 `ref` 和完整新 `text`；`forget` 提供 `ref` 且不带 `text`。
-- `update | correct | forget` 的 `ref` 只能逐字复制对应 section 可修改分区实际显示的短 token，绝不能复制竖线及其右侧文本；目标 section 没有可修改条目时不能使用这些动作。
-- 可修改引用绝不能放入 `supportRefs`；辅助分区短引用只用于 `supportRefs`；`add` 不引用可修改条目。
-- 每个 change 至少使用实际显示的 `evidenceMessageIds` 或 `supportRefs`，可单独或混合使用，来源不要求属于 new batch。
+- change 的 `action` 只允许 `add | update | correct | forget`。`add` 提供完整 `text`；`update | correct` 提供 `target` 和完整新 `text`；`forget` 提供 `target` 且不带 `text`。
 - `recentEpisodes` 每个 task 通常有 0–2 个 change，硬上限为 3 个；不能为凑数量合并无关互动弧。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
-
-最小 noop 示例（`0` 仅示意类型；`recentEpisodes` 与 `milestones` 必须同时返回终局）：
-
-```json
-{
-  "tickId": 0,
-  "proposer": "episodeProposer",
-  "sectionResults": { "recentEpisodes": { "status": "noop" }, "milestones": { "status": "noop" } }
-}
-```
-
-典型变化示例（编号仅表示输入中确实显示的占位值）：
-
-```json
-{
-  "tickId": 0,
-  "proposer": "episodeProposer",
-  "sectionResults": {
-    "recentEpisodes": {
-      "status": "changes",
-      "changes": [
-        {
-          "action": "add",
-          "text": "user将遗失的橡皮还给assistant，assistant为表达谢意提议请user吃饭",
-          "evidenceMessageIds": [101]
-        }
-      ]
-    },
-    "milestones": { "status": "noop" }
-  }
-}
-```
 
 ## 互动弧形成与动作选择
 
 1. 按场景、主题、目标与因果连续性聚合全部可见消息；一个完整互动弧最多形成一个候选，不能按消息或过渡动作切片。
-2. 将候选与对应 section 的全部可修改条目比较：新的独立互动弧或转折用 `add`；同一互动弧有新进展时优先 `update` 原 ref；旧描述从一开始就不准确用 `correct`；明确删除或整条不再具有记忆价值用 `forget`；语义相同且没有发展时不生成 change。
+2. 将候选与对应 section 的全部可修改条目比较：新的独立互动弧或转折用 `add`；同一互动弧有新进展时优先 `update` 原 target；旧描述从一开始就不准确用 `correct`；明确删除或整条不再具有记忆价值用 `forget`；语义相同且没有发展时不生成 change。
 3. 分别判断候选是否具有近期连续性价值和长期基线价值。两个 section 不默认双写；只有同一事件在两种时间尺度上各自具有独立价值时才分别生成。
 4. 多个独立且确定的候选分别处理；不能找到一条后停止，也不能把无关事件压进同一 `text`。候选超出数量上限时，优先保留对后续连续性影响最大的互动弧，舍弃其余而不是合并它们。
 
@@ -72,7 +35,7 @@
 - `recentEpisodes.text` 使用一到两句自然语言概括一个连贯互动弧，保留必要起因、关键变化、稳定结果或重要未决问题。
 - `milestones.text` 简洁表达一个长期基线转折，保留转折内容及其当前意义。
 - 使用自然叙述，如“双方因需求理解不同产生分歧；澄清目标后确定了新的协作方式”。
-- `update | correct` 只重写原 ref 对应的互动弧或转折，不吸收无关候选。
+- `update | correct` 只重写原 target 对应的互动弧或转折，不吸收无关候选。
 
 ## 排除范围与禁止行为
 
