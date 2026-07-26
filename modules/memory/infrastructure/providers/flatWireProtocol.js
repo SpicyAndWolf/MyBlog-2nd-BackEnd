@@ -4,7 +4,6 @@ const {
 const {
   FLAT_WIRE_PROPOSER_SECTIONS,
   FLAT_WIRE_STATUSES,
-  flatWirePromptContract,
   flatWireSections,
   isFlatWireProposer,
 } = require("../../contracts/flatWire");
@@ -350,7 +349,6 @@ module.exports = {
   SECTION_ACTIONS,
   bindFlatWireOutputSchema,
   buildFlatWireOutputSchema,
-  flatWirePromptContract,
   flatWireToSemanticOutput,
   isFlatWireProposer,
   isFlatWireSchema,

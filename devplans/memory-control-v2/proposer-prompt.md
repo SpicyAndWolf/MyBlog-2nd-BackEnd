@@ -20,7 +20,7 @@
 
 `profileRelationshipProposer` 只作为持久化 task、cursor、联合 schema 与提交身份存在，不注册或加载联合 prompt。Provider Adapter 将该 task 展开为表中的三个专用专家调用。
 
-Prompt 不写死在 service、Compiler 或 provider adapter 中。Prompt、Semantic Schema 和 Harness fixture 必须同步变化。
+每个 `*.md` 都是可独立阅读、直接发送的完整 system prompt：以自身 Proposer 身份开头，并在对应位置包含输入数据边界、语义规则和输出契约；loader 不再前置拼接通用 prompt 片段。Prompt 不写死在 service、Compiler、contract 或 provider adapter 中。Prompt、Semantic Schema 和 Harness fixture 必须同步变化。
 
 ## 2. Structured Output
 
@@ -36,13 +36,14 @@ Provider schema 校验通过不等于 change 可以写入。输出仍必须经�
 
 ## 3. 通用决策规则
 
-- 输出复制当前 `tickId/proposer`，`sectionResults` 恰好覆盖 target sections；
+- normal wire 根对象固定为 `sectionStatuses + changes`，不输出 `tickId/proposer/sectionResults`；Adapter 从 task 补齐内部 Semantic 元数据并恢复分 section 结构；
+- `sectionStatuses` 恰好覆盖 target sections；每个值为 `changes | noop | unable_to_decide`，并与扁平 `changes` 中对应 section 的 change 保持一致；
 - normal status 为 `changes | noop | unable_to_decide`；
 - compaction status 为 `changes | unable_to_compact`；
 - `noop` 表示已理解且无需改变；`unable_to_decide` 只用于信息不足、指代冲突或无法唯一定位；
 - 联合 Proposer 任一 section unable 时整个结果都会被原子扩窗重提或在二次 unable后整体丢弃；不要假设同一结果中其他 section 的 changes会被部分应用；
-- writable ref 只用于目标；support ref 只用于辅助来源；不得编造 ref；
-- normal change 至少引用 direct message 或 support Memory；二者均不要求属于 new batch；
+- `target` 只使用 schema 提供的 writable ref；`sources` 只使用 schema 提供的 `message:<ID>` 或 `memory:<REF>` token；不得编造 selector；
+- normal change 至少引用一个 direct message 或 support Memory source；二者均不要求属于 new batch；
 - 同一 section 已存在同义内容时优先 update/noop，不重复 add；
 - 对已经能确定的变化完整输出，不因猜测长度而省略；
 - `correct` 是语义动作，但持久化后与 update 不区分；
@@ -77,15 +78,15 @@ facet/canonicalKey/factBasis
 
 - 只记录明确、一次性、可完成/取消/过期的请求、承诺或共同计划；
 - 愿望、普通问答、反复适用规则应 noop；
-- add 提供 text/actor/requester，可选 dueAt；
-- update/correct 提供 writable ref、dueChange 及必要领域字段；
+- add 提供 text/actor/requester，可选 `dueMode/dueValue/anchorSource`；
+- update/correct 提供 target、必要领域字段，并用 `dueMode=keep | clear` 保留/清除期限或用日期 mode + dueValue 设定新期限；
 - complete/cancel/expire/forget 使用专用 action；
 - overdue 可 complete/cancel/forget；未来改期使用 update/correct + set；
 - Wall-clock 到期不输出 expire，由 lifecycle 管理；
-- relative dueAt 必须提供属于本 change `evidenceMessageIds` 的 `anchorMessageId`；
-- 只有日号、没有明确年月时输出 `{mode:"dayOfMonth",day:1..31}`，并同样提供 direct `anchorMessageId`；Compiler 选择消息本地日期当天或之后最近一次有效的目标日号；
+- relative due mode 必须提供同时属于本 change `sources` 的 `message:<ID>` `anchorSource`；
+- 只有日号、没有明确年月时使用 `dueMode=dayOfMonth` 与日号字符串 `dueValue`，并同样提供 direct `anchorSource`；Compiler 选择消息本地日期当天或之后最近一次有效的目标日号；
 - support-only change 不得生成 relative/dayOfMonth date；已有 absolute deadline 可以直接表达或 keep；
-- 不用 task.now、worker/Provider 时间补全日期；其他无法结构化的模糊日期保留在 text 并省略 dueAt。
+- 不用 task.now、worker/Provider 时间补全日期；其他无法结构化的模糊日期保留在 text 并省略日期字段。
 
 ## 6. agreementProposer
 
