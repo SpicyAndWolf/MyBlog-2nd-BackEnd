@@ -74,10 +74,11 @@ function bindOutputSchema(schema, artifact, sections) {
   const bound = structuredClone(schema);
   if (bound.name === "memory_librarian_semantic") {
     const refs = Object.keys(artifact?.refMap?.writable || {}).sort();
-    const operationArray = bound.schema?.properties?.operations;
+    const rootBranches = bound.schema?.oneOf || [];
+    const changesBranch = rootBranches.find((branch) => branch.properties?.status?.const === "changes");
+    const operationArray = changesBranch?.properties?.operations;
     if (!refs.length) {
-      bound.schema.properties.status = { const: "noop" };
-      operationArray.maxItems = 0;
+      bound.schema.oneOf = rootBranches.filter((branch) => branch.properties?.status?.const === "noop");
       return bound;
     }
     let operations = operationArray?.items?.oneOf || [];

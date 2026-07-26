@@ -201,11 +201,43 @@ function compactionChangeSchema() {
   };
 }
 
+function librarianTextSchema(section) {
+  const maxLength = PROFILE_TEXT_MAX_CHARS[section];
+  return {
+    type: "string",
+    minLength: 1,
+    ...(maxLength ? { maxLength } : {}),
+  };
+}
+
+function librarianSectionTextVariants() {
+  return LIBRARIAN_SECTIONS.map((section) => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["toSection", "text"],
+    properties: {
+      toSection: { const: section },
+      text: librarianTextSchema(section),
+    },
+  }));
+}
+
 function buildLibrarianOutputSchema() {
   const section = {
     enum: LIBRARIAN_SECTIONS.slice(),
   };
   const ref = { type: "string", minLength: 1 };
+  const mergeOperations = LIBRARIAN_SECTIONS.map((toSection) => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["action", "refs", "toSection", "text"],
+    properties: {
+      action: { const: "merge" },
+      refs: { type: "array", minItems: 2, uniqueItems: true, items: ref },
+      toSection: { const: toSection },
+      text: librarianTextSchema(toSection),
+    },
+  }));
   const operation = {
     oneOf: [
       {
@@ -213,16 +245,7 @@ function buildLibrarianOutputSchema() {
         required: ["action", "ref", "toSection"],
         properties: { action: { const: "move" }, ref, toSection: section },
       },
-      {
-        type: "object", additionalProperties: false,
-        required: ["action", "refs", "toSection", "text"],
-        properties: {
-          action: { const: "merge" },
-          refs: { type: "array", minItems: 2, uniqueItems: true, items: ref },
-          toSection: section,
-          text: { type: "string", minLength: 1 },
-        },
-      },
+      ...mergeOperations,
       {
         type: "object", additionalProperties: false,
         required: ["action", "keeperRef", "duplicateRefs"],
@@ -240,29 +263,40 @@ function buildLibrarianOutputSchema() {
           ref,
           parts: {
             type: "array", minItems: 2,
-            items: {
-              type: "object", additionalProperties: false,
-              required: ["toSection", "text"],
-              properties: { toSection: section, text: { type: "string", minLength: 1 } },
-            },
+            items: { oneOf: librarianSectionTextVariants() },
           },
         },
       },
     ],
   };
+  const root = (status, operations) => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["tickId", "proposer", "status", "operations"],
+    properties: {
+      tickId: { type: "integer" },
+      proposer: { const: LIBRARIAN_PROPOSER },
+      status: { const: status },
+      operations,
+    },
+  });
   return {
     name: "memory_librarian_semantic",
     strict: true,
     schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["tickId", "proposer", "status", "operations"],
-      properties: {
-        tickId: { type: "integer" },
-        proposer: { const: LIBRARIAN_PROPOSER },
-        status: { enum: ["changes", "noop"] },
-        operations: { type: "array", items: operation },
-      },
+      oneOf: [
+        root("changes", { type: "array", minItems: 1, items: operation }),
+        root("noop", {
+          type: "array",
+          maxItems: 0,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [],
+            properties: {},
+          },
+        }),
+      ],
     },
   };
 }

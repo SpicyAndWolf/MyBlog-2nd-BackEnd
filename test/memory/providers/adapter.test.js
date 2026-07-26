@@ -191,5 +191,7 @@ test("Provider Adapter accepts the Librarian message-free global maintenance con
   assert.deepEqual(request.userPayload.messages, []);
   assert.equal(request.userPayload.task.cursorBefore, undefined);
   assert.equal(request.responseSchema.name, "memory_librarian_semantic");
-  assert.deepEqual(request.responseSchema.schema.properties.status, { const: "noop" });
+  assert.equal(request.responseSchema.schema.oneOf.length, 1);
+  assert.deepEqual(request.responseSchema.schema.oneOf[0].properties.status, { const: "noop" });
+  assert.equal(request.responseSchema.schema.oneOf[0].properties.operations.maxItems, 0);
 });

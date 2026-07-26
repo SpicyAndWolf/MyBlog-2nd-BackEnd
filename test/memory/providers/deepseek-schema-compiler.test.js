@@ -58,3 +58,13 @@ test("DeepSeek compiler preserves dropped constraints as positive descriptions",
     },
   );
 });
+
+test("DeepSeek compiler preserves Librarian status branches and target text limits", () => {
+  const compiled = compileDeepSeekSchema(buildOutputSchema("librarianProposer").schema);
+  assert.equal(compiled.anyOf.length, 2);
+  const serialized = JSON.stringify(compiled);
+  assert.match(serialized, /Array must contain at least 1 items/);
+  assert.match(serialized, /Array must contain at most 0 items/);
+  assert.match(serialized, /String length must be at most 200 Unicode characters/);
+  assert.match(serialized, /String length must be at most 300 Unicode characters/);
+});

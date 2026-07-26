@@ -2,6 +2,7 @@ const {
   LIBRARIAN_PROPOSER,
   LIBRARIAN_SECTIONS,
   LIBRARIAN_TARGET_KEY,
+  PROFILE_TEXT_MAX_CHARS,
 } = require("./constants");
 const { isPlainObject, isIsoTimestamp } = require("./state");
 
@@ -22,6 +23,16 @@ function exactKeys(value, required, optional, path, errors) {
 }
 function validateSection(value, path, errors) {
   if (!LIBRARIAN_SECTIONS.includes(value)) errors.push(issue(path, "is not a Librarian section"));
+}
+function validateTextForSection(value, section, path, errors) {
+  if (!text(value)) {
+    errors.push(issue(path, "must be a non-empty string"));
+    return;
+  }
+  const limit = PROFILE_TEXT_MAX_CHARS[section];
+  if (limit && [...value].length > limit) {
+    errors.push(issue(path, `must contain at most ${limit} Unicode characters`));
+  }
 }
 function validateRefs(refs, path, errors, { min = 1 } = {}) {
   if (!Array.isArray(refs) || refs.length < min) {
@@ -114,7 +125,7 @@ function validateLibrarianSemanticResult(result, taskOrArtifact) {
       validateRefs(operation.refs, `${path}.refs`, errors, { min: 2 });
       for (const ref of operation.refs || []) participate(ref, `${path}.refs`);
       validateSection(operation.toSection, `${path}.toSection`, errors);
-      if (!text(operation.text)) errors.push(issue(`${path}.text`, "must be a non-empty string"));
+      validateTextForSection(operation.text, operation.toSection, `${path}.text`, errors);
     } else if (operation.action === "dropDuplicate") {
       if (!exactKeys(operation, ["action", "keeperRef", "duplicateRefs"], [], path, errors)) return;
       validateRefs(operation.duplicateRefs, `${path}.duplicateRefs`, errors);
@@ -130,7 +141,7 @@ function validateLibrarianSemanticResult(result, taskOrArtifact) {
           const partPath = `${path}.parts[${partIndex}]`;
           if (!exactKeys(part, ["toSection", "text"], [], partPath, errors)) return;
           validateSection(part.toSection, `${partPath}.toSection`, errors);
-          if (!text(part.text)) errors.push(issue(`${partPath}.text`, "must be a non-empty string"));
+          validateTextForSection(part.text, part.toSection, `${partPath}.text`, errors);
         });
         const sourceSection = rendered?.[operation.ref]?.section;
         if (sourceSection && !operation.parts.some((part) => part.toSection !== sourceSection)) errors.push(issue(`${path}.parts`, "at least one part must change section"));

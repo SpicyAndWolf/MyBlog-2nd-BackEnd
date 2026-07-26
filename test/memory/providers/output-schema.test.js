@@ -85,11 +85,25 @@ test("profile specialist schemas each expose exactly one owned section", () => {
 
 test("Librarian output schema exposes only conservative global maintenance operations", () => {
   const schema = buildOutputSchema("librarianProposer").schema;
-  assert.deepEqual(schema.required, ["tickId", "proposer", "status", "operations"]);
-  const variants = schema.properties.operations.items.oneOf;
-  assert.deepEqual(variants.map((variant) => variant.properties.action.const), [
+  const changes = schema.oneOf.find((branch) => branch.properties.status.const === "changes");
+  const noop = schema.oneOf.find((branch) => branch.properties.status.const === "noop");
+  assert.deepEqual(changes.required, ["tickId", "proposer", "status", "operations"]);
+  assert.equal(changes.properties.operations.minItems, 1);
+  assert.equal(noop.properties.operations.maxItems, 0);
+  const variants = changes.properties.operations.items.oneOf;
+  assert.deepEqual([...new Set(variants.map((variant) => variant.properties.action.const))], [
     "move", "merge", "dropDuplicate", "splitMove",
   ]);
+  const userProfileMerge = variants.find((variant) => (
+    variant.properties.action.const === "merge"
+    && variant.properties.toSection.const === "userProfile"
+  ));
+  assert.equal(userProfileMerge.properties.text.maxLength, 200);
+  const split = variants.find((variant) => variant.properties.action.const === "splitMove");
+  const relationshipPart = split.properties.parts.items.oneOf.find(
+    (variant) => variant.properties.toSection.const === "relationship",
+  );
+  assert.equal(relationshipPart.properties.text.maxLength, 300);
   assert.equal(JSON.stringify(schema).includes("evidenceMessageIds"), false);
   assert.equal(JSON.stringify(schema).includes("addItem"), false);
 });

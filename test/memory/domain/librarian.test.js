@@ -73,6 +73,27 @@ test("Librarian validates conflicts before compilation", () => {
   assert.match(validation.errors.map((entry) => entry.message).join(" "), /more than one/);
 });
 
+test("Librarian validates target-specific text limits before compilation", () => {
+  const { envelope } = fixture();
+  const result = {
+    tickId: 7,
+    proposer: "librarianProposer",
+    status: "changes",
+    operations: [{
+      action: "merge",
+      refs: ["W1", "UP1"],
+      toSection: "userProfile",
+      text: "长".repeat(201),
+    }],
+  };
+  const validation = validateLibrarianSemanticResult(result, envelope.artifact);
+  assert.equal(validation.ok, false);
+  assert.deepEqual(validation.errors, [{
+    path: "$.operations[0].text",
+    message: "must contain at most 200 Unicode characters",
+  }]);
+});
+
 test("Librarian merge is cross-section, provenance preserving, and revision atomic", () => {
   const { state, envelope } = fixture();
   const semanticResult = {
