@@ -11,7 +11,7 @@ test("scoped Memory v2 rebuild CLI requires exactly one user and preset scope", 
     help: false,
     userId: 1,
     presetId: "Alice",
-    mode: "fresh",
+    mode: "resume",
   });
   assert.deepEqual(resolveOptions(parseArgs(["--userId", "1", "--presetId", "Alice", "--mode", "resume"])), {
     help: false,
@@ -62,7 +62,7 @@ test("scoped rebuild verifies the active preset and rebuilds only its inventory 
     kind: "rebuild",
     scope: { userId: 1, presetId: "Alice" },
     history,
-    options: { forceNewGeneration: true },
+    options: { forceNewGeneration: false },
   });
 });
 
@@ -77,7 +77,7 @@ test("scoped rebuild refuses a missing or deleted preset before inventory", asyn
   assert.equal(inventoryCalled, false);
 });
 
-test("scoped rebuild mode resume asks the migration to continue the previous generation", async () => {
+test("scoped rebuild mode fresh asks the migration to start a new generation", async () => {
   const calls = [];
   const history = { userId: 1, presetId: "Alice", messageCount: 42, boundaryMessageId: 1155 };
   const db = { async query() { return { rows: [{ exists: 1 }] }; } };
@@ -85,6 +85,6 @@ test("scoped rebuild mode resume asks the migration to continue the previous gen
     async inventory() { return [history]; },
     async rebuildScope(scope, selectedHistory, options) { calls.push(options); return { ...scope }; },
   };
-  await rebuildScope({ db, migration, userId: 1, presetId: "Alice", mode: "resume" });
-  assert.deepEqual(calls, [{ forceNewGeneration: false }]);
+  await rebuildScope({ db, migration, userId: 1, presetId: "Alice", mode: "fresh" });
+  assert.deepEqual(calls, [{ forceNewGeneration: true }]);
 });

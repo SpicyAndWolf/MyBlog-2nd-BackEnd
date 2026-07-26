@@ -26,7 +26,7 @@ function resolveOptions(values) {
   if (!Number.isSafeInteger(userId) || userId <= 0 || !presetId) {
     throw new Error("--userId must be a positive integer and --presetId cannot be empty");
   }
-  const mode = String(values.mode ?? "fresh").trim();
+  const mode = String(values.mode ?? "resume").trim();
   if (!["fresh", "resume"].includes(mode)) throw new Error("--mode must be fresh or resume");
   return { help: false, userId, presetId, mode };
 }
@@ -39,8 +39,8 @@ function printUsage(stream = process.stdout) {
     "Rebuilds only the selected Memory v2 scope, waits for all targets and its RAG projection, then verifies the result.",
     "This command writes Memory authority/projection data and invokes the configured Memory provider.",
     "",
-    "--mode fresh（默认）开启新 generation，从头处理全部消息。",
-    "--mode resume 在存在可恢复的 generation 时接着上次进度，否则回退为从头开始。",
+    "--mode resume（默认）在存在可恢复的 generation 时接着上次进度，否则回退为从头开始。",
+    "--mode fresh 强制开启新 generation，从头处理全部消息。",
     "",
   ].join("\n"));
 }
@@ -60,7 +60,7 @@ function createScopedMigration({ database, config, logger, chatLlm, chatRagProje
   });
 }
 
-async function rebuildScope({ db, migration, userId, presetId, mode = "fresh" }) {
+async function rebuildScope({ db, migration, userId, presetId, mode = "resume" }) {
   const { rows } = await db.query(`
     SELECT 1
     FROM chat_prompt_presets
