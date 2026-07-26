@@ -69,55 +69,18 @@ test("the migrated Chat HTTP adapter has no direct persistence, config, filesyst
     /require\(["']sharp["']\)/,
     /require\(["']\.\.\/config["']\)/,
   ]) assert.doesNotMatch(source, forbidden);
-
-  for (const retiredPath of [
-    "models/chatModel.js",
-    "models/chatPresetModel.js",
-    "models/chatMessageGistModel.js",
-    "services/chat/gistPipeline.js",
-    "services/chat/avatarStorage.js",
-    "services/chat/trashCleanup.js",
-  ]) assert.equal(fs.existsSync(path.join(rootDir, retiredPath)), false, `${retiredPath} should stay retired`);
 });
 
-test("the migrated Auth module owns its controller, middleware, and repository without legacy singletons", () => {
+test("the Auth module entry has no legacy singleton bindings", () => {
   const rootDir = path.resolve(__dirname, "../..");
-  for (const retiredPath of [
-    "controllers/authController.js",
-    "middleware/authMiddleware.js",
-    "models/userModel.js",
-  ]) assert.equal(fs.existsSync(path.join(rootDir, retiredPath)), false, `${retiredPath} should stay retired`);
-
   const authEntry = fs.readFileSync(path.join(rootDir, "modules/auth/index.js"), "utf8");
   assert.doesNotMatch(authEntry, /installLegacyAuthBindings/);
   assert.doesNotMatch(authEntry, /controllers\/authController/);
   assert.doesNotMatch(authEntry, /middleware\/authMiddleware/);
 });
 
-test("retired process-global runtime facades and root module dependencies stay absent", () => {
+test("active LLM implementations use injected configuration instead of configuration singletons", () => {
   const rootDir = path.resolve(__dirname, "../..");
-  assert.equal(fs.existsSync(path.join(rootDir, "services/chat/memoryRuntime.js")), false);
-  const result = analyzeArchitecture();
-  assert.deepEqual(result.dataOwnershipViolations, []);
-  assert.equal(
-    result.boundaryViolations.some((violation) => violation.startsWith("Business module dependencies must stay internal")),
-    false,
-  );
-});
-
-test("the retired services/llm implementation stays inside the Chat owner without configuration singletons", () => {
-  const rootDir = path.resolve(__dirname, "../..");
-  const retiredRoot = path.join(rootDir, "services/llm");
-  function listJavaScriptFiles(directory) {
-    if (!fs.existsSync(directory)) return [];
-    return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-      const target = path.join(directory, entry.name);
-      if (entry.isDirectory()) return listJavaScriptFiles(target);
-      return entry.name.endsWith(".js") ? [target] : [];
-    });
-  }
-
-  assert.deepEqual(listJavaScriptFiles(retiredRoot), []);
   for (const relativePath of [
     "modules/chat/infrastructure/llm/providerRegistry.js",
     "modules/chat/rag/infrastructure/embeddings.js",

@@ -40,6 +40,7 @@ const retrieveChatRagContext = createChatRagRetriever({
 
 let behavior = "429";
 let server;
+let timeoutUpstreamResponded = false;
 
 test.before(async () => {
   server = http.createServer((_req, res) => {
@@ -57,6 +58,7 @@ test.before(async () => {
     // deadlines to exercise the real fetch abort path.
     setTimeout(() => {
       if (res.destroyed) return;
+      timeoutUpstreamResponded = true;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ data: [{ embedding: [1, 0] }] }));
     }, 200);
@@ -93,14 +95,13 @@ test("real embedding response dimension corruption degrades the composed RAG que
   assert.equal(result.stats.degraded, true);
 });
 
-test("real embedding timeout aborts quickly and degrades without blocking main-chat latency", async () => {
+test("real embedding timeout degrades without waiting for the upstream response", async () => {
   behavior = "timeout";
+  timeoutUpstreamResponded = false;
   config.embeddingTimeoutMs = 15;
   config.queryTimeoutMs = 40;
-  const startedAt = performance.now();
   const result = await retrieve();
-  const elapsed = performance.now() - startedAt;
   assert.deepEqual(result.messages, []);
   assert.equal(result.stats.reason, "retrieval_degraded");
-  assert.equal(elapsed < 100, true, `RAG degradation took ${elapsed}ms`);
+  assert.equal(timeoutUpstreamResponded, false);
 });

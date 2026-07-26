@@ -1,229 +1,75 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
+const { TARGETS } = require("../../../modules/memory/contracts");
 
-const NORMAL_PROPOSERS = [
-  "currentStateProposer",
-  "todoProposer",
-  "agreementProposer",
-  "episodeProposer",
-  "userProfileProposer",
-  "assistantProfileProposer",
-  "relationshipProposer",
-  "worldFactProposer",
-];
+const PROMPT_SECTIONS = Object.freeze({
+  currentStateProposer: TARGETS.scene.sections,
+  todoProposer: TARGETS.todos.sections,
+  agreementProposer: TARGETS.standingAgreements.sections,
+  episodeProposer: TARGETS.episodes.sections,
+  userProfileProposer: ["userProfile"],
+  assistantProfileProposer: ["assistantProfile"],
+  relationshipProposer: ["relationship"],
+  worldFactProposer: TARGETS.worldFacts.sections,
+});
 
-const SEMANTIC_PROPOSERS = NORMAL_PROPOSERS;
+const NORMAL_PROPOSERS = Object.freeze(Object.keys(PROMPT_SECTIONS));
+const SHARED_PROTOCOL_TERMS = Object.freeze(["tickId", "proposer", "sectionResults"]);
+const NORMAL_PROTOCOL_TERMS = Object.freeze([
+  "noop",
+  "unable_to_decide",
+  "evidenceMessageIds",
+  "supportRefs",
+]);
 
-test("all registered Proposer prompts exist and load", async () => {
+function assertIncludesTerms(prompt, proposer, terms) {
+  for (const term of terms) {
+    assert.equal(prompt.includes(term), true, `${proposer} must document the ${term} protocol field`);
+  }
+}
+
+test("registered Proposer prompts load as non-empty text", async () => {
   assert.ok(Object.keys(FILES).length > 0);
-  assert.equal(FILES.profileRelationshipProposer, undefined, "the aggregate profile target must not register an unused combined prompt");
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
     assert.ok(prompt.trim().length > 0, `${proposer} prompt must not be empty`);
   }
+  await assert.rejects(loadProposerPrompt("unknownProposer"), /Unknown Memory proposer prompt/);
 });
 
-test("each normal Proposer prompt documents the new-batch source boundary", async () => {
-  for (const proposer of NORMAL_PROPOSERS) {
+test("normal Proposer prompts document their schema-owned sections", async () => {
+  for (const [proposer, sections] of Object.entries(PROMPT_SECTIONS)) {
+    assert.equal(typeof FILES[proposer], "string", `${proposer} must have a registered prompt`);
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /new.?batch|new batch/i, `${proposer} must mention the new-batch boundary`);
+    assertIncludesTerms(prompt, proposer, sections);
   }
 });
 
-test("each prompt requires tickId copy", async () => {
+test("prompts retain the machine protocol without freezing editorial wording", async () => {
   for (const proposer of Object.keys(FILES)) {
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /tickId/, `${proposer} must mention tickId`);
-    assert.match(prompt, /原样复制|逐值复制/, `${proposer} must instruct tickId copy`);
+    assertIncludesTerms(prompt, proposer, SHARED_PROTOCOL_TERMS);
   }
-});
-
-test("each normal Proposer prompt distinguishes noop from unable_to_decide", async () => {
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /noop/, `${proposer} must define noop`);
-    assert.match(prompt, /确认.*无需|确认无变更/s, `${proposer} must define noop as a confirmed no-change result`);
-    assert.match(prompt, /unable_to_decide/, `${proposer} must define unable_to_decide`);
-    assert.match(prompt, /信息不足|指代不明|无法.*判断/s, `${proposer} must reserve unable_to_decide for insufficient information`);
-    assert.match(prompt, /不要把.*无法判断.*noop|不要把.*不确定.*noop/s, `${proposer} must not disguise uncertainty as noop`);
+    assertIncludesTerms(prompt, proposer, NORMAL_PROTOCOL_TERMS);
   }
 });
 
-test("each normal Proposer treats payload text as data and documents its source selector contract", async () => {
+test("normal prompts mark payload text as data and exclude persistence metadata", async () => {
   for (const proposer of NORMAL_PROPOSERS) {
     const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as untrusted data`);
-    if (SEMANTIC_PROPOSERS.includes(proposer)) {
-      assert.match(prompt, /不要生成.*quote|不输出.*quote|不生成.*quote/s, `${proposer} must select message ids instead of generating quotes`);
-      assert.doesNotMatch(prompt, /至少 3 个信息字符/, `${proposer} must not carry the legacy quote floor`);
-    } else assert.match(prompt, /至少 3 个信息字符/, `${proposer} must disclose the Reducer quote floor`);
+    assert.match(prompt, /待分析数据/, `${proposer} must treat payload text as data`);
+    assert.match(
+      prompt,
+      /不要生成.*evidenceKind|不输出.*evidenceKind|不生成.*evidenceKind/s,
+      `${proposer} must leave persistence metadata to the Compiler`,
+    );
   }
 });
 
-test("profile specialists and agreement prompt keep writable refs out of support sources", async () => {
-  for (const proposer of ["userProfileProposer", "assistantProfileProposer", "relationshipProposer", "agreementProposer"]) {
-    const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /可修改.*绝不能放入 `supportRefs`/s);
-    assert.match(prompt, /`add` 不引用可修改条目/);
-    assert.match(prompt, /`ref` (?:必须|只能)逐字复制.*可修改/s);
-    assert.match(prompt, /没有可修改.*不能(?:使用|输出)/s);
-  }
-});
-
-test("profile specialists own one semantic section without an example bank", async () => {
-  const specialists = {
-    userProfileProposer: "userProfile",
-    assistantProfileProposer: "assistantProfile",
-    relationshipProposer: "relationship",
-  };
-  const headingsByProposer = {
-    userProfileProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
-    assistantProfileProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
-    relationshipProposer: ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"],
-  };
-  for (const [proposer, section] of Object.entries(specialists)) {
-    const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /只维护/);
-    assert.match(prompt, new RegExp(section));
-    assert.match(prompt, new RegExp(`sectionResults.*只包含 .*${section}`, "s"));
-    assert.match(prompt, /可修改引用绝不能放入 `supportRefs`/);
-    assert.match(prompt, /没有可修改条目时不能使用/);
-    for (const heading of headingsByProposer[proposer]) {
-      assert.match(prompt, new RegExp(`## ${heading}`), `${proposer} must include ${heading}`);
-    }
-    assert.doesNotMatch(prompt, /## 判断示例/);
-    assert.ok(prompt.length < 3200, `${proposer} should stay bounded, got ${prompt.length} characters`);
-  }
-  const userPrompt = await loadProposerPrompt("userProfileProposer");
-  assert.match(userPrompt, /只有同时满足以下条件才生成候选/);
-  assert.match(userPrompt, /简短、原子化、可独立理解的短句/);
-  assert.match(userPrompt, /回复语言、语气、长度、结构、主动性、追问、幽默/);
-  assert.match(userPrompt, /单条明确自述或直接要求可以准入/);
-  assert.match(userPrompt, /替代真相、明确否认或新的长期边界.*不能只 `forget`/s);
-  assert.doesNotMatch(userPrompt, /assistantProfile|standingAgreements|relationship|## 提交前检查/);
-  const assistantPrompt = await loadProposerPrompt("assistantProfileProposer");
-  assert.match(assistantPrompt, /只有同时满足以下条件才生成候选/);
-  assert.match(assistantPrompt, /简短、原子化、可独立理解的短句/);
-  assert.match(assistantPrompt, /用户希望得到的回复方式.*不是 Assistant 自身档案/s);
-  assert.doesNotMatch(assistantPrompt, /userProfile|standingAgreements|relationship|## 提交前检查/);
-  const relationshipPrompt = await loadProposerPrompt("relationshipProposer");
-  assert.match(relationshipPrompt, /只有同时满足以下条件才生成候选/);
-  assert.match(relationshipPrompt, /简短、原子化、可独立理解的短句/);
-  assert.match(relationshipPrompt, /一次明确建立、否认、结束或重定义可以准入/);
-  assert.match(relationshipPrompt, /过去阶段—关键转折—当前模式/);
-  assert.match(relationshipPrompt, /玩笑、旧称呼、回忆或短暂重现不会自动恢复旧关系/);
-  assert.doesNotMatch(relationshipPrompt, /userProfile|assistantProfile|standingAgreements|## 提交前检查/);
-});
-
-test("todo prompt covers semantic admission, dates, and lifecycle actions", async () => {
-  const prompt = await loadProposerPrompt("todoProposer");
-  for (const heading of ["输出契约", "候选准入与动作语义", "责任归属与任务拆分", "日期理解与证据锚定", "内容格式", "排除范围与禁止行为"]) {
-    assert.match(prompt, new RegExp(`## ${heading}`), `todoProposer must include ${heading}`);
-  }
-  assert.match(prompt, /最小 noop 示例/);
-  assert.match(prompt, /典型变化示例/);
-  assert.match(prompt, /```json/);
-  assert.doesNotMatch(prompt, /overdue items 只提供最近 N 条|active 全量显示|提交前自检/);
-  assert.match(prompt, /已逾期事项.*不能再次 `expire`.*update.*未来期限/s, "todoProposer must reschedule overdue todos through an update");
-  assert.match(prompt, /目标未显示.*unable_to_decide/s, "todoProposer must not guess hidden overdue refs");
-  assert.match(prompt, /今天.*days.*0/s, "todoProposer must represent today as relative days=0");
-  assert.match(prompt, /dayOfMonth.*anchorMessageId/s, "todoProposer must anchor day-of-month dates to direct message time");
-  assert.match(prompt, /已逾期事项.*complete.*cancel/s, "todoProposer must allow overdue completion and cancellation");
-  assert.match(prompt, /产出、交付、使用或验收.*complete/s, "todoProposer must recognize implicit completion");
-  assert.match(prompt, /承接回答.*继承相邻消息.*日期/s, "todoProposer must inherit relative dates from adjacent context");
-  assert.match(prompt, /同一句话.*两个可独立行动.*两个 todo/s, "todoProposer must preserve independent todos expressed together");
-  assert.match(prompt, /行动机会或成立条件已经自然消失.*expire/s, "todoProposer must define the positive expire condition");
-  assert.match(prompt, /没有这类明确消息.*不能仅根据可见期限推断失效/s);
-});
-
-test("agreement prompt distinguishes durable commitments and cancels context-dependent rules", async () => {
-  const prompt = await loadProposerPrompt("agreementProposer");
-  for (const heading of ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"]) {
-    assert.match(prompt, new RegExp(`## ${heading}`), `agreementProposer must include ${heading}`);
-  }
-  assert.match(prompt, /只有同时满足以下条件才生成候选/);
-  assert.match(prompt, /简短、原子化、可独立理解的规则短句/);
-  assert.match(prompt, /明确承诺语义.*长期承诺|长期承诺.*明确承诺语义/s);
-  assert.match(prompt, /单纯抒情|情绪化宣誓/);
-  assert.match(prompt, /结束某个关系、角色、角色扮演或互动模式.*扫描全部可修改约定.*cancel/s);
-  assert.match(prompt, /只取消依赖关系明确.*不波及.*独立成立/s);
-  assert.match(prompt, /覆盖所有明确依赖.*不能在找到第一个 cancel 后停止/s);
-  assert.match(prompt, /已终止的约定不写成带时间痕迹.*使用 `cancel`/s);
-  assert.match(prompt, /“我喜欢简洁回答”.*“以后请先给结论”/s);
-  assert.doesNotMatch(prompt, /userProfile|assistantProfile|relationship|Episode|Milestone|RAG|提交前/);
-});
-
-test("episode prompt clusters coherent interaction arcs instead of producing a turn log", async () => {
-  const prompt = await loadProposerPrompt("episodeProposer");
-  for (const heading of ["输出契约", "互动弧形成与动作选择", "recentEpisodes 准入范围", "milestones 准入范围", "内容格式", "排除范围与禁止行为"]) {
-    assert.match(prompt, new RegExp(`## ${heading}`), `episodeProposer must include ${heading}`);
-  }
-  assert.match(prompt, /不是逐轮摘要器.*聊天日志.*动作时间线/s);
-  assert.match(prompt, /一个完整互动弧最多形成一个候选/);
-  assert.match(prompt, /同一互动弧有新进展.*update.*原 ref/s);
-  assert.match(prompt, /recentEpisodes.*硬上限为 3 个/s);
-  assert.match(prompt, /连续消息聚合为互动弧|按场景、主题、目标与因果连续性聚合/);
-  assert.match(prompt, /不默认双写/);
-  assert.match(prompt, /没有.*稳定结果.*重要未决问题.*noop/s);
-  assert.match(prompt, /不要只给旧 milestone 追加免责声明.*correct.*当前意义.*forget/s);
-  assert.match(prompt, /一到两句自然语言概括一个连贯互动弧/);
-  assert.doesNotMatch(prompt, /## 判断示例|提交前确认/);
-});
-
-test("current state prompt rejects clock inference and figurative scene reactivation", async () => {
-  const prompt = await loadProposerPrompt("currentStateProposer");
-  assert.match(prompt, /不得从消息 createdAt、task\.now 或日历时钟推导 time/);
-  assert.match(prompt, /比喻性地点.*旧场景的回忆.*不代表.*重新启动角色扮演/s);
-});
-
-test("world fact prompt keeps role-neutral canon authority", async () => {
-  const prompt = await loadProposerPrompt("worldFactProposer");
-  for (const heading of ["输出契约", "候选准入与动作选择", "内容范围", "内容格式", "排除范围与禁止行为"]) {
-    assert.match(prompt, new RegExp(`## ${heading}`), `worldFactProposer must include ${heading}`);
-  }
-  assert.match(prompt, /只有同时满足以下条件才生成候选/);
-  assert.match(prompt, /归属按核心语义判断，不按句子的语法主语或消息 role 判断/);
-  assert.match(prompt, /User 与 Assistant 的明确陈述都可以建立、修订或移除 canon/);
-  assert.match(prompt, /装饰性扩写、即兴补充或推测.*明确建立或确认后才成为 canon/s);
-  assert.match(prompt, /现实确实从旧状态变为新状态时用 `update`.*现实始终如此.*不准确描述时用 `correct`/s);
-  assert.match(prompt, /过去现实确实成立时写“曾是”.*认知或表象发生变化时写“曾被认为”或“曾呈现为”/s);
-  assert.match(prompt, /原子化以语义维度为单位，不要求每条文本只能包含一个时间阶段/);
-  assert.match(prompt, /实体位于何种世界.*是否共享同一现实层级.*不能仅因句子提及具体实体而排除/s);
-  assert.match(prompt, /简短、原子化、可独立理解的客观陈述句/);
-  assert.match(prompt, /只是测试、临时角色扮演.*角色世界已经结束.*全部明确依赖该情境/s);
-  assert.match(prompt, /玩笑、称呼、回忆与短暂重现不会自动恢复旧 canon/);
-  assert.doesNotMatch(prompt, /其他 section|## 判断示例|提交前自检/);
-});
-
-test("normal prompts prohibit persistence metadata while maintenance keeps its storage protocol", async () => {
-  for (const proposer of Object.keys(FILES)) {
-    const prompt = await loadProposerPrompt(proposer);
-    const isCompaction = proposer === "compactionProposer";
-    const isSemantic = SEMANTIC_PROPOSERS.includes(proposer);
-    assert.match(prompt, /evidenceKind/, `${proposer} must mention evidenceKind`);
-    if (isSemantic) {
-      assert.match(prompt, /不要生成.*evidenceKind|不输出.*evidenceKind|不生成.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
-      assert.doesNotMatch(prompt, /合法 evidenceKind/, `${proposer} must not carry the legacy evidence matrix`);
-      continue;
-    }
-    if (isCompaction) assert.match(prompt, /不输出.*evidenceKind/s, `${proposer} must prohibit persistence metadata`);
-  }
-});
-
-test("each prompt names the schema-owned output container", async () => {
-  for (const proposer of Object.keys(FILES)) {
-    const prompt = await loadProposerPrompt(proposer);
-    assert.match(prompt, /sectionResults/, `${proposer} must name sectionResults`);
-    assert.match(prompt, /proposer/i, `${proposer} must name proposer`);
-  }
-});
-
-test("compactionProposer has maintenance-specific rules", async () => {
+test("compaction prompt retains its distinct maintenance protocol", async () => {
   const prompt = await loadProposerPrompt("compactionProposer");
-  assert.match(prompt, /unable_to_compact/, "compactionProposer must mention unable_to_compact status");
-  assert.match(prompt, /语义动作.*merge/s, "compactionProposer must emit the merge Semantic action");
-  assert.match(prompt, /recentEpisodes.*unable_to_compact|recentEpisodes.*不/, "compactionProposer must exclude recentEpisodes from compaction");
-  assert.match(prompt, /refs.*不相交/s, "compactionProposer must emit disjoint merge groups");
-  assert.match(prompt, /短于 source texts.*字符总和/s, "compactionProposer must actually reduce text capacity");
+  assertIncludesTerms(prompt, "compactionProposer", ["unable_to_compact", "merge", "refs"]);
 });

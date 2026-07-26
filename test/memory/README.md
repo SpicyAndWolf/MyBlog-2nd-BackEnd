@@ -18,6 +18,8 @@ Chat, RAG, server, security, LLM, and developer-tool tests live in their corresp
 
 Shared builders and cross-suite scenarios live under `support/`. Keep test-local inputs and expected values next to the assertions that use them. Byte-for-byte golden output stays beside its owning suite, such as `domain/golden/` for Renderer output.
 
+Prompt tests intentionally cover only the machine protocol, section ownership, and safety boundaries. Editorial wording and semantic guidance are evaluated through focused fixtures rather than line-by-line prose assertions.
+
 Real Provider checks remain explicit networked commands and are not part of the offline suite:
 
 - `npm run probe:memory-v2-provider`

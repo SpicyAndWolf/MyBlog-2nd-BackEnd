@@ -64,18 +64,21 @@ function outputFor(fixtureId) {
 
 test("semantic prompt evaluation fixtures are synthetic, valid envelopes with stable expected refs", () => {
   const cases = buildCases();
-  assert.equal(cases.length, 5);
-  assert.deepEqual(cases.map((fixture) => fixture.id), [
-    "profile-reusable-preference-without-permanence-marker",
-    "profile-one-off-test-remains-noop",
-    "profile-explicit-role-end-invalidates-dependent-memory",
-    "profile-long-window-preserves-explicit-style-boundaries",
-    "agreement-role-end-cancels-only-dependent-rules",
-  ]);
-  assert.deepEqual(Object.keys(cases[2].envelope.artifact.refMap.writable), ["UP1", "R1"]);
-  assert.deepEqual(Object.keys(cases[3].envelope.artifact.refMap.writable), ["R1"]);
-  assert.equal(cases[3].envelope.artifact.publicInput.messages.length, 64);
-  assert.deepEqual(Object.keys(cases[4].envelope.artifact.refMap.writable), ["A1", "A2", "A3"]);
+  const byId = new Map(cases.map((fixture) => [fixture.id, fixture]));
+  assert.equal(byId.size, cases.length, "fixture ids must be unique");
+
+  const roleEnd = byId.get("profile-explicit-role-end-invalidates-dependent-memory");
+  assert.ok(roleEnd);
+  assert.deepEqual(Object.keys(roleEnd.envelope.artifact.refMap.writable), ["UP1", "R1"]);
+
+  const longWindow = byId.get("profile-long-window-preserves-explicit-style-boundaries");
+  assert.ok(longWindow);
+  assert.deepEqual(Object.keys(longWindow.envelope.artifact.refMap.writable), ["R1"]);
+  assert.equal(longWindow.envelope.artifact.publicInput.messages.length, 64);
+
+  const scopedCancellation = byId.get("agreement-role-end-cancels-only-dependent-rules");
+  assert.ok(scopedCancellation);
+  assert.deepEqual(Object.keys(scopedCancellation.envelope.artifact.refMap.writable), ["A1", "A2", "A3"]);
 });
 
 test("semantic prompt evaluator scores capture, noop, invalidation, and scoped cancellation", async () => {

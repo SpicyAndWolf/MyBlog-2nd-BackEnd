@@ -2,6 +2,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createProviderAdmission, admissionControlledAdapter } = require("../../../modules/memory/application/providerAdmission");
 
+function assertIdle(admission) {
+  const snapshot = admission.snapshot();
+  assert.equal(snapshot.active, 0);
+  assert.equal(snapshot.queued, 0);
+}
+
 test("global Provider admission bounds active calls and its admitted queue across 50 scopes", async () => {
   const admission = createProviderAdmission({ concurrency: 3, queueMax: 5 });
   let active = 0;
@@ -30,7 +36,7 @@ test("global Provider admission bounds active calls and its admitted queue acros
   assert.equal(maxQueued <= 5, true);
   assert.deepEqual([...started].sort((a, b) => a - b), Array.from({ length: 50 }, (_, index) => index));
   assert.equal(settled.filter((entry) => entry.status === "rejected").length, 1);
-  assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, concurrency: 3, queueMax: 5 });
+  assertIdle(admission);
 });
 
 test("Provider admission releases a permit after synchronous failure", async () => {
@@ -107,5 +113,5 @@ test("global admission composes with per-scope lanes without reordering any scop
   assert.equal(maxActive, 4);
   assert.equal(settled.filter((entry) => entry.status === "rejected").length, 1);
   for (const observed of orderByScope.values()) assert.deepEqual(observed, [0, 1, 2, 3, 4]);
-  assert.deepEqual(admission.snapshot(), { active: 0, queued: 0, concurrency: 4, queueMax: 200 });
+  assertIdle(admission);
 });

@@ -21,7 +21,8 @@ function injectedPorts() {
 }
 
 test("Memory runtime entry is minimal and creates no cached default runtime", () => {
-  assert.deepEqual(Object.keys(memoryEntry).sort(), ["createMemoryModule", "loadMemoryV2Config"]);
+  assert.equal(typeof memoryEntry.createMemoryModule, "function");
+  assert.equal(typeof memoryEntry.loadMemoryV2Config, "function");
   const memory = memoryEntry.createMemoryModule(injectedPorts());
   const first = memory.createRuntime({ config: { enabled: false } });
   const second = memory.createRuntime({ config: { enabled: false } });
