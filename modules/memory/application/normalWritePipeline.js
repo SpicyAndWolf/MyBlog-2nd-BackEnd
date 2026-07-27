@@ -908,10 +908,13 @@ function createNormalWritePipeline({ observer, providerAdapter, repositories, co
         return { status: "queued", outcome: adapterResult.reason, taskId: envelope.task.taskId };
       }
       if (adapterResult.status === "error") {
-        if (adapterResult.reason === "output_schema_invalid" && adapterResult.detail?.boundary === "output") {
-          adapterResult.reason = "semantic_schema_invalid";
-        }
-        return recordAdapterError(envelope, adapterResult);
+        const isSemanticOutputFailure = adapterResult.reason === "output_schema_invalid"
+          && adapterResult.detail?.boundary === "output"
+          && !["transport", "wire_schema"].includes(adapterResult.detail?.validationLayer)
+          && !adapterResult.detail?.transportError;
+        return recordAdapterError(envelope, isSemanticOutputFailure
+          ? { ...adapterResult, reason: "semantic_schema_invalid" }
+          : adapterResult);
       }
       semanticResult = adapterResult.output;
       if (containsUnableToDecide(semanticResult)) {

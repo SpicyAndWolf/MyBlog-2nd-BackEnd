@@ -30,6 +30,7 @@ function numberValue(row, snake, camel, fallback = 0) {
 function schemaErrorLogDetail(detail, feedback) {
   return {
     boundary: detail?.boundary ?? null,
+    ...(detail?.validationLayer ? { validationLayer: detail.validationLayer } : {}),
     ...(detail?.specialist ? { specialist: detail.specialist } : {}),
     ...(detail?.shape ? { shape: detail.shape } : {}),
     ...(detail?.transportError ? { transportError: detail.transportError } : {}),

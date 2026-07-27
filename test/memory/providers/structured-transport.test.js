@@ -2,8 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { parseToolArguments } = require("../../../modules/memory/infrastructure/providers/deepSeekStrictToolsTransport");
 const { compileOpencodeGoSchema } = require("../../../modules/memory/infrastructure/providers/opencodeGoSchemaCompiler");
+const { validateLocalJsonSchema } = require("../../../modules/memory/infrastructure/providers/localJsonSchemaValidator");
 const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
 const { buildStructuredMessages } = require("../../../modules/memory/infrastructure/providers/structuredHttpRequest");
+const { parseJsonObjectContent } = require("../../../modules/memory/infrastructure/providers/structuredJsonContent");
 
 test("DeepSeek tool argument parser only repairs excess trailing closing braces", () => {
   assert.deepEqual(parseToolArguments('{"ok":true}}'), {
@@ -289,7 +291,7 @@ test("OpenCode Go JSON object adapter puts the bound schema in the prompt and pa
         ok: true,
         json: async () => ({
           model: "mimo-v2.5-pro",
-          choices: [{ finish_reason: "stop", message: { content: '{"ids":[1]}' } }],
+          choices: [{ finish_reason: "stop", message: { content: '{"ids":[1]}\n\n{"ids"' } }],
         }),
       };
     },
@@ -323,7 +325,8 @@ test("OpenCode Go JSON object adapter puts the bound schema in the prompt and pa
   });
 
   assert.equal(requests[0].url, "https://opencode.test/v1/chat/completions");
-  assert.equal(requests[0].body.reasoning_effort, "low");
+  assert.deepEqual(requests[0].body.thinking, { type: "disabled" });
+  assert.equal(Object.hasOwn(requests[0].body, "reasoning_effort"), false);
   assert.equal(requests[0].body.max_tokens, 1024);
   assert.deepEqual(requests[0].body.response_format, { type: "json_object" });
   assert.equal(Object.hasOwn(requests[0].body.response_format, "json_schema"), false);
@@ -337,7 +340,63 @@ test("OpenCode Go JSON object adapter puts the bound schema in the prompt and pa
   assert.equal(requests[0].body.messages[2].content, '{"ids":[]}');
   assert.match(requests[0].body.messages[3].content, /violated minItems/);
   assert.deepEqual(result.output, { ids: [1] });
+  assert.equal(result.rawOutput, '{"ids":[1]}\n\n{"ids"');
+  assert.equal(result.transportRecovery, "accepted_schema_valid_json_prefix");
+  assert.equal(result.transportError, null);
   assert.equal(result.finishReason, "stop");
+});
+
+test("OpenCode Go JSON object parser accepts a schema-valid object before an incomplete duplicate", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["ids"],
+    properties: {
+      ids: { type: "array", minItems: 1, items: { type: "integer" } },
+    },
+  };
+  const validateCandidate = (candidate) => validateLocalJsonSchema(schema, candidate);
+
+  for (const content of [
+    '{"ids":[1]}\n\n{"ids"',
+    '{"ids":[1]}\n\n{"',
+    '{"ids":[1]}\n\n```json',
+  ]) {
+    const result = parseJsonObjectContent(content, {
+      finishReason: "abort",
+      validateCandidate,
+    });
+    assert.deepEqual(result.output, { ids: [1] });
+    assert.equal(result.transportError, null);
+    assert.equal(result.transportRecovery, "accepted_schema_valid_json_prefix");
+    assert.equal(result.schemaValidation.ok, true);
+  }
+});
+
+test("OpenCode Go JSON object parser never hides ambiguous or schema-invalid output", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["ids"],
+    properties: {
+      ids: { type: "array", minItems: 1, items: { type: "integer" } },
+    },
+  };
+  const validateCandidate = (candidate) => validateLocalJsonSchema(schema, candidate);
+
+  for (const content of [
+    '{"ids":[1]}\n\n{"ids":[2]}',
+    '{"ids":[1]}\n\nunexpected prose',
+    '{"ids":[]}\n\n{"ids"',
+  ]) {
+    const result = parseJsonObjectContent(content, {
+      finishReason: "stop",
+      validateCandidate,
+    });
+    assert.equal(result.output, null);
+    assert.equal(result.transportError, "content_invalid_json");
+    assert.equal(result.transportRecovery, null);
+  }
 });
 
 test("OpenCode Go schema compiler strips nested uniqueItems without touching supported keywords", () => {
@@ -388,4 +447,45 @@ test("OpenCode Go adapter routes model and reasoning effort by proposer with pro
   await invoke({ ...request, proposer: "relationshipProposer" });
   await invoke({ ...request, proposer: "episodeProposer" });
   assert.deepEqual(requests, [["hy3", "low"], ["deepseek-v4-pro", "high"], ["hy3", "none"]]);
+});
+
+test("OpenCode Go inference controls follow the effective proposer model", async () => {
+  const requests = [];
+  const invoke = createStructuredTransport({
+    adapter: "opencode-go-json-object",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "hy3",
+    reasoningEffort: "low",
+    thinkingMode: "enabled",
+    proposerModels: {
+      episodeProposer: "mimo-v2.5-pro",
+    },
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+  }, {
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ finish_reason: "stop", message: { content: "{}" } }],
+        }),
+      };
+    },
+  });
+  const request = {
+    systemPrompt: "prompt",
+    userPayload: {},
+    responseSchema: { name: "x", schema: {} },
+  };
+  await invoke({ ...request, proposer: "todoProposer" });
+  await invoke({ ...request, proposer: "episodeProposer" });
+
+  assert.equal(requests[0].model, "hy3");
+  assert.equal(requests[0].reasoning_effort, "low");
+  assert.equal(Object.hasOwn(requests[0], "thinking"), false);
+  assert.equal(requests[1].model, "mimo-v2.5-pro");
+  assert.deepEqual(requests[1].thinking, { type: "enabled" });
+  assert.equal(Object.hasOwn(requests[1], "reasoning_effort"), false);
 });

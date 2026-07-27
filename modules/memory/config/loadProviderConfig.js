@@ -25,6 +25,7 @@ const PROPOSER_IDS = Object.freeze([
 ]);
 // 与 chat 模块 opencodeGoOpenai 的 REASONING_EFFORT_OPTIONS 全集保持一致。
 const REASONING_EFFORT_VALUES = Object.freeze(["max", "xhigh", "high", "medium", "low", "minimal", "none"]);
+const THINKING_MODE_VALUES = Object.freeze(["enabled", "disabled"]);
 // 三个 Profile 专家未单独覆盖时，继承 profileRelationshipProposer 的整条覆盖（model 与 reasoningEffort）。
 const PROFILE_INHERIT_PROPOSERS = Object.freeze(["userProfileProposer", "assistantProfileProposer", "relationshipProposer"]);
 
@@ -54,6 +55,17 @@ function parseReasoningEffort(label, value) {
     throw new Error(`Env ${label} must be one of: ${REASONING_EFFORT_VALUES.join(", ")}`);
   }
   return effort;
+}
+
+function parseThinkingMode(label, value, fallback) {
+  const raw = value === undefined || String(value).trim() === ""
+    ? fallback
+    : value;
+  const mode = String(raw ?? "").trim().toLowerCase();
+  if (!THINKING_MODE_VALUES.includes(mode)) {
+    throw new Error(`Env ${label} must be one of: ${THINKING_MODE_VALUES.join(", ")}`);
+  }
+  return mode;
 }
 
 // 每个 proposer 的覆盖支持两种形态：
@@ -152,10 +164,18 @@ function loadMemoryProviderConfig(env = {}) {
     maxOutputTokens: optionalInt(env, "CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS", 8192, { min: 1 }),
   };
   if (adapter === "deepseek-strict-tools") {
-    config.thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
+    config.thinkingMode = parseThinkingMode(
+      "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
+      requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE"),
+    );
   }
   if (OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
     config.reasoningEffort = parseReasoningEffort("CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT", env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT);
+    config.thinkingMode = parseThinkingMode(
+      "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE",
+      env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE,
+      "disabled",
+    );
   }
   return Object.freeze(config);
 }
@@ -164,6 +184,7 @@ module.exports = {
   ADAPTER_IDS,
   PROPOSER_IDS,
   REASONING_EFFORT_VALUES,
+  THINKING_MODE_VALUES,
   loadMemoryProviderConfig,
   resolveMemoryProviderModel,
   resolveMemoryProviderReasoningEffort,

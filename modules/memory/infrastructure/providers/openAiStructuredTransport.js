@@ -1,9 +1,9 @@
 const {
   assertStructuredRequestLimits,
-  isAbortedIncompleteJson,
   isSafetySignal,
 } = require("./providerProtocol");
 const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
+const { parseStrictJsonContent } = require("./structuredJsonContent");
 
 function createOpenAiStructuredTransport({
   baseUrl,
@@ -18,6 +18,7 @@ function createOpenAiStructuredTransport({
   extraBody = {},
   compileSchema = (schema) => schema,
   httpRequestBuilder = buildOpenAiHttpRequest,
+  parseContent = parseStrictJsonContent,
   validateOutputSchema = null,
 } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
@@ -58,21 +59,26 @@ function createOpenAiStructuredTransport({
       const rawOutput = message?.content ?? message?.parsed;
       let output = content;
       let transportError = null;
+      let transportRecovery = null;
+      let outputSchemaValidation = null;
       if (content == null) {
         output = null;
         transportError = "content_missing";
       } else if (typeof content === "string") {
-        try { output = JSON.parse(content); }
-        catch {
-          output = null;
-          transportError = isAbortedIncompleteJson(content, finishReason)
-            ? "content_incomplete_json"
-            : "content_invalid_json";
-        }
+        const parsed = parseContent(content, {
+          finishReason,
+          validateCandidate: typeof validateOutputSchema === "function"
+            ? (candidate) => validateOutputSchema(request?.responseSchema?.schema, candidate)
+            : null,
+        });
+        output = parsed.output;
+        transportError = parsed.transportError;
+        transportRecovery = parsed.transportRecovery;
+        outputSchemaValidation = parsed.schemaValidation;
       }
-      const outputSchemaValidation = !transportError && typeof validateOutputSchema === "function"
-        ? validateOutputSchema(request?.responseSchema?.schema, output)
-        : null;
+      if (!transportError && !outputSchemaValidation && typeof validateOutputSchema === "function") {
+        outputSchemaValidation = validateOutputSchema(request?.responseSchema?.schema, output);
+      }
       return {
         output,
         rawOutput,
@@ -80,7 +86,7 @@ function createOpenAiStructuredTransport({
         model: data?.model ?? requestedModel,
         usage: data?.usage ?? null,
         transportError,
-        transportRecovery: null,
+        transportRecovery,
         outputSchemaErrors: outputSchemaValidation?.ok === false
           ? outputSchemaValidation.errors
           : null,

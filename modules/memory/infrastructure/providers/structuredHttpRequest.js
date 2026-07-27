@@ -1,9 +1,9 @@
 const {
   resolveMemoryProviderModel,
-  resolveMemoryProviderReasoningEffort,
 } = require("../../config/loadProviderConfig");
 const { compileDeepSeekSchema } = require("./deepSeekSchemaCompiler");
 const { compileOpencodeGoSchema } = require("./opencodeGoSchemaCompiler");
+const { buildOpencodeGoInferenceControls } = require("./opencodeGoRequestPolicy");
 
 function normalizeBaseUrl(value) {
   const url = new URL(String(value || "").trim());
@@ -151,7 +151,7 @@ function buildStructuredHttpRequest(config, request) {
     return buildOpenAiHttpRequest(config, request, {
       compileSchema: compileOpencodeGoSchema,
       extraBody: ({ proposer, model }) => ({
-        reasoning_effort: resolveMemoryProviderReasoningEffort(config, proposer),
+        ...buildOpencodeGoInferenceControls(config, proposer),
         ...(typeof config.extraBody === "function"
           ? config.extraBody({ proposer, model })
           : config.extraBody),
@@ -161,7 +161,7 @@ function buildStructuredHttpRequest(config, request) {
   if (config?.adapter === "opencode-go-json-object") {
     return buildOpenAiJsonObjectHttpRequest(config, request, {
       extraBody: ({ proposer, model }) => ({
-        reasoning_effort: resolveMemoryProviderReasoningEffort(config, proposer),
+        ...buildOpencodeGoInferenceControls(config, proposer),
         ...(typeof config.extraBody === "function"
           ? config.extraBody({ proposer, model })
           : config.extraBody),

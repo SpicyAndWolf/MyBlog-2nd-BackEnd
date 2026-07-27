@@ -210,6 +210,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
                 specialistResponse,
                 specialistValidation: { errors: specialistResponse.outputSchemaErrors },
                 normalizedOutput: specialistResponse.output,
+                validationLayer: "wire_schema",
               };
               continue;
             }
@@ -226,6 +227,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
                 specialistResponse,
                 specialistValidation,
                 normalizedOutput: normalized.output,
+                validationLayer: specialistResponse?.transportError ? "transport" : "semantic",
               };
               continue;
             }
@@ -239,6 +241,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               reason: "output_schema_invalid",
               detail: {
                 boundary: "output",
+                validationLayer: invalidRun.validationLayer,
                 specialist: invalidRun.specialist.proposer,
                 errors: flatWireRepairErrors(
                   invalidRun.specialistValidation.errors,
@@ -310,6 +313,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           reason: "output_schema_invalid",
           detail: {
             boundary: "output",
+            validationLayer: "wire_schema",
             errors: flatWireRepairErrors(response.outputSchemaErrors, response?.output, task),
             shape: summarizeOutputShape(response?.output),
             ...(response?.finishReason ? { finishReason: response.finishReason } : {}),
@@ -330,6 +334,7 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
           reason: "output_schema_invalid",
           detail: {
             boundary: "output",
+            validationLayer: response?.transportError ? "transport" : "semantic",
             errors: flatWireRepairErrors(validated.errors, response?.output, task),
             shape: summarizeOutputShape(output),
             ...(response?.transportError ? { transportError: response.transportError } : {}),

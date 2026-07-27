@@ -1,7 +1,8 @@
-const { resolveMemoryProviderReasoningEffort } = require("../../config/loadProviderConfig");
 const { createOpenAiStructuredTransport } = require("./openAiStructuredTransport");
 const { validateLocalJsonSchema } = require("./localJsonSchemaValidator");
+const { buildOpencodeGoInferenceControls } = require("./opencodeGoRequestPolicy");
 const { buildOpenAiJsonObjectHttpRequest } = require("./structuredHttpRequest");
+const { parseJsonObjectContent } = require("./structuredJsonContent");
 
 // OpenCode Go JSON mode deliberately avoids the gateway's json_schema guided
 // decoding. The bound schema is rendered into the trusted system prompt and
@@ -10,18 +11,25 @@ function createOpencodeGoJsonObjectTransport({
   model,
   proposerModels = {},
   reasoningEffort = "none",
+  thinkingMode = "disabled",
   extraBody,
   ...options
 } = {}) {
-  const providerConfig = { model, proposerModels, reasoningEffort };
+  const providerConfig = {
+    model,
+    proposerModels,
+    reasoningEffort,
+    thinkingMode,
+  };
   return createOpenAiStructuredTransport({
     model,
     proposerModels,
     ...options,
     httpRequestBuilder: buildOpenAiJsonObjectHttpRequest,
+    parseContent: parseJsonObjectContent,
     validateOutputSchema: validateLocalJsonSchema,
     extraBody: (request) => ({
-      reasoning_effort: resolveMemoryProviderReasoningEffort(providerConfig, request.proposer),
+      ...buildOpencodeGoInferenceControls(providerConfig, request.proposer),
       ...(typeof extraBody === "function" ? extraBody(request) : extraBody),
     }),
   });

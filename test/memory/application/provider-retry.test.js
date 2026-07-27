@@ -176,6 +176,7 @@ test("transport repair can be disabled without disabling semantic repair", async
         rejectedOutput: '{"broken":',
         detail: {
           boundary: "output",
+          validationLayer: "transport",
           transportError: "content_invalid_json",
           errors: [{ path: "$", message: "must be an object" }],
         },
@@ -190,6 +191,8 @@ test("transport repair can be disabled without disabling semantic repair", async
   assert.equal(task.stage_payload.transportInvalidAttempts, undefined);
   assert.equal(task.stage_payload.schemaInvalidAttempts, undefined);
   assert.equal(task.stage_payload.schemaRejectedOutputs.length, 1);
+  assert.deepEqual(data.inspect.ops.map((entry) => entry.outcome), ["output_schema_invalid"]);
+  assert.equal(data.inspect.ops[0].detail.validationLayer, "transport");
 });
 
 test("input schema invalid never retries", async () => {

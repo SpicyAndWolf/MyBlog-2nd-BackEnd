@@ -118,7 +118,7 @@ test("provider config accepts the OpenCode Go adapter without thinking mode env"
   const provider = loadMemoryProviderConfig(env);
   assert.equal(provider.adapter, "opencode-go-json-schema");
   assert.equal(provider.reasoningEffort, "none");
-  assert.equal(provider.thinkingMode, undefined);
+  assert.equal(provider.thinkingMode, "disabled");
 });
 
 test("provider config accepts OpenCode Go JSON object mode with reasoning overrides", () => {
@@ -133,6 +133,16 @@ test("provider config accepts OpenCode Go JSON object mode with reasoning overri
   assert.equal(provider.reasoningEffort, "low");
   assert.equal(resolveMemoryProviderModel(provider, "relationshipProposer"), "hy3");
   assert.equal(resolveMemoryProviderReasoningEffort(provider, "relationshipProposer"), "none");
+});
+
+test("OpenCode Go provider config validates an explicit thinking mode", () => {
+  const env = validEnv();
+  env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "opencode-go-json-object";
+  env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT = "low";
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "ENABLED";
+  assert.equal(loadMemoryProviderConfig(env).thinkingMode, "enabled");
+  env.CHAT_MEMORY_V2_PROVIDER_THINKING_MODE = "sometimes";
+  assert.throws(() => loadMemoryProviderConfig(env), /PROVIDER_THINKING_MODE must be one of/);
 });
 
 test("OpenCode Go provider config requires an explicit reasoning effort", () => {
