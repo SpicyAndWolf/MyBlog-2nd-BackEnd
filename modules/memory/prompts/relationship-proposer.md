@@ -14,6 +14,20 @@
 - `add` 提供完整 `text`；自然发展用 `update`；旧描述原本不准确用 `correct`；明确要求删除或整条已无连续性价值才用 `forget`。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
 
+## JSON 输出示例
+
+最短 noop：
+
+```json
+{"sectionStatuses":{"relationship":"noop"},"changes":[]}
+```
+
+常规 changes（token 仅表示 schema 中实际显示的枚举值）：
+
+```json
+{"sectionStatuses":{"relationship":"changes"},"changes":[{"section":"relationship","action":"add","text":"遇到分歧时倾向共同复盘。","sources":["message:101"]}]}
+```
+
 ## 候选准入与动作选择
 
 只有同时满足以下条件才生成候选：

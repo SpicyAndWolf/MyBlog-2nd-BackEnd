@@ -15,6 +15,20 @@
 - `recentEpisodes` 每个 task 通常有 0–2 个 change，硬上限为 3 个；不能为凑数量合并无关互动弧。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
 
+## JSON 输出示例
+
+最短 noop：
+
+```json
+{"sectionStatuses":{"recentEpisodes":"noop","milestones":"noop"},"changes":[]}
+```
+
+常规 changes（token 仅表示 schema 中实际显示的枚举值）：
+
+```json
+{"sectionStatuses":{"recentEpisodes":"changes","milestones":"noop"},"changes":[{"section":"recentEpisodes","action":"add","text":"双方澄清需求后确定了新的协作方式。","sources":["message:101"]}]}
+```
+
 ## 互动弧形成与动作选择
 
 1. 按场景、主题、目标与因果连续性聚合全部可见消息；一个完整互动弧最多形成一个候选，不能按消息或过渡动作切片。

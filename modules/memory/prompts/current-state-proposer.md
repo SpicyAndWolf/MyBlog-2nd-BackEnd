@@ -14,6 +14,20 @@
 - `set` 或 `correct` 提供 `target + text`；`clear` 或 `forget` 提供 `target`、不带 `text`。set 表示状态变化，correct 表示明确纠正误记；clear/forget 都清空当前字段。
 - 不输出 path、真实 ID、持久化 op、evidenceKind、quote、contentHash 或 schema 之外的字段；Compiler 从 target 确定 path。
 
+## JSON 输出示例
+
+最短 noop：
+
+```json
+{"sectionStatuses":{"scene":"noop"},"changes":[]}
+```
+
+常规 changes（token 仅表示 schema 中实际显示的枚举值）：
+
+```json
+{"sectionStatuses":{"scene":"changes"},"changes":[{"section":"scene","action":"set","target":"S-LOCATION","text":"屋顶","sources":["message:101"]}]}
+```
+
 字段语义由 target 指示：location 是正文明确的当前主要地点；time 是正文明确的当前剧情时间；mood 是相对持续的整体氛围；note 是继续影响下一轮的当前条件或进行中活动。不得从消息 createdAt、task.now 或日历时钟推导 time。比喻性地点、对旧场景的回忆、旧称呼或短暂风格重现都不代表已回到该地点或重新启动角色扮演。计划、提议、推测、瞬时反应、一次性动作、已结束事件和其他记忆类型都不写入 scene。
 
 语义未变不重复 set；明确证明旧值失效但无替代值才 clear；仅仅没再提及不能 clear。同批冲突取更晚且明确已发生的陈述。

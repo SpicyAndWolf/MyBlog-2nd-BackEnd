@@ -13,10 +13,33 @@
 - 有确定变化用 `changes`；确认没有待办候选或无需修改时用 `noop`；只有发现可能变化却因信息不足、指代不明、目标未显示或无法判断而不能裁决时才用 `unable_to_decide`。不要把无法判断伪装成 noop。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash 或 schema 之外的字段。
 
-相对日期示例（token 仅表示 schema 中实际显示的枚举值）：
+## JSON 输出示例
+
+最短 noop：
 
 ```json
-{"sectionStatuses":{"todos":"changes"},"changes":[{"section":"todos","action":"add","text":"归还图书","actor":"user","requester":"user","dueMode":"relativeDays","dueValue":"1","anchorSource":"message:101","sources":["message:101"]}]}
+{"sectionStatuses":{"todos":"noop"},"changes":[]}
+```
+
+常规 changes——相对日期（token 仅表示 schema 中实际显示的枚举值）：
+
+```json
+{
+  "sectionStatuses": { "todos": "changes" },
+  "changes": [
+    {
+      "section": "todos",
+      "action": "add",
+      "text": "归还图书",
+      "actor": "user",
+      "requester": "user",
+      "dueMode": "relativeDays",
+      "dueValue": "1",
+      "anchorSource": "message:101",
+      "sources": ["message:101"]
+    }
+  ]
+}
 ```
 
 ## 候选准入与动作语义

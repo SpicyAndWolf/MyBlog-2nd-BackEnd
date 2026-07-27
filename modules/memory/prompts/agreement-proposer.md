@@ -14,6 +14,20 @@
 - `add` 提供完整 `text`；`update | correct` 提供 `target` 和完整新 `text`；`forget | cancel` 提供 `target` 且不带 `text`。
 - 不生成 itemId、持久化 op、evidenceKind、quote、contentHash、facet、canonicalKey、factBasis 或其他存储字段。
 
+## JSON 输出示例
+
+最短 noop：
+
+```json
+{"sectionStatuses":{"standingAgreements":"noop"},"changes":[]}
+```
+
+常规 changes（token 仅表示 schema 中实际显示的枚举值）：
+
+```json
+{"sectionStatuses":{"standingAgreements":"changes"},"changes":[{"section":"standingAgreements","action":"add","text":"修改生产数据前须先确认。","sources":["message:101"]}]}
+```
+
 ## 候选准入与动作选择
 
 只有同时满足以下条件才生成候选：

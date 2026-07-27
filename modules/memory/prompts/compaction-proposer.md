@@ -11,15 +11,15 @@
 - 有安全合并项：`status=changes`。没有：`status=unable_to_compact`。不要输出 `noop` 或 `unable_to_decide`。
 - recentEpisodes 不参与 compaction；目标为 `recentEpisodes` 时直接 `unable_to_compact`。
 
-## 最小输出结构
+## JSON 输出示例
 
-`0` 仅示意类型；实际必须复制 `task.tickId`，并将 `<TARGET_SECTION>` 替换为 `task.targetSections` 中唯一的 section：
+最短无变更输出（本 proposer 不允许 `noop`，必须使用 `unable_to_compact`）。`0` 仅示意类型；实际必须复制 `task.tickId`，并将 `<TARGET_SECTION>` 替换为 `task.targetSections` 中唯一的 section：
 
 ```json
 {"tickId":0,"proposer":"compactionProposer","sectionResults":{"<TARGET_SECTION>":{"status":"unable_to_compact"}}}
 ```
 
-典型合并示例（section 和引用仅表示输入中确实显示的占位值）：
+常规 changes（section 和引用仅表示输入中确实显示的占位值）：
 
 ```json
 {"tickId":0,"proposer":"compactionProposer","sectionResults":{"userProfile":{"status":"changes","changes":[{"action":"merge","refs":["UP1","UP2"],"text":"用户不喜欢被连续追问。"}]}}}

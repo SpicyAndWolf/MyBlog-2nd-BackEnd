@@ -2,6 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { FILES, loadProposerPrompt } = require("../../../modules/memory/prompts");
 const { TARGETS } = require("../../../modules/memory/contracts");
+const { validateSemanticResult } = require("../../../modules/memory/contracts/semantic");
+const { flatWireToSemanticOutput } = require("../../../modules/memory/infrastructure/providers/flatWireProtocol");
 
 const PROMPT_SECTIONS = Object.freeze({
   currentStateProposer: TARGETS.scene.sections,
@@ -15,6 +17,16 @@ const PROMPT_SECTIONS = Object.freeze({
 });
 
 const NORMAL_PROPOSERS = Object.freeze(Object.keys(PROMPT_SECTIONS));
+const TARGET_KEYS_BY_PROPOSER = Object.freeze({
+  currentStateProposer: "scene",
+  todoProposer: "todos",
+  agreementProposer: "standingAgreements",
+  episodeProposer: "episodes",
+  userProfileProposer: "profileRelationship",
+  assistantProfileProposer: "profileRelationship",
+  relationshipProposer: "profileRelationship",
+  worldFactProposer: "worldFacts",
+});
 const MAINTENANCE_PROTOCOL_TERMS = Object.freeze(["tickId", "proposer"]);
 const NORMAL_PROTOCOL_TERMS = Object.freeze([
   "sectionStatuses",
@@ -29,6 +41,10 @@ function assertIncludesTerms(prompt, proposer, terms) {
   for (const term of terms) {
     assert.equal(prompt.includes(term), true, `${proposer} must document the ${term} protocol field`);
   }
+}
+
+function jsonExamples(prompt) {
+  return [...prompt.matchAll(/```json\s*([\s\S]*?)\s*```/g)].map((match) => JSON.parse(match[1]));
 }
 
 test("registered Proposer prompts load as non-empty text", async () => {
@@ -75,6 +91,63 @@ test("prompts retain the machine protocol without freezing editorial wording", a
   for (const proposer of ["compactionProposer", "librarianProposer"]) {
     const prompt = await loadProposerPrompt(proposer);
     assertIncludesTerms(prompt, proposer, MAINTENANCE_PROTOCOL_TERMS);
+  }
+});
+
+test("every Proposer prompt retains a minimal no-change and a regular changes JSON example", async () => {
+  for (const proposer of Object.keys(FILES)) {
+    const examples = jsonExamples(await loadProposerPrompt(proposer));
+    assert.ok(examples.length >= 2, `${proposer} must retain at least two JSON examples`);
+
+    if (proposer === "compactionProposer") {
+      for (const example of examples) {
+        const task = {
+          tickId: 0,
+          proposer,
+          targetKey: "profileRelationship",
+          targetSections: Object.keys(example.sectionResults),
+        };
+        assert.deepEqual(validateSemanticResult(example, task), { ok: true, errors: [] });
+      }
+      assert.ok(examples.some((example) => (
+        Object.values(example.sectionResults || {}).some((result) => result.status === "unable_to_compact")
+      )), "compactionProposer must retain its minimal unable_to_compact example");
+      assert.ok(examples.some((example) => (
+        Object.values(example.sectionResults || {}).some((result) => result.status === "changes")
+      )), "compactionProposer must retain a regular changes example");
+      continue;
+    }
+
+    if (proposer === "librarianProposer") {
+      const task = { tickId: 0, proposer, targetKey: "librarian" };
+      for (const example of examples) {
+        assert.deepEqual(validateSemanticResult(example, task), { ok: true, errors: [] });
+      }
+      assert.ok(examples.some((example) => example.status === "noop" && example.operations?.length === 0));
+      assert.ok(examples.some((example) => example.status === "changes" && example.operations?.length > 0));
+      continue;
+    }
+
+    const expectedSections = PROMPT_SECTIONS[proposer];
+    const task = {
+      tickId: 0,
+      proposer,
+      targetKey: TARGET_KEYS_BY_PROPOSER[proposer],
+      targetSections: expectedSections,
+    };
+    for (const example of examples) {
+      const semantic = flatWireToSemanticOutput(example, task);
+      assert.deepEqual(validateSemanticResult(semantic, task), { ok: true, errors: [] });
+    }
+    assert.ok(examples.some((example) => (
+      Object.keys(example.sectionStatuses || {}).length === expectedSections.length
+      && expectedSections.every((section) => example.sectionStatuses[section] === "noop")
+      && example.changes?.length === 0
+    )), `${proposer} must retain its minimal noop example`);
+    assert.ok(examples.some((example) => (
+      Object.values(example.sectionStatuses || {}).includes("changes")
+      && example.changes?.length > 0
+    )), `${proposer} must retain a regular changes example`);
   }
 });
 

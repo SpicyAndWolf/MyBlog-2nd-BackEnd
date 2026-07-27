@@ -1,5 +1,10 @@
 # Repository Agent Instructions
 
+## Memory prompt example protection
+
+- `modules/memory/prompts/*.md` 中的 JSON 输出示例是受保护的 schema 兼容性基线。每个 prompt 都必须保留最短 noop（若 schema 不支持 noop，则保留其合法的最短无变更输出）和常规 changes 示例。
+- 未经用户明确要求，不得删除、替换、改写、压缩、重排、移动或重新格式化这些示例。若 schema 变更导致示例失效，必须先向用户说明并取得明确同意，再做最小必要修改，同时更新对应测试。
+
 ## 示例
 
 ```

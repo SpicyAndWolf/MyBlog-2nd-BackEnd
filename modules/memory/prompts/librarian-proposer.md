@@ -34,3 +34,17 @@
 
 输出必须严格匹配 schema。`tickId` 原样复制，`proposer` 固定为 `librarianProposer`。
 本 proposer 使用顶层 `status` / `operations`，不要输出普通 proposer 的 `sectionResults`。有至少一个操作时使用 `status=changes`；`noop` 时 `operations` 必须是空数组。
+
+## JSON 输出示例
+
+最短 noop（`0` 仅示意类型，实际必须复制 `task.tickId`）：
+
+```json
+{"tickId":0,"proposer":"librarianProposer","status":"noop","operations":[]}
+```
+
+常规 changes（引用仅表示输入中实际显示的占位值）：
+
+```json
+{"tickId":0,"proposer":"librarianProposer","status":"changes","operations":[{"action":"move","ref":"UP1","toSection":"standingAgreements"}]}
+```
