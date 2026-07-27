@@ -1,6 +1,15 @@
 const { LIBRARIAN_PROPOSER } = require("../contracts/constants");
 
-const ADAPTER_IDS = Object.freeze(["openai-json-schema", "deepseek-strict-tools", "opencode-go-json-schema"]);
+const ADAPTER_IDS = Object.freeze([
+  "openai-json-schema",
+  "deepseek-strict-tools",
+  "opencode-go-json-schema",
+  "opencode-go-json-object",
+]);
+const OPENCODE_GO_ADAPTER_IDS = new Set([
+  "opencode-go-json-schema",
+  "opencode-go-json-object",
+]);
 const PROPOSER_IDS = Object.freeze([
   "currentStateProposer",
   "todoProposer",
@@ -71,8 +80,8 @@ function parseProposerOverride(name, proposer, value, adapter) {
     override.model = model;
   }
   if (value.reasoningEffort !== undefined) {
-    if (adapter !== "opencode-go-json-schema") {
-      throw new Error(`Env ${name}.${proposer}.reasoningEffort requires the opencode-go-json-schema adapter`);
+    if (!OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
+      throw new Error(`Env ${name}.${proposer}.reasoningEffort requires an OpenCode Go adapter`);
     }
     override.reasoningEffort = parseReasoningEffort(`${name}.${proposer}.reasoningEffort`, value.reasoningEffort);
   }
@@ -145,7 +154,7 @@ function loadMemoryProviderConfig(env = {}) {
   if (adapter === "deepseek-strict-tools") {
     config.thinkingMode = requiredString(env, "CHAT_MEMORY_V2_PROVIDER_THINKING_MODE").toLowerCase();
   }
-  if (adapter === "opencode-go-json-schema") {
+  if (OPENCODE_GO_ADAPTER_IDS.has(adapter)) {
     config.reasoningEffort = parseReasoningEffort("CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT", env.CHAT_MEMORY_V2_PROVIDER_REASONING_EFFORT);
   }
   return Object.freeze(config);

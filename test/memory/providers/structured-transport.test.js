@@ -271,6 +271,75 @@ test("OpenCode Go adapter strips uniqueItems, folds descriptions, and disables r
   assert.equal(result.model, "hy3");
 });
 
+test("OpenCode Go JSON object adapter puts the bound schema in the prompt and parses JSON locally", async () => {
+  const requests = [];
+  const invoke = createStructuredTransport({
+    adapter: "opencode-go-json-object",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "mimo-v2.5-pro",
+    reasoningEffort: "low",
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        json: async () => ({
+          model: "mimo-v2.5-pro",
+          choices: [{ finish_reason: "stop", message: { content: '{"ids":[1]}' } }],
+        }),
+      };
+    },
+  });
+  const responseSchema = {
+    name: "probe",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["ids"],
+      properties: {
+        ids: {
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "integer", enum: [1, 2] },
+        },
+      },
+    },
+  };
+  const result = await invoke({
+    proposer: "relationshipProposer",
+    systemPrompt: "base prompt",
+    userPayload: { value: 1 },
+    responseSchema,
+    repairContext: {
+      assistantOutput: '{"ids":[]}',
+      userMessage: "The prior JSON violated minItems; return a corrected replacement.",
+    },
+  });
+
+  assert.equal(requests[0].url, "https://opencode.test/v1/chat/completions");
+  assert.equal(requests[0].body.reasoning_effort, "low");
+  assert.equal(requests[0].body.max_tokens, 1024);
+  assert.deepEqual(requests[0].body.response_format, { type: "json_object" });
+  assert.equal(Object.hasOwn(requests[0].body.response_format, "json_schema"), false);
+  assert.match(requests[0].body.messages[0].content, /^base prompt/);
+  assert.match(requests[0].body.messages[0].content, /\[JSON_OBJECT_CONTRACT\]/);
+  assert.match(requests[0].body.messages[0].content, /只返回一个完整 JSON 对象/);
+  assert.match(requests[0].body.messages[0].content, /"uniqueItems":true/);
+  assert.match(requests[0].body.messages[0].content, /"enum":\[1,2\]/);
+  assert.deepEqual(requests[0].body.messages.map(({ role }) => role), ["system", "user", "assistant", "user"]);
+  assert.deepEqual(JSON.parse(requests[0].body.messages[1].content), { value: 1 });
+  assert.equal(requests[0].body.messages[2].content, '{"ids":[]}');
+  assert.match(requests[0].body.messages[3].content, /violated minItems/);
+  assert.deepEqual(result.output, { ids: [1] });
+  assert.equal(result.finishReason, "stop");
+});
+
 test("OpenCode Go schema compiler strips nested uniqueItems without touching supported keywords", () => {
   const compiled = compileOpencodeGoSchema({
     type: "object",

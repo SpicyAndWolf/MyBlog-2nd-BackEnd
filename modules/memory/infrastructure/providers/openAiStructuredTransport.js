@@ -5,14 +5,28 @@ const {
 } = require("./providerProtocol");
 const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
 
-function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {}, extraBody = {}, compileSchema = (schema) => schema } = {}) {
+function createOpenAiStructuredTransport({
+  baseUrl,
+  apiKey,
+  model,
+  proposerModels = {},
+  timeoutMs,
+  maxInputTokens,
+  maxOutputTokens = 8192,
+  fetchImpl = globalThis.fetch,
+  extraHeaders = {},
+  extraBody = {},
+  compileSchema = (schema) => schema,
+  httpRequestBuilder = buildOpenAiHttpRequest,
+  validateOutputSchema = null,
+} = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation is required");
   if (!String(apiKey || "").trim()) throw new Error("Memory Provider apiKey is required");
   if (!String(model || "").trim()) throw new Error("Memory Provider model is required");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error("Memory Provider timeoutMs must be a positive integer");
   const providerConfig = { baseUrl, model, proposerModels, maxOutputTokens };
   return async function invokeStructured(request) {
-    const { endpoint, body } = buildOpenAiHttpRequest(providerConfig, request, {
+    const { endpoint, body } = httpRequestBuilder(providerConfig, request, {
       compileSchema,
       extraBody,
     });
@@ -56,7 +70,21 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
             : "content_invalid_json";
         }
       }
-      return { output, rawOutput, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null, transportError, transportRecovery: null };
+      const outputSchemaValidation = !transportError && typeof validateOutputSchema === "function"
+        ? validateOutputSchema(request?.responseSchema?.schema, output)
+        : null;
+      return {
+        output,
+        rawOutput,
+        finishReason,
+        model: data?.model ?? requestedModel,
+        usage: data?.usage ?? null,
+        transportError,
+        transportRecovery: null,
+        outputSchemaErrors: outputSchemaValidation?.ok === false
+          ? outputSchemaValidation.errors
+          : null,
+      };
     } finally {
       clearTimeout(timeout);
     }

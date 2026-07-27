@@ -5,6 +5,7 @@ const {
   createMemoryProviderAdapter,
   createMockMemoryProviderAdapter,
 } = require("../../../modules/memory/infrastructure/providers/memoryProviderAdapter");
+const { createStructuredTransport } = require("../../../modules/memory/infrastructure/providers/structuredTransportFactory");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { buildLibrarianEnvelope } = require("../../../modules/memory/application/librarianRenderer");
 const { envelope, profileEnvelope } = require("../support/provider-envelopes");
@@ -24,6 +25,90 @@ test("Provider Adapter accepts valid native structured output", async () => {
   const result = await adapter.propose(envelope());
   assert.equal(result.status, "ok");
   assert.equal(request.responseSchema.strict, true);
+});
+
+test("JSON object transport validates the parsed output locally", async () => {
+  let httpRequest;
+  const invokeStructured = createStructuredTransport({
+    adapter: "opencode-go-json-object",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "mimo-v2.5-pro",
+    reasoningEffort: "low",
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async (_url, options) => {
+      httpRequest = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ finish_reason: "stop", message: { content: '{"unexpected":true}' } }],
+        }),
+      };
+    },
+  });
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "prompt",
+    invokeStructured,
+  });
+
+  const result = await adapter.propose(envelope());
+  assert.equal(result.reason, "output_schema_invalid");
+  assert.equal(result.detail.boundary, "output");
+  assert.deepEqual(httpRequest.response_format, { type: "json_object" });
+  assert.match(httpRequest.messages[0].content, /\[JSON_OBJECT_CONTRACT\]/);
+});
+
+test("JSON object transport rejects malformed flat wire entries before Semantic conversion", async () => {
+  const invokeStructured = createStructuredTransport({
+    adapter: "opencode-go-json-object",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "test-key",
+    model: "mimo-v2.5-pro",
+    reasoningEffort: "low",
+    timeoutMs: 1000,
+    maxInputTokens: 250_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          finish_reason: "stop",
+          message: {
+            content: JSON.stringify({
+              sectionStatuses: {
+                recentEpisodes: "noop",
+                milestones: "noop",
+              },
+              changes: [null],
+            }),
+          },
+        }],
+      }),
+    }),
+  });
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async () => "prompt",
+    invokeStructured,
+  });
+
+  const result = await adapter.propose(envelope());
+  assert.equal(result.reason, "output_schema_invalid");
+  assert.equal(result.detail.boundary, "output");
+  assert.deepEqual(result.detail.errors, [{
+    path: "$.changes[0]",
+    message: "must be object; received null",
+  }]);
+  assert.deepEqual(JSON.parse(result.rejectedOutput), {
+    sectionStatuses: {
+      recentEpisodes: "noop",
+      milestones: "noop",
+    },
+    changes: [null],
+  });
 });
 
 test("Provider Adapter evaluates Profile sections independently and merges one atomic result", async () => {

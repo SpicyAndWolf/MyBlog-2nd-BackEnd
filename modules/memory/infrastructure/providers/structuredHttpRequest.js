@@ -35,6 +35,27 @@ function buildStructuredMessages({ systemPrompt, userPayload, repairContext = nu
   return messages;
 }
 
+function renderJsonObjectSchemaInstruction(responseSchema) {
+  const schema = responseSchema?.schema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new Error("JSON object mode requires a response schema");
+  }
+  return [
+    "[JSON_OBJECT_CONTRACT]",
+    "接口只保证 JSON 语法。你必须只返回一个完整 JSON 对象，不得添加 Markdown、解释或 schema 外字段。",
+    "以下 JSON Schema 是本次输出契约；严格遵守 required、additionalProperties、enum、const、oneOf 以及长度和数量限制：",
+    JSON.stringify(schema),
+  ].join("\n");
+}
+
+function buildJsonObjectMessages(request) {
+  const schemaInstruction = renderJsonObjectSchemaInstruction(request?.responseSchema);
+  return buildStructuredMessages({
+    ...request,
+    systemPrompt: `${String(request?.systemPrompt ?? "")}\n\n${schemaInstruction}`,
+  });
+}
+
 function buildOpenAiHttpRequest(config, request, {
   compileSchema = (schema) => schema,
   extraBody = {},
@@ -58,6 +79,26 @@ function buildOpenAiHttpRequest(config, request, {
           ? compileSchema
           : (schema) => schema)(responseSchema),
       },
+      ...(extension || {}),
+    },
+  };
+}
+
+function buildOpenAiJsonObjectHttpRequest(config, request, { extraBody = {} } = {}) {
+  const { proposer } = request;
+  const model = resolveMemoryProviderModel(config, proposer);
+  const extension = typeof extraBody === "function"
+    ? extraBody({ proposer, model })
+    : extraBody;
+  return {
+    method: "POST",
+    endpoint: chatCompletionsEndpoint(config.baseUrl),
+    body: {
+      model,
+      stream: false,
+      max_tokens: config.maxOutputTokens ?? 8192,
+      messages: buildJsonObjectMessages(request),
+      response_format: { type: "json_object" },
       ...(extension || {}),
     },
   };
@@ -117,6 +158,16 @@ function buildStructuredHttpRequest(config, request) {
       }),
     });
   }
+  if (config?.adapter === "opencode-go-json-object") {
+    return buildOpenAiJsonObjectHttpRequest(config, request, {
+      extraBody: ({ proposer, model }) => ({
+        reasoning_effort: resolveMemoryProviderReasoningEffort(config, proposer),
+        ...(typeof config.extraBody === "function"
+          ? config.extraBody({ proposer, model })
+          : config.extraBody),
+      }),
+    });
+  }
   if (config?.adapter === "deepseek-strict-tools") {
     return buildDeepSeekHttpRequest(config, request);
   }
@@ -125,9 +176,12 @@ function buildStructuredHttpRequest(config, request) {
 
 module.exports = {
   buildDeepSeekHttpRequest,
+  buildJsonObjectMessages,
   buildOpenAiHttpRequest,
+  buildOpenAiJsonObjectHttpRequest,
   buildStructuredMessages,
   buildStructuredHttpRequest,
   chatCompletionsEndpoint,
   normalizeBaseUrl,
+  renderJsonObjectSchemaInstruction,
 };

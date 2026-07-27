@@ -203,6 +203,16 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
               profileRepairCache.delete(envelope);
               return { status: "error", reason: "max_output_truncated", detail: null, usage: mergeUsage(responses), model: specialistResponse?.model ?? null, callCount: responses.length };
             }
+            if (Array.isArray(specialistResponse?.outputSchemaErrors) && specialistResponse.outputSchemaErrors.length) {
+              invalidRun ??= {
+                specialist,
+                specialistArtifact,
+                specialistResponse,
+                specialistValidation: { errors: specialistResponse.outputSchemaErrors },
+                normalizedOutput: specialistResponse.output,
+              };
+              continue;
+            }
             const decodedOutput = flatWireToSemanticOutput(
               specialistResponse?.output,
               specialistArtifact.publicInput.task,
@@ -293,6 +303,22 @@ function createMemoryProviderAdapter({ invokeStructured, promptLoader } = {}) {
       }
       if (isTruncationSignal(response?.finishReason)) {
         return { status: "error", reason: "max_output_truncated", detail: null, usage: response?.usage ?? null, model: response?.model ?? null, callCount: response?.callCount ?? 1 };
+      }
+      if (Array.isArray(response?.outputSchemaErrors) && response.outputSchemaErrors.length) {
+        return {
+          status: "error",
+          reason: "output_schema_invalid",
+          detail: {
+            boundary: "output",
+            errors: flatWireRepairErrors(response.outputSchemaErrors, response?.output, task),
+            shape: summarizeOutputShape(response?.output),
+            ...(response?.finishReason ? { finishReason: response.finishReason } : {}),
+          },
+          rejectedOutput: rejectedProviderOutput(response),
+          usage: response?.usage ?? null,
+          model: response?.model ?? null,
+          callCount: response?.callCount ?? 1,
+        };
       }
       const decodedOutput = flatWireToSemanticOutput(response?.output, task);
       const normalized = normalizeSemanticOutput(decodedOutput);
