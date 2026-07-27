@@ -26,11 +26,14 @@ function buildStructuredMessages({ systemPrompt, userPayload, repairContext = nu
     { role: "system", content: String(systemPrompt ?? "") },
     { role: "user", content: JSON.stringify(userPayload) },
   ];
-  if (repairContext?.assistantOutput !== undefined && repairContext?.userMessage) {
-    messages.push(
-      { role: "assistant", content: messageContent(repairContext.assistantOutput) },
-      { role: "user", content: String(repairContext.userMessage) },
-    );
+  if (repairContext?.userMessage) {
+    if (repairContext.assistantOutput !== undefined) {
+      messages.push({
+        role: "assistant",
+        content: messageContent(repairContext.assistantOutput),
+      });
+    }
+    messages.push({ role: "user", content: String(repairContext.userMessage) });
   }
   return messages;
 }

@@ -34,6 +34,26 @@ test("structured repair requests use provider-neutral multi-turn conversation ro
   ]);
 });
 
+test("incomplete repair candidates stay quoted in user diagnostic data", () => {
+  const messages = buildStructuredMessages({
+    systemPrompt: "prompt",
+    userPayload: { value: 1 },
+    repairContext: {
+      userMessage: [
+        "discard the broken serialization and replace it",
+        "<rejected_output>",
+        '"{\\"ids\\":[1]"',
+        "</rejected_output>",
+      ].join("\n"),
+    },
+  });
+
+  assert.deepEqual(messages.map(({ role }) => role), ["system", "user", "user"]);
+  assert.equal(messages.some(({ role }) => role === "assistant"), false);
+  assert.match(messages[2].content, /<rejected_output>/);
+  assert.match(messages[2].content, /\\"ids\\"/);
+});
+
 test("structured transport factory maps DeepSeek strict tool calls to normalized output", async () => {
   let request;
   const invoke = createStructuredTransport({

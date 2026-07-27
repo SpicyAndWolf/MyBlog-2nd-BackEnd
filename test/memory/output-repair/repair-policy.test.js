@@ -88,7 +88,7 @@ test("rejected output is copied into bounded durable task state for multi-turn r
   }, {
     proposer: "todoProposer",
     targetSections: ["todos"],
-  }), /上一条 assistant 消息/);
+  }), /上一份候选输出/);
 
   const oversized = captureRejectedOutput("x".repeat(REJECTED_OUTPUT_MAX_BYTES + 1));
   assert.deepEqual(oversized, {
@@ -133,9 +133,11 @@ test("aborted incomplete JSON requests a shorter complete replacement with minim
     assert.equal(feedback.plan.directives.includes("RETURN_VALID_JSON_TOOL_ARGUMENTS"), false);
     assert.match(message, /JSON 完成前中止/);
     assert.match(message, /更短但完整/);
+    assert.match(message, /不得续写、拼接/);
+    assert.match(message, /保留由原始 Memory task 直接支持/);
     assert.match(message, /sources 仅保留.*最少来源/);
     assert.match(message, /单条消息已足够时仅 1 个/);
-    assert.match(message, /section 使用 noop/);
+    assert.match(message, /section 才使用 noop/);
     assert.doesNotMatch(message, /成对双引号/);
   }
 });

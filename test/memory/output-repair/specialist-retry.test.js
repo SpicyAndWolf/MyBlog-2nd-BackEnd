@@ -68,7 +68,7 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
     relationshipProposer: "relationship",
   };
   let relationshipCalls = 0;
-  const truncated = '{"sectionStatuses":{"relationship":"changes"},"changes":[{"section":"relationship","action":"';
+  const truncated = '{"sectionStatuses":{"relationship":"changes"},"changes":[{"section":"relationship","action":"update","text":"多次"社死"，用户还';
   const adapter = createMemoryProviderAdapter({
     promptLoader: async (proposer) => `prompt:${proposer}`,
     invokeStructured: async (request) => {
@@ -117,9 +117,11 @@ test("Profile interrupted JSON repair tells only the failed specialist to shorte
   assert.equal(calls.length, 4);
   assert.equal(calls[3].proposer, "relationshipProposer");
   assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
-  assert.equal(calls[3].repairContext.assistantOutput, truncated);
-  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V5\]/);
+  assert.equal(Object.hasOwn(calls[3].repairContext, "assistantOutput"), false);
+  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V6\]/);
   assert.match(calls[3].repairContext.userMessage, /JSON 完成前中止/);
   assert.match(calls[3].repairContext.userMessage, /sources 仅保留.*最少来源/);
-  assert.match(calls[3].repairContext.userMessage, /section 使用 noop/);
+  assert.match(calls[3].repairContext.userMessage, /section 才使用 noop/);
+  assert.match(calls[3].repairContext.userMessage, /不得从末尾继续/);
+  assert.ok(calls[3].repairContext.userMessage.includes(JSON.stringify(truncated)));
 });
