@@ -386,7 +386,7 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     });
   }
 
-  async function advanceParent(parentEnvelope) {
+  async function advanceParent(parentEnvelope, { resumeEpoch = 0 } = {}) {
     return repositories.withTransaction(async (client) => {
       const replayGroupId = stablePhaseId(parentEnvelope.task.taskId, "original_proposal_replay");
       const existing = await repositories.audit.getEventGroup(replayGroupId, { client });
@@ -417,8 +417,17 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
       const reduction = reduceCompiledProposal({ state, task: parentEnvelope.task, proposal: parentProposal, now: parentEnvelope.task.now, config, idFactory });
       if (reduction.outcome === "deferred") {
         if ((payload.attemptedSections || []).includes(reduction.capacityViolation.section)) return { status: "replay_failed", reason: "capacity_still_exceeded" };
-        const child = await createChild(parentEnvelope, state, reduction.capacityViolation, 0, client);
+        const child = await createChild(parentEnvelope, state, reduction.capacityViolation, resumeEpoch, client);
         await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "running", stage: "capacity_blocked", stage_payload: { ...payload, maintenanceTaskId: child.task.taskId, blockingViolation: reduction.capacityViolation }, last_error_reason: "capacity_blocked" }, { client });
+        await repositories.runtime.upsertTargetStatus(parentEnvelope.task.userId, parentEnvelope.task.presetId, {
+          targetKey: parentEnvelope.task.targetKey,
+          sourceGeneration: parentEnvelope.task.sourceGeneration,
+          status: "capacity_blocked",
+          consecutiveErrors: 0,
+          lastErrorReason: "capacity_blocked",
+          lastTaskId: parentEnvelope.task.taskId,
+          nextRetryAt: null,
+        }, { client });
         return { status: "capacity_deferred", taskId: parentEnvelope.task.taskId, maintenanceTaskId: child.task.taskId, maintenanceEnvelope: child };
       }
       await repositories.runtime.updateTask(parentEnvelope.task.taskId, { status: "running", stage: "replaying_original_proposal", stage_payload: payload }, { client });
@@ -548,13 +557,12 @@ function createCapacityMaintenance({ repositories, providerAdapter, config, metr
     return advanced;
   }
 
-  async function resumeParent(parentEnvelope) {
+  async function resumeParent(parentEnvelope, { resumeEpoch = 0 } = {}) {
     const parent = await repositories.runtime.getTask(parentEnvelope.task.taskId);
     const payload = rowValue(parent, "stage_payload", "stagePayload");
     const child = payload?.maintenanceTaskId ? await repositories.runtime.getTask(payload.maintenanceTaskId) : null;
     if (child && !TERMINAL_STATUSES.has(rowValue(child, "status", "status"))) return processMaintenanceEnvelope(rowValue(child, "task_payload", "taskPayload"));
-    if (child && rowValue(child, "stage", "stage") === "compaction_applied") return advanceParent(parentEnvelope);
-    return advanceParent(parentEnvelope);
+    return advanceParent(parentEnvelope, { resumeEpoch });
   }
 
   async function createResumeChild(parentEnvelope, violation, resumeEpoch, client) {

@@ -256,6 +256,107 @@ test("unable_to_compact halts only the target and capacity resume creates a new 
   assert.equal(data.inspect.state.meta.revision, 2);
 });
 
+test("capacity resume replays the blocked parent without compaction after the budget expands", async () => {
+  const data = store();
+  let maintenanceCalls = 0;
+  const initialPipeline = createNormalWritePipeline({
+    observer: {},
+    repositories: data.repositories,
+    config,
+    providerAdapter: {
+      propose: async (envelope) => {
+        if (envelope.task.mode === "normal") return { status: "ok", output: normalOutput(envelope) };
+        maintenanceCalls += 1;
+        return {
+          status: "ok",
+          output: {
+            tickId: envelope.task.tickId,
+            proposer: "compactionProposer",
+            sectionResults: { todos: { status: "unable_to_compact" } },
+          },
+        };
+      },
+    },
+  });
+  const halted = await initialPipeline.processIntent(1, "default", intent);
+  assert.equal(halted.status, "halted");
+  assert.equal(maintenanceCalls, 1);
+
+  const expandedConfig = structuredClone(config);
+  expandedConfig.sectionBudgets.todos.maxItems = 3;
+  const resumedPipeline = createNormalWritePipeline({
+    observer: {},
+    repositories: data.repositories,
+    config: expandedConfig,
+    providerAdapter: {
+      propose: async () => {
+        throw new Error("expanded budget recovery must not call the Provider");
+      },
+    },
+  });
+  const recovery = createMemoryRecovery({ repositories: data.repositories, pipeline: resumedPipeline });
+  const resumed = await recovery.resumeTarget(1, "default", "todos", { run: true });
+  const children = [...data.inspect.tasks.values()].filter((task) => task.task_type === "maintenance");
+  const parent = [...data.inspect.tasks.values()].find((task) => task.task_type === "normal");
+
+  assert.equal(resumed.status, "committed");
+  assert.equal(resumed.replayed, true);
+  assert.equal(children.length, 1, "the obsolete violation must not create another maintenance child");
+  assert.equal(maintenanceCalls, 1);
+  assert.equal(parent.status, "succeeded");
+  assert.equal(data.inspect.statuses.get("todos").status, "healthy");
+  assert.equal(data.inspect.state.working.todos.length, 3);
+  assert.equal(data.inspect.state.meta.targetCursors.todos, 3);
+});
+
+test("capacity resume creates a new child from the current violation when the parent is still over budget", async () => {
+  const data = store();
+  const initialPipeline = createNormalWritePipeline({
+    observer: {},
+    repositories: data.repositories,
+    config,
+    providerAdapter: {
+      propose: async (envelope) => ({
+        status: "ok",
+        output: envelope.task.mode === "normal"
+          ? normalOutput(envelope)
+          : {
+            tickId: envelope.task.tickId,
+            proposer: "compactionProposer",
+            sectionResults: { todos: { status: "unable_to_compact" } },
+          },
+      }),
+    },
+  });
+  const halted = await initialPipeline.processIntent(1, "default", intent);
+  assert.equal(halted.status, "halted");
+  const firstChild = [...data.inspect.tasks.values()].find((task) => task.task_type === "maintenance");
+  assert.equal(firstChild.task_payload.task.trigger.limit, 2);
+
+  const tighterConfig = structuredClone(config);
+  tighterConfig.sectionBudgets.todos.maxItems = 1;
+  const resumedPipeline = createNormalWritePipeline({
+    observer: {},
+    repositories: data.repositories,
+    config: tighterConfig,
+    providerAdapter: {
+      propose: async () => {
+        throw new Error("queued recovery must not call the Provider");
+      },
+    },
+  });
+  const recovery = createMemoryRecovery({ repositories: data.repositories, pipeline: resumedPipeline });
+  const resumed = await recovery.resumeTarget(1, "default", "todos");
+  const children = [...data.inspect.tasks.values()]
+    .filter((task) => task.task_type === "maintenance")
+    .sort((left, right) => left.resume_epoch - right.resume_epoch);
+
+  assert.equal(resumed.status, "queued");
+  assert.deepEqual(children.map((task) => task.resume_epoch), [0, 1]);
+  assert.equal(children[1].task_payload.task.trigger.limit, 1);
+  assert.equal(data.inspect.statuses.get("todos").status, "capacity_blocked");
+});
+
 test("maintenance retry_wait preserves capacity blocking and parent recovery honors notBefore", async () => {
   const data = store();
   let maintenanceCalls = 0;
