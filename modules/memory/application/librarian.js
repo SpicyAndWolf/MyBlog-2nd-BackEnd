@@ -116,7 +116,10 @@ function createMemoryLibrarian({
       "completedTurnOrdinal",
     ) ?? 0);
     const results = [];
-    let nextOrdinal = nextLibrarianPeriodicOrdinal(completedOrdinal);
+    let nextOrdinal = nextLibrarianPeriodicOrdinal(
+      completedOrdinal,
+      config.librarian.lagThreshold,
+    );
     while (nextOrdinal <= turns.length) {
       const current = await repositories.state.getState(userId, presetId);
       if (!current || current.meta.sourceGeneration !== state.meta.sourceGeneration) {
@@ -146,7 +149,10 @@ function createMemoryLibrarian({
         return { status: "incomplete", reason: "librarian_not_terminal", results };
       }
       completedOrdinal = aligned.turnOrdinal;
-      nextOrdinal = nextLibrarianPeriodicOrdinal(completedOrdinal);
+      nextOrdinal = nextLibrarianPeriodicOrdinal(
+        completedOrdinal,
+        config.librarian.lagThreshold,
+      );
     }
     return { status: "completed", results, completeTurnCount: turns.length };
   }

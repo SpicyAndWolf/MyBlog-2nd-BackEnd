@@ -23,6 +23,7 @@ function createMemoryTestConfig(overrides = {}) {
     },
     scene: { ttlMs: 86_400_000, maxRenderedChars: 1000 },
     overdueTodos: { maxRenderedItems: 10, maxRenderedChars: 1000 },
+    librarian: { lagThreshold: 96 },
     sectionBudgets: createSectionBudgets(),
   };
   return {
@@ -33,6 +34,7 @@ function createMemoryTestConfig(overrides = {}) {
     providerRecovery: { ...base.providerRecovery, ...overrides.providerRecovery },
     scene: { ...base.scene, ...overrides.scene },
     overdueTodos: { ...base.overdueTodos, ...overrides.overdueTodos },
+    librarian: { ...base.librarian, ...overrides.librarian },
     sectionBudgets: overrides.sectionBudgets || base.sectionBudgets,
   };
 }

@@ -27,7 +27,6 @@ const TARGETS = Object.freeze({
 const TARGET_KEYS = Object.freeze(Object.keys(TARGETS));
 const LIBRARIAN_TARGET_KEY = "librarian";
 const LIBRARIAN_PROPOSER = "librarianProposer";
-const LIBRARIAN_INTERVAL_TURNS = 96;
 const LIBRARIAN_SECTIONS = Object.freeze([
   "standingAgreements",
   "worldFacts",
@@ -110,7 +109,6 @@ module.exports = {
   TARGET_KEYS,
   LIBRARIAN_TARGET_KEY,
   LIBRARIAN_PROPOSER,
-  LIBRARIAN_INTERVAL_TURNS,
   LIBRARIAN_SECTIONS,
   LIBRARIAN_BARRIER_TARGETS,
   SEMANTIC_NORMAL_PROPOSERS,

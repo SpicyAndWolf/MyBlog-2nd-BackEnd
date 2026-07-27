@@ -47,6 +47,10 @@ function validateLibrarianConfig(config) {
   requireNonNegativeInteger(recovery.schemaInvalidRetryMax, "providerRecovery.schemaInvalidRetryMax");
   requirePositiveInteger(recovery.backoffBaseMs, "providerRecovery.backoffBaseMs");
   requirePositiveInteger(recovery.backoffMaxMs, "providerRecovery.backoffMaxMs");
+  if (!config.librarian || typeof config.librarian !== "object") {
+    throw new Error("Memory Librarian scheduling config is required");
+  }
+  requirePositiveInteger(config.librarian.lagThreshold, "librarian.lagThreshold");
   if (!config.sectionBudgets || typeof config.sectionBudgets !== "object") {
     throw new Error("Memory Librarian sectionBudgets config is required");
   }

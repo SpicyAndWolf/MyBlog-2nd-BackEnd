@@ -3,11 +3,12 @@ const assert = require("node:assert/strict");
 const {
   createInitialMemoryState,
   TARGET_KEYS,
-  LIBRARIAN_INTERVAL_TURNS,
 } = require("../../../modules/memory/contracts");
 const {
   createMemorySourceRebuild: createProductionMemorySourceRebuild,
 } = require("../../../modules/memory/application/sourceRebuild");
+
+const LIBRARIAN_INTERVAL_TURNS = 96;
 
 const REBUILD_BOUNDARY_MESSAGE_ID = 20;
 const OLD_SOURCE = { messageId: 10, contentHash: `sha256:${"a".repeat(64)}` };
@@ -35,6 +36,10 @@ function createMemorySourceRebuild(options) {
     ...options,
     repositories,
     librarian: options.librarian || NOOP_LIBRARIAN,
+    config: {
+      librarian: { lagThreshold: LIBRARIAN_INTERVAL_TURNS },
+      ...options.config,
+    },
   });
 }
 

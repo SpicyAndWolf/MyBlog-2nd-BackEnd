@@ -3,10 +3,11 @@ const assert = require("node:assert/strict");
 const {
   createInitialMemoryState,
   LIBRARIAN_BARRIER_TARGETS,
-  LIBRARIAN_INTERVAL_TURNS,
 } = require("../../../modules/memory/contracts");
 const { createMemoryLibrarian } = require("../../../modules/memory/application/librarian");
 const { createMemoryTestConfig, sha256, sequence } = require("../support/memory-builders");
+
+const LIBRARIAN_INTERVAL_TURNS = 96;
 
 function item(id, text, messageId) {
   return {
@@ -223,6 +224,43 @@ test("periodic scheduling uses only complete-turn ordinals and noop advances no 
   assert.equal(data.inspect.groups.length, 0);
   assert.equal(data.inspect.checkpoint.completed_turn_ordinal, LIBRARIAN_INTERVAL_TURNS);
   assert.equal(data.inspect.checkpoint.boundary_message_id, PERIODIC_BOUNDARY_MESSAGE_ID);
+});
+
+test("periodic scheduling uses the configured Librarian lag threshold", async () => {
+  const data = store({ completeTurnCount: 7 });
+  const observedOrdinals = [];
+  const customConfig = {
+    ...config(),
+    librarian: { lagThreshold: 3 },
+  };
+  const librarian = createMemoryLibrarian({
+    repositories: data.repositories,
+    config: customConfig,
+    providerAdapter: {
+      async propose(envelope) {
+        observedOrdinals.push(envelope.task.turnOrdinal);
+        return {
+          status: "ok",
+          output: {
+            tickId: envelope.task.tickId,
+            proposer: "librarianProposer",
+            status: "noop",
+            operations: [],
+          },
+        };
+      },
+    },
+    drainBarrier: async (_u, _p, options) => {
+      await alignBarrier(data, options.boundaryMessageId);
+      return { status: "completed" };
+    },
+  });
+
+  const result = await librarian.runScheduled(1, "default");
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(observedOrdinals, [3, 6]);
+  assert.equal(data.inspect.checkpoint.completed_turn_ordinal, 6);
 });
 
 test("periodic scheduling rebases an empty checkpoint beyond already-processed target cursors", async () => {

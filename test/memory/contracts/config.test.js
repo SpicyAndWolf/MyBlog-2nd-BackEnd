@@ -44,6 +44,7 @@ function validEnv() {
     CHAT_MEMORY_V2_PROVIDER_MODEL: "structured-model", CHAT_MEMORY_V2_PROVIDER_TIMEOUT_MS: "60000",
     CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS: "1000000", CHAT_MEMORY_V2_PROVIDER_MAX_OUTPUT_TOKENS: "8192",
     CHAT_MEMORY_V2_PROVIDER_CONCURRENCY: "2", CHAT_MEMORY_V2_PROVIDER_QUEUE_MAX: "32",
+    CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD: "96",
   });
   return env;
 }
@@ -53,6 +54,7 @@ test("v2 config requires an explicit structured-output adapter", () => {
   const config = loadMemoryV2Config(env);
   assert.equal(config.provider.model, "structured-model");
   assert.equal(config.provider.adapter, "openai-json-schema");
+  assert.deepEqual(config.librarian, { lagThreshold: 96 });
   assert.deepEqual(config.targets, {
     scene: { lagThreshold: 4, contextWindow: 16 },
     todos: { lagThreshold: 8, contextWindow: 48 },
@@ -66,6 +68,18 @@ test("v2 config requires an explicit structured-output adapter", () => {
   env.CHAT_MEMORY_V2_PROVIDER_ADAPTER = "openai-json-schema";
   env.CHAT_MEMORY_V2_PROVIDER_MAX_INPUT_TOKENS = "99999";
   assert.throws(() => loadMemoryV2Config(env), /100000/);
+});
+
+test("Librarian lag threshold is required and bounded", () => {
+  const env = validEnv();
+  delete env.CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD;
+  assert.throws(() => loadMemoryV2Config(env), /LIBRARIAN_LAG_THRESHOLD/);
+  env.CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD = "0";
+  assert.throws(() => loadMemoryV2Config(env), /safe integer >= 1/);
+  env.CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD = "12";
+  assert.deepEqual(loadMemoryV2Config(env).librarian, {
+    lagThreshold: 12,
+  });
 });
 
 test("provider config is independently loadable and never falls back to chat provider env", () => {

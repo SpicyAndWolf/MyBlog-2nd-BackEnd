@@ -469,7 +469,10 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
       });
       return aligned ? { status: "ready", ...aligned } : { status: "awaiting_complete_turn" };
     };
-    let nextOrdinal = nextLibrarianPeriodicOrdinal(completed);
+    let nextOrdinal = nextLibrarianPeriodicOrdinal(
+      completed,
+      config.librarian.lagThreshold,
+    );
     while (nextOrdinal <= turns.length) {
       const aligned = await alignPeriodicBoundary(nextOrdinal);
       if (aligned.status === "stale") return { status: "stale", sourceGeneration, results };
@@ -503,7 +506,10 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
         };
       }
       completed = periodicOrdinal;
-      nextOrdinal = nextLibrarianPeriodicOrdinal(completed);
+      nextOrdinal = nextLibrarianPeriodicOrdinal(
+        completed,
+        config.librarian.lagThreshold,
+      );
     }
     const drained = await forceDrainTargetsTo(userId, presetId, {
       ...options,

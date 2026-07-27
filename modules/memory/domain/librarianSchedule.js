@@ -1,14 +1,16 @@
 const {
   LIBRARIAN_BARRIER_TARGETS,
-  LIBRARIAN_INTERVAL_TURNS,
 } = require("../contracts");
 
-function nextLibrarianPeriodicOrdinal(completedTurnOrdinal) {
+function nextLibrarianPeriodicOrdinal(completedTurnOrdinal, lagThreshold) {
   const completed = Number(completedTurnOrdinal);
   if (!Number.isSafeInteger(completed) || completed < 0) {
     throw new Error("Completed Librarian turn ordinal must be a non-negative safe integer");
   }
-  return (Math.floor(completed / LIBRARIAN_INTERVAL_TURNS) + 1) * LIBRARIAN_INTERVAL_TURNS;
+  if (!Number.isSafeInteger(lagThreshold) || lagThreshold < 1) {
+    throw new Error("Librarian lag threshold must be a positive safe integer");
+  }
+  return (Math.floor(completed / lagThreshold) + 1) * lagThreshold;
 }
 
 function furthestLibrarianBarrierCursor(state) {

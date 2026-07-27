@@ -2,7 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   createInitialMemoryState,
-  LIBRARIAN_INTERVAL_TURNS,
   validateLibrarianSemanticResult,
 } = require("../../../modules/memory/contracts");
 const {
@@ -13,6 +12,8 @@ const { buildLibrarianEnvelope } = require("../../../modules/memory/application/
 const { mapEventToRow } = require("../../../modules/memory/application/eventMapper");
 const { replayEventGroups } = require("../../../modules/memory/domain/eventReplay");
 const { createMemoryTestConfig, sha256, sequence } = require("../support/memory-builders");
+
+const LIBRARIAN_INTERVAL_TURNS = 96;
 
 function item(id, text, messageIds) {
   return {
@@ -30,6 +31,7 @@ function fixture() {
   state.working.standingAgreements.push(item("agreement:1", "以后回答保持简洁。", [1]));
   state.longTerm.worldFacts.push(item("worldFact:1", "用户偏好简洁回答。", [2]));
   state.longTerm.userProfile.push(item("userProfile:1", "用户偏好简洁回答。", [3]));
+  state.longTerm.assistantProfile.push(item("assistantProfile:1", "助手保持直接而温和。", [4]));
   state.longTerm.relationship.push(item("relationship:1", "双方是长期写作搭档。", [4]));
   const envelope = buildLibrarianEnvelope({
     userId: 1,
@@ -52,7 +54,11 @@ test("Librarian Renderer exposes every allowed section as writable without persi
   assert.equal(envelope.artifact.publicInput.memoryText.includes("agreement:1"), false);
   assert.equal(envelope.artifact.publicInput.memoryText.includes("sha256:"), false);
   assert.equal(Object.keys(envelope.artifact.refMap.readOnly).length, 0);
-  assert.equal(Object.keys(envelope.artifact.refMap.writable).length, 4);
+  assert.equal(Object.keys(envelope.artifact.refMap.writable).length, 5);
+  for (const ref of ["A1", "W1", "UP1", "AP1", "R1"]) {
+    assert.match(envelope.artifact.publicInput.memoryText, new RegExp(`${ref} \\|`));
+    assert.ok(envelope.artifact.refMap.writable[ref]);
+  }
   assert.equal(envelope.task.cursorBefore, undefined);
   assert.equal(envelope.task.targetMessageId, undefined);
 });

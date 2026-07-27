@@ -47,6 +47,9 @@ function loadMemoryV2Config(env = {}) {
   if (retryMax >= haltAfterConsecutiveErrors) throw new Error("CHAT_MEMORY_V2_PROVIDER_RETRY_MAX must be less than CHAT_MEMORY_V2_HALT_AFTER_CONSECUTIVE_ERRORS");
   return Object.freeze({
     enabled: true, schemaVersion: "2.01", sectionBudgets: Object.freeze(sectionBudgets), targets: Object.freeze(targets),
+    librarian: Object.freeze({
+      lagThreshold: requiredInt(env, "CHAT_MEMORY_V2_LIBRARIAN_LAG_THRESHOLD", { min: 1 }),
+    }),
     scene: Object.freeze({ maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_SCENE_MAX_RENDERED_CHARS", { min: 1 }), ttlMs: requiredInt(env, "CHAT_MEMORY_V2_SCENE_TTL_MS", { min: 1 }) }),
     overdueTodos: Object.freeze({ maxRenderedItems: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_ITEMS", { min: 1 }), maxRenderedChars: requiredInt(env, "CHAT_MEMORY_V2_OVERDUE_TODOS_MAX_RENDERED_CHARS", { min: 1 }) }),
     gapBridge: Object.freeze({ maxRawChars: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_MAX_RAW_CHARS", { min: 1 }), retainedMessages: requiredInt(env, "CHAT_MEMORY_V2_GAP_BRIDGE_RETAINED_MESSAGES", { min: 1 }) }),
