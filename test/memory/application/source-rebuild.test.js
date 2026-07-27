@@ -312,6 +312,140 @@ test("explicit force-drain resume ignores lag eligibility and keeps each target 
   assert.equal(Object.values(statuses).every((entry) => entry.status === "healthy" && entry.rebuildBoundaryMessageId === null), true);
 });
 
+test("force-drain resume cancels and recreates a stale wave after one target advances the revision", async () => {
+  const state = createInitialMemoryState();
+  state.meta.sourceGeneration = 1;
+  state.meta.revision = 11;
+  state.meta.targetCursors.scene = 4;
+  state.meta.targetCursors.todos = 4;
+  state.meta.targetCursors.worldFacts = 8;
+  const targetKeys = ["scene", "todos"];
+  const statuses = Object.fromEntries(targetKeys.map((targetKey) => [targetKey, {
+    target_key: targetKey,
+    source_generation: 1,
+    status: "rebuilding",
+    rebuild_boundary_message_id: 8,
+  }]));
+  const staleTasks = Object.fromEntries(targetKeys.map((targetKey) => {
+    const taskId = `stale-${targetKey}`;
+    return [targetKey, {
+      task_id: taskId,
+      source_generation: 1,
+      cursor_before: 4,
+      target_message_id: 8,
+      status: "running",
+      stage: "compiled_proposal_persisted",
+      task_payload: {
+        task: {
+          taskId,
+          userId: 7,
+          presetId: "companion",
+          sourceGeneration: 1,
+          targetKey,
+          cursorBefore: 4,
+          targetMessageId: 8,
+          baseRevision: 10,
+        },
+      },
+    }];
+  }));
+  const repositories = {
+    async withTransaction(work) { return work({}); },
+    state: { async getState() { return structuredClone(state); } },
+    source: {
+      async getForceDrainWindow() {
+        return [{
+          id: 8,
+          role: "user",
+          content: "新的边界",
+          contentHash: "sha256:boundary",
+          createdAt: "2026-07-13T00:00:00.000Z",
+        }];
+      },
+    },
+    runtime: {
+      async getTargetStatus(_u, _p, targetKey) { return statuses[targetKey]; },
+      async listTasksForTarget(_u, _p, targetKey) { return [staleTasks[targetKey]]; },
+    },
+    audit: {},
+    sidecars: {},
+  };
+  const cancelledWaves = [];
+  const created = [];
+  const committed = [];
+  const pipeline = {
+    async processEnvelope() { throw new Error("force drain must use the wave-aware pipeline path"); },
+    async cancelPreparedWave(envelopes, reason) {
+      cancelledWaves.push({
+        reason,
+        taskIds: envelopes.map((envelope) => envelope.task.taskId),
+      });
+      for (const envelope of envelopes) staleTasks[envelope.task.targetKey].status = "cancelled";
+    },
+    async createTask(_u, _p, intent, options) {
+      assert.match(options.dedupeSuffix, new RegExp(`resume:stale-${intent.targetKey}$`));
+      created.push(intent.targetKey);
+      return {
+        task: {
+          taskId: `rebased-${intent.targetKey}`,
+          userId: 7,
+          presetId: "companion",
+          sourceGeneration: 1,
+          targetKey: intent.targetKey,
+          cursorBefore: 4,
+          targetMessageId: 8,
+          baseRevision: state.meta.revision,
+        },
+      };
+    },
+    async prepareEnvelope(envelope) {
+      return { status: "prepared", kind: "proposal", envelope, output: {} };
+    },
+    async commitPreparedWave(prepared) {
+      assert.deepEqual(prepared.map((entry) => entry.envelope.task.baseRevision), [11, 11]);
+      for (const entry of prepared) {
+        const targetKey = entry.envelope.task.targetKey;
+        state.meta.targetCursors[targetKey] = 8;
+        state.meta.revision += 1;
+        committed.push(targetKey);
+      }
+      return {
+        status: "committed",
+        results: prepared.map((entry) => ({
+          status: "committed",
+          targetKey: entry.envelope.task.targetKey,
+        })),
+      };
+    },
+  };
+  const targets = Object.fromEntries(targetKeys.map((targetKey) => [
+    targetKey,
+    { lagThreshold: 8, contextWindow: 8 },
+  ]));
+  const rebuild = createMemorySourceRebuild({
+    repositories,
+    normalWritePipeline: pipeline,
+    config: { targets },
+  });
+
+  const result = await rebuild.forceDrainTargetsTo(7, "companion", {
+    sourceGeneration: 1,
+    boundaryMessageId: 8,
+    targetKeys,
+    finalizeTargets: false,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(cancelledWaves, [{
+    reason: "wave_baseline_mismatch",
+    taskIds: ["stale-scene", "stale-todos"],
+  }]);
+  assert.deepEqual(created, targetKeys);
+  assert.deepEqual(committed, targetKeys);
+  assert.equal(state.meta.revision, 13);
+  assert.equal(state.meta.targetCursors.worldFacts, 8);
+});
+
 test("force drain advances targets by source-watermark waves from one frozen baseline", async () => {
   const state = createInitialMemoryState();
   state.meta.sourceGeneration = 1;

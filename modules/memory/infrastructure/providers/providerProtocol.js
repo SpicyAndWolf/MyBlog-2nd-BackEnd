@@ -16,6 +16,43 @@ function isTruncationSignal(value) {
     || reason.includes("output_length");
 }
 
+function isAbortSignal(value) {
+  return normalizedReason(value) === "abort";
+}
+
+function isIncompleteJsonAtEof(value) {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text || (text[0] !== "{" && text[0] !== "[")) return false;
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      stack.push(character);
+      continue;
+    }
+    if (character !== "}" && character !== "]") continue;
+    const expected = character === "}" ? "{" : "[";
+    if (stack.pop() !== expected) return false;
+  }
+  return inString || stack.length > 0;
+}
+
+function isAbortedIncompleteJson(value, finishReason) {
+  return isAbortSignal(finishReason) && isIncompleteJsonAtEof(value);
+}
+
 function assertStructuredRequestLimits({ systemPrompt, userPayload, messages, maxInputTokens, maxOutputTokens }) {
   if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens <= 0) throw new Error("Memory Provider maxInputTokens must be a positive safe integer");
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0) throw new Error("Memory Provider maxOutputTokens must be a positive safe integer");
@@ -35,4 +72,11 @@ function assertStructuredRequestLimits({ systemPrompt, userPayload, messages, ma
   return { inputUtf8Bytes: bytes, maxInputTokens, maxOutputTokens };
 }
 
-module.exports = { isSafetySignal, isTruncationSignal, assertStructuredRequestLimits };
+module.exports = {
+  assertStructuredRequestLimits,
+  isAbortedIncompleteJson,
+  isAbortSignal,
+  isIncompleteJsonAtEof,
+  isSafetySignal,
+  isTruncationSignal,
+};

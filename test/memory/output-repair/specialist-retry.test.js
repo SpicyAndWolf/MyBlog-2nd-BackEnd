@@ -59,3 +59,67 @@ test("Profile repair retries only the failed specialist and merges cached valid 
   );
   assert.doesNotMatch(calls[3].systemPrompt, /"userProfile"|"assistantProfile"/);
 });
+
+test("Profile interrupted JSON repair tells only the failed specialist to shorten sources", async () => {
+  const calls = [];
+  const sections = {
+    userProfileProposer: "userProfile",
+    assistantProfileProposer: "assistantProfile",
+    relationshipProposer: "relationship",
+  };
+  let relationshipCalls = 0;
+  const truncated = '{"sectionStatuses":{"relationship":"changes"},"changes":[{"section":"relationship","action":"';
+  const adapter = createMemoryProviderAdapter({
+    promptLoader: async (proposer) => `prompt:${proposer}`,
+    invokeStructured: async (request) => {
+      calls.push(request);
+      const section = sections[request.proposer];
+      if (request.proposer === "relationshipProposer") {
+        relationshipCalls += 1;
+        if (relationshipCalls === 1) {
+          return {
+            output: null,
+            rawOutput: truncated,
+            transportError: "content_incomplete_json",
+            finishReason: "abort",
+          };
+        }
+      }
+      return {
+        output: {
+          sectionStatuses: { [section]: "changes" },
+          changes: [{
+            section,
+            action: "add",
+            text: `${section} fact`,
+            sources: ["message:1"],
+          }],
+        },
+      };
+    },
+  });
+  const envelope = profileEnvelope();
+
+  const first = await adapter.propose(envelope);
+  assert.equal(first.reason, "output_schema_invalid");
+  assert.equal(first.detail.specialist, "relationshipProposer");
+  assert.equal(first.detail.transportError, "content_incomplete_json");
+  assert.equal(first.rejectedOutput, truncated);
+
+  const feedback = createRepairFeedback(first.detail, 1, envelope.task);
+  const second = await adapter.propose(envelope, {
+    repairFeedback: feedback,
+    rejectedOutput: first.rejectedOutput,
+  });
+
+  assert.equal(second.status, "ok");
+  assert.equal(second.callCount, 1);
+  assert.equal(calls.length, 4);
+  assert.equal(calls[3].proposer, "relationshipProposer");
+  assert.equal(calls[3].systemPrompt, "prompt:relationshipProposer");
+  assert.equal(calls[3].repairContext.assistantOutput, truncated);
+  assert.match(calls[3].repairContext.userMessage, /\[SCHEMA_REPAIR_V5\]/);
+  assert.match(calls[3].repairContext.userMessage, /JSON 完成前中止/);
+  assert.match(calls[3].repairContext.userMessage, /sources 仅保留.*最少来源/);
+  assert.match(calls[3].repairContext.userMessage, /section 使用 noop/);
+});

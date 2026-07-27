@@ -7,6 +7,7 @@ const {
   hydrateTask,
   createServer,
 } = require("../../tools/memory-task-gui/server");
+const { OUTPUT_REPAIR_POLICY_VERSION } = require("../../modules/memory/application/outputRepair");
 
 function taskRow(overrides = {}) {
   const envelope = {
@@ -158,7 +159,7 @@ test("Memory task GUI reconstructs persisted rejected output as a multi-turn rep
   const messages = task.input.providerRequests[0].body.messages;
   assert.deepEqual(messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
   assert.equal(messages[2].content, '{"changes":"invalid"}');
-  assert.match(messages[3].content, /\[SCHEMA_REPAIR_V4\]/);
+  assert.match(messages[3].content, new RegExp(`\\[SCHEMA_REPAIR_V${OUTPUT_REPAIR_POLICY_VERSION}\\]`));
 });
 
 test("Memory task GUI exposes each Profile specialist API request", async () => {

@@ -181,6 +181,7 @@ function createMemoryMigration({
     error.migrationDetail = {
       sourceGeneration: drained.sourceGeneration ?? null,
       targetKey: drained.targetKey ?? null,
+      ...(drained.reason ? { reason: drained.reason } : {}),
       result: drained.result ? {
         status: drained.result.status ?? null,
         outcome: drained.result.outcome ?? null,

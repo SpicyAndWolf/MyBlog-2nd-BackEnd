@@ -332,18 +332,16 @@ function createMemorySourceRebuild({ repositories, normalWritePipeline, libraria
           envelope = await normalWritePipeline.createTask(userId, presetId, intent, { messages, dedupeSuffix });
         }
         if (!envelope?.task) throw new Error(`Force-drain task payload is missing for ${targetKey}`);
-        if (envelope.task.baseRevision !== state.meta.revision) {
-          return {
-            status: "stale",
-            sourceGeneration,
-            sourceWatermark,
-            targetKey,
-            reason: "wave_baseline_mismatch",
-            results,
-          };
-        }
         envelopes.push(envelope);
         if (rowValue(latest, "stage", "stage") === "capacity_blocked") capacityBlockedEnvelopes.push(envelope);
+      }
+
+      if (envelopes.some((envelope) => envelope.task.baseRevision !== state.meta.revision)) {
+        if (typeof normalWritePipeline.cancelPreparedWave !== "function") {
+          throw new Error("Source rebuild stale-wave recovery requires wave cancellation");
+        }
+        await normalWritePipeline.cancelPreparedWave(envelopes, "wave_baseline_mismatch");
+        continue;
       }
 
       if (capacityBlockedEnvelopes.length) {

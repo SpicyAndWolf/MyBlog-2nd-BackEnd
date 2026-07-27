@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createNormalWritePipeline } = require("../../../modules/memory/application/normalWritePipeline");
+const { OUTPUT_REPAIR_POLICY_VERSION } = require("../../../modules/memory/application/outputRepair");
 const { recoveryScenario, fixedNow, config, intent, store } = require("../support/recovery-harness");
 
 test("recovery fixture applies bounded retry backoff and halts only the failing target", async () => {
@@ -51,7 +52,7 @@ test("output schema invalid durably persists the rejected output and commits a v
   assert.equal(result.status, "committed");
   assert.equal(calls, 2);
   assert.equal(repairFeedbacks[0], null);
-  assert.equal(repairFeedbacks[1].policyVersion, 4);
+  assert.equal(repairFeedbacks[1].policyVersion, OUTPUT_REPAIR_POLICY_VERSION);
   assert.equal(rejectedOutputs[0], undefined);
   assert.deepEqual(rejectedOutputs[1], rejectedOutput);
   assert.deepEqual(repairFeedbacks[1].errors, [{

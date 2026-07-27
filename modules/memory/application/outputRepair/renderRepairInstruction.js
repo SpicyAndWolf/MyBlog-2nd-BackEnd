@@ -32,6 +32,11 @@ function renderRepairMessage(feedback = {}, task = null) {
   if (plan.directives.includes("RETURN_VALID_JSON_TOOL_ARGUMENTS")) {
     targets.push("上一条输出不是合法 JSON。请重新序列化整个 tool arguments 对象，确保所有字段名和字符串使用成对双引号，并正确使用逗号、冒号与转义字符。");
   }
+  if (plan.directives.includes("RETURN_SHORT_COMPLETE_OUTPUT")) {
+    targets.push(usesFlatWire
+      ? "上一条 structured output 在 JSON 完成前中止。请重新生成更短但完整的对象，只保留确定且必要的 changes；每个 change 的 sources 仅保留足以直接支持该变化的最少来源（单条消息已足够时仅 1 个），不要枚举所有可见来源；没有候选的 section 使用 noop。"
+      : "上一条 structured output 在 JSON 完成前中止。请重新生成更短但完整的对象，只保留必要操作、原子短文本与 schema 必需字段，不要扩写或枚举无关条目。");
+  }
   if (plan.directives.includes("RETURN_REQUIRED_STRUCTURED_OUTPUT")) {
     targets.push("必须实际返回一份完整的 structured tool arguments；不得省略 tool call、返回空 content 或只写解释文字。");
   }

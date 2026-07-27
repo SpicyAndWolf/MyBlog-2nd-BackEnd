@@ -1,4 +1,8 @@
-const { isSafetySignal, assertStructuredRequestLimits } = require("./providerProtocol");
+const {
+  assertStructuredRequestLimits,
+  isAbortedIncompleteJson,
+  isSafetySignal,
+} = require("./providerProtocol");
 const { buildDeepSeekHttpRequest, normalizeBaseUrl } = require("./structuredHttpRequest");
 
 function parseToolArguments(value) {
@@ -64,6 +68,12 @@ function createDeepSeekStrictToolsTransport({ baseUrl, apiKey, model, proposerMo
       const parsed = toolCall
         ? parseToolArguments(toolCall?.function?.arguments)
         : { output: null, recovery: null, error: "tool_call_missing" };
+      if (
+        parsed.error === "tool_arguments_invalid_json"
+        && isAbortedIncompleteJson(rawOutput, finishReason)
+      ) {
+        parsed.error = "tool_arguments_incomplete_json";
+      }
       return {
         output: parsed.output,
         rawOutput,

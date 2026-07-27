@@ -7,6 +7,7 @@ const {
   sanitizeConfig,
   stableJson,
 } = require("../../../modules/memory/application/migrationEvidence");
+const { OUTPUT_REPAIR_POLICY_VERSION } = require("../../../modules/memory/application/outputRepair");
 
 test("migration evidence fingerprints code, every schema migration, and redacted configuration", () => {
   const rootDir = path.join(__dirname, "../../..");
@@ -32,7 +33,7 @@ test("migration evidence fingerprints code, every schema migration, and redacted
   assert.equal(evidence.config.values.memory.provider.model, "deepseek-v4-flash");
   assert.deepEqual(evidence.config.values.memory.provider.apiKey, { configured: true });
   assert.deepEqual(evidence.config.values.rag.embeddingApiKey, { configured: true });
-  assert.equal(evidence.config.values.outputRepair.policyVersion, 4);
+  assert.equal(evidence.config.values.outputRepair.policyVersion, OUTPUT_REPAIR_POLICY_VERSION);
   assert.doesNotMatch(JSON.stringify(evidence), /memory-secret|embedding-secret/);
 });
 

@@ -69,7 +69,7 @@ test("repair instruction uses the actual specialist schema shape and positive co
     targetSections: ["relationship"],
   });
 
-  assert.match(prompt, /\[SCHEMA_REPAIR_V4\]/);
+  assert.match(prompt, new RegExp(`\\[SCHEMA_REPAIR_V${OUTPUT_REPAIR_POLICY_VERSION}\\]`));
   assert.match(prompt, /Unicode 字符数不得超过 240/);
   assert.match(prompt, /"sectionStatuses":\{"relationship":/);
   assert.match(prompt, /"changes":"<complete flat change array/);
@@ -115,6 +115,28 @@ test("transport failures produce field-agnostic JSON and missing-output repair d
     const missing = createRepairFeedback({ transportError }, 1, task);
     assert.equal(missing.errors[0].code, ISSUE_CODES.STRUCTURED_OUTPUT_MISSING);
     assert.equal(missing.plan.directives.includes("RETURN_REQUIRED_STRUCTURED_OUTPUT"), true);
+  }
+});
+
+test("aborted incomplete JSON requests a shorter complete replacement with minimal sources", () => {
+  const task = { proposer: "relationshipProposer", targetSections: ["relationship"] };
+  for (const transportError of ["content_incomplete_json", "tool_arguments_incomplete_json"]) {
+    const feedback = createRepairFeedback({
+      transportError,
+      finishReason: "abort",
+      errors: [{ path: "$", message: "must be an object", meta: { actualType: "null" } }],
+    }, 1, task);
+    const message = renderRepairMessage(feedback, task);
+
+    assert.equal(feedback.errors[0].code, ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE);
+    assert.equal(feedback.plan.directives.includes("RETURN_SHORT_COMPLETE_OUTPUT"), true);
+    assert.equal(feedback.plan.directives.includes("RETURN_VALID_JSON_TOOL_ARGUMENTS"), false);
+    assert.match(message, /JSON 完成前中止/);
+    assert.match(message, /更短但完整/);
+    assert.match(message, /sources 仅保留.*最少来源/);
+    assert.match(message, /单条消息已足够时仅 1 个/);
+    assert.match(message, /section 使用 noop/);
+    assert.doesNotMatch(message, /成对双引号/);
   }
 });
 

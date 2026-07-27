@@ -127,6 +127,91 @@ test("OpenAI-compatible HTTP safety rejection is normalized", async () => {
   assert.equal(response.safetyBlocked, true);
 });
 
+test("OpenAI-compatible transport distinguishes aborted incomplete JSON from ordinary invalid JSON", async () => {
+  const responses = [
+    {
+      choices: [{
+        finish_reason: "abort",
+        message: {
+          content: '{"sectionStatuses":{"relationship":"changes"},"changes":[{"section":"relationship","action":"',
+        },
+      }],
+    },
+    {
+      choices: [{
+        finish_reason: "stop",
+        message: { content: '{"ok":tru}' },
+      }],
+    },
+  ];
+  const invoke = createStructuredTransport({
+    adapter: "opencode-go-json-schema",
+    baseUrl: "https://opencode.test/v1/",
+    apiKey: "key",
+    model: "model",
+    timeoutMs: 1000,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => responses.shift(),
+    }),
+  });
+  const request = {
+    systemPrompt: "prompt",
+    userPayload: {},
+    responseSchema: { name: "x", schema: {} },
+  };
+
+  const incomplete = await invoke(request);
+  assert.equal(incomplete.output, null);
+  assert.equal(incomplete.finishReason, "abort");
+  assert.equal(incomplete.transportError, "content_incomplete_json");
+
+  const invalid = await invoke(request);
+  assert.equal(invalid.output, null);
+  assert.equal(invalid.finishReason, "stop");
+  assert.equal(invalid.transportError, "content_invalid_json");
+});
+
+test("DeepSeek transport classifies aborted incomplete tool arguments", async () => {
+  const invoke = createStructuredTransport({
+    adapter: "deepseek-strict-tools",
+    baseUrl: "https://api.deepseek.com/beta",
+    apiKey: "key",
+    model: "model",
+    timeoutMs: 1000,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 1024,
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          finish_reason: "abort",
+          message: {
+            tool_calls: [{
+              function: {
+                name: "x",
+                arguments: '{"sectionStatuses":{"relationship":"changes"},"changes":[',
+              },
+            }],
+          },
+        }],
+      }),
+    }),
+  });
+
+  const result = await invoke({
+    systemPrompt: "prompt",
+    userPayload: {},
+    responseSchema: { name: "x", schema: {} },
+  });
+  assert.equal(result.output, null);
+  assert.equal(result.transportError, "tool_arguments_incomplete_json");
+});
+
 test("DeepSeek strict adapter rejects the official non-beta endpoint", () => {
   assert.throws(() => createStructuredTransport({
     adapter: "deepseek-strict-tools", baseUrl: "https://api.deepseek.com", apiKey: "key", model: "deepseek-v4-flash", timeoutMs: 1000,

@@ -36,6 +36,9 @@ function buildRepairPlan({ errors, specialist = null, task = null } = {}) {
   if (codes.includes(ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON)) {
     directives.push("RETURN_VALID_JSON_TOOL_ARGUMENTS");
   }
+  if (codes.includes(ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE)) {
+    directives.push("RETURN_SHORT_COMPLETE_OUTPUT");
+  }
   if (codes.includes(ISSUE_CODES.STRUCTURED_OUTPUT_MISSING)) {
     directives.push("RETURN_REQUIRED_STRUCTURED_OUTPUT");
   }

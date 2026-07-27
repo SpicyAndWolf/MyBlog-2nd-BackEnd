@@ -13,6 +13,16 @@ const { renderRepairInstruction, renderRepairMessage } = require("./renderRepair
 function createRepairFeedback(detail = {}, attempt = 0, task = null) {
   const safeDetail = detail && typeof detail === "object" ? detail : {};
   const transportIssue = {
+    content_incomplete_json: {
+      code: ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE,
+      path: "$",
+      message: "previous structured output ended before JSON was complete",
+    },
+    tool_arguments_incomplete_json: {
+      code: ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE,
+      path: "$",
+      message: "previous structured output ended before JSON was complete",
+    },
     content_invalid_json: {
       code: ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON,
       path: "$",
@@ -56,6 +66,8 @@ function createRepairFeedback(detail = {}, attempt = 0, task = null) {
 }
 
 const TRANSPORT_REPAIR_ERRORS = new Set([
+  "content_incomplete_json",
+  "tool_arguments_incomplete_json",
   "content_invalid_json",
   "tool_arguments_invalid_json",
   "content_missing",

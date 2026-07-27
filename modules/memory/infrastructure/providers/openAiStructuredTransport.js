@@ -1,4 +1,8 @@
-const { assertStructuredRequestLimits, isSafetySignal } = require("./providerProtocol");
+const {
+  assertStructuredRequestLimits,
+  isAbortedIncompleteJson,
+  isSafetySignal,
+} = require("./providerProtocol");
 const { buildOpenAiHttpRequest } = require("./structuredHttpRequest");
 
 function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModels = {}, timeoutMs, maxInputTokens, maxOutputTokens = 8192, fetchImpl = globalThis.fetch, extraHeaders = {}, extraBody = {}, compileSchema = (schema) => schema } = {}) {
@@ -45,7 +49,12 @@ function createOpenAiStructuredTransport({ baseUrl, apiKey, model, proposerModel
         transportError = "content_missing";
       } else if (typeof content === "string") {
         try { output = JSON.parse(content); }
-        catch { output = null; transportError = "content_invalid_json"; }
+        catch {
+          output = null;
+          transportError = isAbortedIncompleteJson(content, finishReason)
+            ? "content_incomplete_json"
+            : "content_invalid_json";
+        }
       }
       return { output, rawOutput, finishReason, model: data?.model ?? requestedModel, usage: data?.usage ?? null, transportError, transportRecovery: null };
     } finally {

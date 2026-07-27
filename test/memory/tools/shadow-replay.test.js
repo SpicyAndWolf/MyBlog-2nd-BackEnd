@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { createInitialMemoryState } = require("../../../modules/memory/contracts");
 const { buildNormalEnvelope } = require("../../../modules/memory/application/envelope");
 const { createMemoryTaskShadowReplay } = require("../../../modules/memory/application/taskShadowReplay");
+const { OUTPUT_REPAIR_POLICY_VERSION } = require("../../../modules/memory/application/outputRepair");
 const { createMemoryTestConfig, sha256 } = require("../support/memory-builders");
 
 const TASK_ID = "12345678-1234-5678-9234-123456789abc";
@@ -202,7 +203,7 @@ test("task shadow replay mirrors the bounded schema repair before preflight", as
   assert.equal(report.status, "completed");
   assert.equal(report.replay.providerAttempts.length, 2);
   assert.equal(options[0].repairFeedback, null);
-  assert.equal(options[1].repairFeedback.policyVersion, 4);
+  assert.equal(options[1].repairFeedback.policyVersion, OUTPUT_REPAIR_POLICY_VERSION);
   assert.deepEqual(options[1].repairFeedback.errors, [{
     code: "CONTRACT_INVALID",
     path: "$.tickId",

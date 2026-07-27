@@ -10,7 +10,7 @@ const migrationScenario = Object.freeze({
   revision: 1,
 });
 
-function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false } = {}) {
+function makeHarness({ projectionFailure = null, verificationFailure = null, forceDrainFailureOnce = false, forceDrainStale = false, inventoryChanges = false, providerTelemetry = null, initialAuthority = false, incompatibleDerivedData = false } = {}) {
   let state = initialAuthority ? createInitialMemoryState() : null;
   let snapshots = [];
   let statuses = [];
@@ -73,6 +73,15 @@ function makeHarness({ projectionFailure = null, verificationFailure = null, for
     },
     async forceDrainTo() {
       forceDrainCount += 1;
+      if (forceDrainStale) {
+        return {
+          status: "stale",
+          sourceGeneration: migrationScenario.sourceGeneration,
+          targetKey: "scene",
+          reason: "wave_baseline_mismatch",
+          results: [],
+        };
+      }
       if (forceDrainFailureOnce && forceDrainCount === 1) {
         statuses = statuses.map((status) => status.target_key === "scene"
           ? { ...status, status: "halted", rebuild_boundary_message_id: null }
@@ -192,6 +201,20 @@ test("migration resumes an incomplete force drain without resetting its generati
   assert.equal(second.status, "completed");
   assert.equal(second.canStartService, true);
   assert.equal(harness.getInitializeCount(), 1);
+});
+
+test("migration failure detail preserves the top-level stale reason", async () => {
+  const harness = makeHarness({ forceDrainStale: true });
+  const report = await harness.migration.run({ mode: "rehearsal" });
+
+  assert.equal(report.status, "failed");
+  assert.deepEqual(report.error.detail, {
+    sourceGeneration: migrationScenario.sourceGeneration,
+    targetKey: "scene",
+    reason: "wave_baseline_mismatch",
+    result: null,
+    completedTaskCount: 0,
+  });
 });
 
 test("migration cutover requires an explicitly stopped service", async () => {

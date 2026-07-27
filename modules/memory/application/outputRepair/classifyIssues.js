@@ -47,6 +47,7 @@ function canonicalMessage(code, issue, { usesFlatWire = false } = {}) {
     [ISSUE_CODES.EVIDENCE_MESSAGE_INVALID]: "evidenceMessageIds must be selected from the bound message enum",
     [ISSUE_CODES.TEXT_LENGTH_EXCEEDED]: "text must satisfy the section character limit",
     [ISSUE_CODES.TOOL_ARGUMENTS_INVALID_JSON]: "previous tool arguments are not valid JSON",
+    [ISSUE_CODES.STRUCTURED_OUTPUT_INCOMPLETE]: "previous structured output ended before JSON was complete",
     [ISSUE_CODES.STRUCTURED_OUTPUT_MISSING]: "structured tool arguments are missing",
   };
   if (usesFlatWire) {
