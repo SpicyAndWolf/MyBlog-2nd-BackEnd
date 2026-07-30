@@ -87,6 +87,63 @@ Librarian 周期调度以完整对话 turn ordinal 为水位。旧数据没有 `
 
 重建完成后仍会执行一次 final Librarian，但整个长 rebuild 过程中没有周期清理，错误 item 可以持续膨胀到最后才被一次性处理。
 
+## Episode 与 Milestone 识别分离
+
+当前 `episodeProposer` 同时维护 `recentEpisodes` 和 `milestones`，要求模型在同一个短消息窗口中既识别近期互动弧，又判断其是否改变长期关系或剧情基线。两种判断的时间尺度不同，容易把强烈情绪、普通和解、单次温馨互动或尚未稳定的事件过早升级为 milestone。
+
+将该职责拆分为两个 proposer：
+
+- `episodeProposer` 高频运行，只维护 `recentEpisodes`，负责从新消息中识别具有稳定结果、重要未决问题或后续连续性价值的完整互动弧；
+- `milestoneProposer` 低频运行，只维护 `milestones`，负责判断近期事件是否真正改变长期关系、角色身份、信任与边界基线或主剧情状态。
+
+### Milestone 输入范围
+
+`milestoneProposer` 的 writable Memory 只包含全部现有 `milestones`。只读输入限定为：
+
+- 最近 N 个完整 turn 范围内形成或发生实质更新的 `recentEpisodes`；
+- `userProfile`；
+- `assistantProfile`；
+- `relationship`；
+- `standingAgreements`。
+
+默认不提供 `scene`、`todos` 和 `worldFacts`，避免把短期状态、任务或外部设定误判为长期转折。N 应为显式配置，并以完整 turn boundary 定义窗口，而不是简单截取最后 N 条 episode item；task 必须保存窗口起止 boundary，保证 retry、恢复和 rehearsal 使用相同输入。
+
+Profile、relationship 和 agreements 只用于比较事件前后的长期基线，不能独立触发 milestone。每个 milestone 的 `add | update | correct | forget` 必须至少引用一个本轮授权的 `recentEpisodes` ref；没有近期 episode 承载明确转折时应保持 noop。
+
+### 调度与一致性
+
+`milestoneProposer` 应在相关普通 target 到达同一消息 boundary 后运行：
+
+```text
+普通消息处理
+  -> episode / profileRelationship / agreement 推进
+  -> 建立一致 boundary barrier
+  -> milestoneProposer 读取已提交结果
+  -> 提交 milestone
+```
+
+当前 `profileRelationshipProposer` 会读取 milestones，因此不能要求同一 boundary 内双向反复运行直至收敛。新 milestone 从下一处理周期起供 `profileRelationshipProposer` 使用，允许一个周期的确定性延迟，以避免依赖环、重复调用和 revision churn。
+
+Milestone 是对 episode 长期意义的独立表达，不是把 episode 移入长期 section。原 `recentEpisodes` item 继续保留并按既有滑动窗口淘汰；milestone 只概括发生了什么长期基线变化，不复制完整事件过程，也不把多个普通 episode 合并成一个虚假转折。
+
+### Evidence 与写入约束
+
+模型通过近期 episode ref 选择候选证据，Compiler 只展开并校验被授权 episode 所对应、且直接支持 milestone 文本的 raw evidence 子集。不得把 episode、Profile、relationship 或 agreement 的全部历史 `sourceRefs` 无条件并入 milestone。
+
+在 provenance 分层完成前，需要明确记录这是过渡约束，避免继续扩大来源并集；完成分层后，milestone 当前直接支持只保留其转折断言所需 evidence，完整演变历史留在 event log。
+
+现有 milestone 不得因为没有出现在最近 N 轮事件中而被删除。只有近期 episode 明确提供新发展、纠正或否定证据时，才允许对已有 milestone 执行 `update`、`correct` 或 `forget`。
+
+### 分离后的验收标准
+
+- `episodeProposer` 不再产生或修改 `milestones`；
+- `milestoneProposer` 不直接读取未沉淀为 episode 的原始短期事件来创建 milestone；
+- 静态 Profile、relationship 或 agreement 不能单独生成 milestone；
+- 每个 milestone change 至少引用一个本轮窗口内授权的 episode；
+- 同一事件可同时保留近期叙事和长期意义，但两者文本粒度与生命周期明确不同；
+- barrier、retry、rebuild 和恢复后使用相同的窗口边界与 Memory revision；
+- `profileRelationshipProposer` 与 `milestoneProposer` 之间不存在同 boundary 的循环调度。
+
 ## 新 Librarian：三轮固定对话
 
 将低频 Librarian 实现为持久化的三轮固定格式 agent。
